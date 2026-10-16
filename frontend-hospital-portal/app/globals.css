@@ -1,0 +1,264 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-inter);
+  --font-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  --font-heading: var(--font-sans);
+  /* ==================== Dedan Health OS design tokens (migrated from tailwind.config) ==================== */
+  --color-pine-green: #1b6b57;
+  --color-pine-dark: #0f4a3c;
+  --color-pine-light: #e8f5f1;
+  --color-mint-accent: #2bc48a;
+  --color-mint-light: #d8f6e9;
+  --color-mint-subtle: #effbf6;
+  --color-app-bg: #f4f7f6;
+  --color-card-border: #edf2f7;
+  --color-body-text: #1a2a3a;
+  --color-muted-text: #64748b;
+  --shadow-soft: 0 4px 20px -2px rgba(15, 42, 60, 0.05),
+    0 2px 6px -1px rgba(15, 42, 60, 0.03);
+  --shadow-card: 0 2px 12px 0 rgba(27, 107, 87, 0.04),
+    0 1px 3px 0 rgba(0, 0, 0, 0.02);
+  --shadow-glow: 0 8px 24px -4px rgba(27, 107, 87, 0.25);
+  /* ==================== Material Design 3 tokens (Doctors + Appointments) ==================== */
+  /* Surfaces (M3 blue-tinted neutral ramp) */
+  --color-surface: #f8f9ff;
+  --color-surface-dim: #ccdbf4;
+  --color-surface-bright: #f8f9ff;
+  --color-surface-container-lowest: #ffffff;
+  --color-surface-container-low: #eff4ff;
+  --color-surface-container: #e5eeff;
+  --color-surface-container-high: #dce9ff;
+  --color-surface-container-highest: #d4e4fc;
+  --color-surface-variant: #d4e4fc;
+  --color-surface-tint: #1a6a56;
+  --color-inverse-surface: #223144;
+  --color-inverse-on-surface: #eaf1ff;
+  --color-inverse-primary: #8bd5bc;
+  /* Foregrounds */
+  --color-on-surface: #0d1c2e;
+  --color-on-surface-variant: #3f4945;
+  --color-on-background: #0d1c2e;
+  --color-outline: #6f7975;
+  --color-outline-variant: #bec9c3;
+  /* Primary (brand pine) */
+  --color-on-primary: #ffffff;
+  --color-primary-container: #1b6b57;
+  --color-on-primary-container: #9de9cf;
+  --color-primary-fixed: #a6f2d8;
+  --color-primary-fixed-dim: #8bd5bc;
+  --color-on-primary-fixed: #002018;
+  --color-on-primary-fixed-variant: #005140;
+  /* Secondary (mint) */
+  --color-on-secondary: #ffffff;
+  --color-secondary-container: #8ef5b5;
+  --color-on-secondary-container: #007243;
+  --color-secondary-fixed: #91f8b8;
+  --color-secondary-fixed-dim: #74db9d;
+  --color-on-secondary-fixed: #002110;
+  --color-on-secondary-fixed-variant: #00522f;
+  /* Tertiary (clinical teal) */
+  --color-tertiary: #00514a;
+  --color-on-tertiary: #ffffff;
+  --color-tertiary-container: #006b62;
+  --color-on-tertiary-container: #86ebde;
+  --color-tertiary-fixed: #8ff4e7;
+  --color-tertiary-fixed-dim: #72d7cb;
+  --color-on-tertiary-fixed: #00201d;
+  --color-on-tertiary-fixed-variant: #005049;
+  /* Error */
+  --color-error: #ba1a1a;
+  --color-on-error: #ffffff;
+  --color-error-container: #ffdad6;
+  --color-on-error-container: #93000a;
+  /* Type scale (text = size/line-height, font-* = weight) */
+  --text-body-lg: 1rem;
+  --text-body-lg--line-height: 1.5rem;
+  --text-body-md: 0.875rem;
+  --text-body-md--line-height: 1.25rem;
+  --text-body-sm: 0.75rem;
+  --text-body-sm--line-height: 1rem;
+  --text-label-sm: 0.6875rem;
+  --text-label-sm--line-height: 0.875rem;
+  --text-label-sm--letter-spacing: 0.02em;
+  --text-label-md: 0.75rem;
+  --text-label-md--line-height: 1rem;
+  --text-label-lg: 0.875rem;
+  --text-label-lg--line-height: 1.25rem;
+  --text-headline-xl: 2rem;
+  --text-headline-xl--line-height: 2.5rem;
+  --text-headline-xl--letter-spacing: -0.025em;
+  --text-headline-lg: 1.5rem;
+  --text-headline-lg--line-height: 2rem;
+  --text-headline-lg--letter-spacing: -0.02em;
+  --text-headline-lg-mobile: 1.25rem;
+  --text-headline-lg-mobile--line-height: 1.75rem;
+  --text-headline-lg-mobile--letter-spacing: -0.015em;
+  --text-headline-md: 1.125rem;
+  --text-headline-md--line-height: 1.5rem;
+  --text-headline-md--letter-spacing: -0.01em;
+  --text-metric-display: 1.75rem;
+  --text-metric-display--line-height: 2rem;
+  --text-metric-display--letter-spacing: -0.02em;
+  --font-weight-body-lg: 400;
+  --font-weight-body-md: 400;
+  --font-weight-body-sm: 400;
+  --font-weight-label-sm: 500;
+  --font-weight-label-md: 600;
+  --font-weight-label-lg: 600;
+  --font-weight-headline-xl: 700;
+  --font-weight-headline-lg: 700;
+  --font-weight-headline-lg-mobile: 700;
+  --font-weight-headline-md: 600;
+  --font-weight-metric-display: 700;
+  /* Spacing aliases (from template spacing scale) */
+  --spacing-gutter: 1.25rem;
+  --spacing-gutter-sm: 0.75rem;
+  --spacing-gutter-lg: 1.5rem;
+  --spacing-space-xs: 0.25rem;
+  --spacing-space-sm: 0.5rem;
+  --spacing-space-md: 1rem;
+  --spacing-space-lg: 1.25rem;
+  --spacing-space-xl: 1.5rem;
+  --spacing-space-2xl: 2rem;
+  --spacing-margin-mobile: 1rem;
+  --spacing-margin: 1.5rem;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  --background: #f8f9ff;
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: #005240;
+  --primary-foreground: #ffffff;
+  --secondary: #006d40;
+  --secondary-foreground: #ffffff;
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-app-bg text-body-text;
+  }
+  html {
+    @apply font-sans;
+  }
+}
+
+/* Thin custom scrollbar used by the dashboard's filter tab strips */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
