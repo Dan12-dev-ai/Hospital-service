@@ -55,6 +55,29 @@ class TestStaff:
     def test_invalid_staff(self, client, admin, body):
         assert client.post("/staff", headers=admin, json=body).status_code in (400, 422)
 
+    def test_blank_optional_fields_mean_none(self, client, admin):
+        resp = client.post("/staff", headers=admin, json={
+            "email": "n@sph.example", "full_name": "  Nurse Almaz  ", "role": "nurse",
+            "department_id": "", "phone": " ", "full_name_am": ""})
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["full_name"] == "Nurse Almaz" and body["department_id"] is None and body["phone"] is None
+        cleared = client.patch(f"/staff/{body['id']}", headers=admin, json={"department_id": ""})
+        assert cleared.status_code == 200 and cleared.json()["department_id"] is None
+
+    @pytest.mark.parametrize("path_body", [
+        ("/staff", {"email": "b@sph.example", "full_name": "   ", "role": "nurse"}),
+        ("/departments", {"kind": "clinic", "name": "  "}),
+    ])
+    def test_blank_names_are_refused(self, client, admin, path_body):
+        path, body = path_body
+        assert client.post(path, headers=admin, json=body).status_code == 422
+
+    def test_blank_names_are_refused_on_update(self, client, admin):
+        me = client.get("/auth/me", headers=admin).json()
+        assert client.patch(f"/staff/{me['id']}", headers=admin, json={"full_name": " "}).status_code == 422
+        assert client.patch("/hospital", headers=admin, json={"name": "  "}).status_code == 422
+
     def test_duplicate_email_is_409(self, client, admin):
         assert client.post("/staff", headers=admin, json={
             "email": "admin@sph.example", "full_name": "Again", "role": "nurse"}).status_code == 409
@@ -101,6 +124,11 @@ def test_errors_have_one_shape(client, admin):
     assert body["error_code"] == "VALIDATION_ERROR" and "name" in body["error"]
 
 
+def test_unknown_paths_use_the_error_shape(client):
+    body = client.get("/no-such-thing").json()
+    assert body["error_code"] == "HTTP_404"
+
+
 def test_bootstrap_cli(db, capsys):
     from app import cli
 
@@ -108,8 +136,13 @@ def test_bootstrap_cli(db, capsys):
                      "--admin-name", "Root"]) == 0
     printed = capsys.readouterr().out
     assert "TKH" in printed and "one-time password" in printed
+    assert "root@tkh.example" in printed
     with pytest.raises(SystemExit):
-        cli.bootstrap("TKH", "Again", None, "x@tkh.example", "X")
+        cli.bootstrap("TKH", "Again", None, "x@tkh.example", "Xy")
+    with pytest.raises(SystemExit):
+        cli.bootstrap("ABC", "Hospital", None, "not-an-email", "Admin")
+    with pytest.raises(SystemExit):
+        cli.bootstrap("ABC", "Hospital", None, "  ROOT@tkh.example ", "Admin")  # same email, other spelling
 
 
 def test_migration_matches_the_models(tmp_path, monkeypatch):

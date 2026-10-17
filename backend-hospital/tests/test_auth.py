@@ -24,8 +24,26 @@ class TestSignIn:
         make_staff(hospital, "a@sph.example")
         for _ in range(3):
             client.post("/auth/login", json={"email": "a@sph.example", "password": "Wrong1234567"})
+        # Locked: even the right password fails, with the same answer as a wrong one.
         resp = client.post("/auth/login", json={"email": "a@sph.example", "password": PASSWORD})
-        assert resp.status_code == 429
+        assert resp.status_code == 401 and resp.json()["error"] == "Incorrect email or password."
+
+    def test_old_failures_are_forgotten(self, client, hospital, monkeypatch):
+        from datetime import timedelta
+
+        from sqlalchemy import update
+
+        from app.db import session_scope, utcnow
+        from app.models import StaffUser
+
+        monkeypatch.setenv("HOSPITAL_LOGIN_LOCKOUT_ATTEMPTS", "3")
+        make_staff(hospital, "a@sph.example")
+        for _ in range(2):
+            client.post("/auth/login", json={"email": "a@sph.example", "password": "Wrong1234567"})
+        with session_scope() as session:  # the two failures happened long ago
+            session.execute(update(StaffUser).values(last_failed_at=utcnow() - timedelta(days=1)))
+        client.post("/auth/login", json={"email": "a@sph.example", "password": "Wrong1234567"})
+        sign_in(client, "a@sph.example")
 
     def test_deactivated_account_cannot_sign_in(self, client, hospital):
         make_staff(hospital, "gone@sph.example", active=False)
@@ -79,6 +97,21 @@ class TestTemporaryPassword:
             resp = client.post("/auth/password", headers=admin,
                                json={"current_password": PASSWORD, "new_password": weak})
             assert resp.status_code == 400
+
+    def test_wrong_current_password_is_400_and_counted(self, client, hospital, monkeypatch):
+        monkeypatch.setenv("HOSPITAL_LOGIN_LOCKOUT_ATTEMPTS", "3")
+        make_staff(hospital, "a@sph.example")
+        headers = sign_in(client, "a@sph.example")
+        for _ in range(2):
+            resp = client.post("/auth/password", headers=headers,
+                               json={"current_password": "Guess1234567", "new_password": "AnotherPass12"})
+            assert resp.status_code == 400
+        assert client.get("/auth/me", headers=headers).status_code == 200
+        client.post("/auth/password", headers=headers,
+                    json={"current_password": "Guess1234567", "new_password": "AnotherPass12"})
+        # The limit is reached: the session ends and the account is locked.
+        assert client.get("/auth/me", headers=headers).status_code == 401
+        assert client.post("/auth/login", json={"email": "a@sph.example", "password": PASSWORD}).status_code == 401
 
     def test_change_ends_other_sessions_but_not_this_one(self, client, hospital):
         make_staff(hospital, "a@sph.example")

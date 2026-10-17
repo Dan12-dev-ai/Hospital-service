@@ -1,8 +1,8 @@
-"""foundation: hospitals, departments, staff, sessions, audit
+"""foundation
 
 Revision ID: 0001
 Revises: 
-Create Date: 2026-10-17 22:43:56.393594
+Create Date: 2026-10-17 22:54:19.186098
 """
 from alembic import op
 import sqlalchemy as sa
@@ -24,9 +24,9 @@ def upgrade() -> None:
     sa.Column('timezone', sa.String(length=64), nullable=False),
     sa.Column('directory_facility_id', sa.String(length=64), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('code'),
-    sa.UniqueConstraint('directory_facility_id')
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_hospitals')),
+    sa.UniqueConstraint('code', name=op.f('uq_hospitals_code')),
+    sa.UniqueConstraint('directory_facility_id', name=op.f('uq_hospitals_directory_facility_id'))
     )
     op.create_table('departments',
     sa.Column('id', sa.String(length=32), nullable=False),
@@ -37,8 +37,8 @@ def upgrade() -> None:
     sa.Column('capacity', sa.Integer(), nullable=True),
     sa.Column('active', sa.Boolean(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.ForeignKeyConstraint(['hospital_id'], ['hospitals.id'], ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('id'),
+    sa.ForeignKeyConstraint(['hospital_id'], ['hospitals.id'], name=op.f('fk_departments_hospital_id_hospitals'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_departments')),
     sa.UniqueConstraint('hospital_id', 'kind', 'name', name='uq_department_name')
     )
     with op.batch_alter_table('departments', schema=None) as batch_op:
@@ -57,13 +57,14 @@ def upgrade() -> None:
     sa.Column('must_change_password', sa.Boolean(), nullable=False),
     sa.Column('active', sa.Boolean(), nullable=False),
     sa.Column('failed_logins', sa.Integer(), nullable=False),
+    sa.Column('last_failed_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('locked_until', sa.DateTime(timezone=True), nullable=True),
     sa.Column('last_login_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.ForeignKeyConstraint(['department_id'], ['departments.id'], ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['hospital_id'], ['hospitals.id'], ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('email')
+    sa.ForeignKeyConstraint(['department_id'], ['departments.id'], name=op.f('fk_staff_users_department_id_departments'), ondelete='SET NULL'),
+    sa.ForeignKeyConstraint(['hospital_id'], ['hospitals.id'], name=op.f('fk_staff_users_hospital_id_hospitals'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_staff_users')),
+    sa.UniqueConstraint('email', name=op.f('uq_staff_users_email'))
     )
     with op.batch_alter_table('staff_users', schema=None) as batch_op:
         batch_op.create_index(batch_op.f('ix_staff_users_hospital_id'), ['hospital_id'], unique=False)
@@ -77,9 +78,9 @@ def upgrade() -> None:
     sa.Column('target_id', sa.String(length=64), nullable=True),
     sa.Column('detail', sa.Text(), nullable=True),
     sa.Column('at', sa.DateTime(timezone=True), nullable=False),
-    sa.ForeignKeyConstraint(['actor_id'], ['staff_users.id'], ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['hospital_id'], ['hospitals.id'], ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('id')
+    sa.ForeignKeyConstraint(['actor_id'], ['staff_users.id'], name=op.f('fk_audit_events_actor_id_staff_users'), ondelete='SET NULL'),
+    sa.ForeignKeyConstraint(['hospital_id'], ['hospitals.id'], name=op.f('fk_audit_events_hospital_id_hospitals'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_audit_events'))
     )
     with op.batch_alter_table('audit_events', schema=None) as batch_op:
         batch_op.create_index('ix_audit_hospital_at', ['hospital_id', 'at'], unique=False)
@@ -92,9 +93,9 @@ def upgrade() -> None:
     sa.Column('expires_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('revoked_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('user_agent', sa.String(length=200), nullable=True),
-    sa.ForeignKeyConstraint(['user_id'], ['staff_users.id'], ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('token_hash')
+    sa.ForeignKeyConstraint(['user_id'], ['staff_users.id'], name=op.f('fk_staff_sessions_user_id_staff_users'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_staff_sessions')),
+    sa.UniqueConstraint('token_hash', name=op.f('uq_staff_sessions_token_hash'))
     )
     with op.batch_alter_table('staff_sessions', schema=None) as batch_op:
         batch_op.create_index(batch_op.f('ix_staff_sessions_user_id'), ['user_id'], unique=False)

@@ -32,10 +32,15 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - name: Tests (SQLite)
         run: python -m pytest tests -q
+      - name: Tests (PostgreSQL)
+        env:
+          HOSPITAL_TEST_DATABASE_URL: postgresql+psycopg://hospital:ci-only@localhost:5432/hospital
+        run: python -m pytest tests -q
       - name: Migrations apply on PostgreSQL
         env:
           HOSPITAL_DATABASE_URL: postgresql+psycopg://hospital:ci-only@localhost:5432/hospital
         run: |
+          python -c "from app import models; from app.db import Base, get_engine; Base.metadata.drop_all(get_engine())"
           alembic upgrade head
           alembic downgrade base
           alembic upgrade head

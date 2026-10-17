@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -11,11 +12,16 @@ PASSWORD = "StaffPass123"
 
 @pytest.fixture
 def db(tmp_path, monkeypatch):
+    """A fresh database per test: SQLite by default, or the PostgreSQL
+    database in HOSPITAL_TEST_DATABASE_URL (emptied before every test)."""
     from app import db as dbmod
+    from app import models  # noqa: F401  (registers the tables)
 
-    monkeypatch.setenv("HOSPITAL_DATABASE_URL", f"sqlite:///{tmp_path / 'hospital.db'}")
+    url = os.environ.get("HOSPITAL_TEST_DATABASE_URL") or f"sqlite:///{tmp_path / 'hospital.db'}"
+    monkeypatch.setenv("HOSPITAL_DATABASE_URL", url)
     monkeypatch.setenv("HOSPITAL_ENVIRONMENT", "development")
     dbmod.reset_engine()
+    dbmod.Base.metadata.drop_all(dbmod.get_engine())
     dbmod.create_all()
     yield
     dbmod.reset_engine()

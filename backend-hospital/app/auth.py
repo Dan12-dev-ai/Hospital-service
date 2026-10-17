@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Callable, Dict, Optional
@@ -64,30 +65,61 @@ def staff_payload(user: StaffUser, hospital: Optional[Hospital] = None) -> Dict[
     return payload
 
 
+#: Checked against for unknown emails, so they cost the same one scrypt run
+#: as a real account with a wrong password.
+_DUMMY_HASH = hash_password(secrets.token_urlsafe(16))
+
+
+def _record_failure(session, user: StaffUser, now, settings) -> bool:
+    """Count a failed password for ``user`` (row already locked); True if this locked it.
+
+    Failures older than the lockout window are forgotten, so occasional typos
+    over months never add up to a lockout.
+    """
+    window = timedelta(minutes=settings.LOGIN_LOCKOUT_MINUTES)
+    if user.last_failed_at is None or ensure_aware(user.last_failed_at) < now - window:
+        user.failed_logins = 0
+    user.failed_logins += 1
+    user.last_failed_at = now
+    if user.failed_logins >= settings.LOGIN_LOCKOUT_ATTEMPTS:
+        user.locked_until = now + window
+        user.failed_logins = 0
+        audit(session, user.hospital_id, user.id, "staff_locked_out")
+        return True
+    return False
+
+
+def _locked_user(session, email: str) -> Optional[StaffUser]:
+    """The account row, locked for this transaction so parallel attempts
+    cannot lose failure counts (no-op on SQLite, which serialises writers)."""
+    return session.scalar(select(StaffUser).where(StaffUser.email == email.strip().lower()).with_for_update())
+
+
 def login(email: str, password: str, user_agent: Optional[str] = None) -> Dict[str, Any]:
-    """Check the password and open a session. Raises AuthError."""
+    """Check the password and open a session. Raises AuthError.
+
+    Unknown email, wrong password and locked account all answer the same,
+    with the same work, so the response never tells whether an account exists.
+    """
     settings = get_settings()
     now = utcnow()
     # A failed attempt is recorded and committed *before* the error is raised:
     # raising inside the transaction would roll the count (and the lockout) back.
     failure: Optional[AuthError] = None
     with session_scope() as session:
-        user = session.scalar(select(StaffUser).where(StaffUser.email == email.strip().lower()))
+        user = _locked_user(session, email)
         if user is None:
-            # Same work and message as a wrong password: no account probing.
-            verify_password(password, hash_password("not-the-password"))
+            verify_password(password, _DUMMY_HASH)
             failure = AuthError(INVALID_LOGIN)
-        elif user.locked_until and ensure_aware(user.locked_until) > now:
-            failure = AuthError("Too many failed sign-ins. Try again later.", status.HTTP_429_TOO_MANY_REQUESTS)
-        elif not verify_password(password, user.password_hash):
-            user.failed_logins += 1
-            if user.failed_logins >= settings.LOGIN_LOCKOUT_ATTEMPTS:
-                user.locked_until = now + timedelta(minutes=settings.LOGIN_LOCKOUT_MINUTES)
-                user.failed_logins = 0
-                audit(session, user.hospital_id, user.id, "staff_locked_out")
-            failure = AuthError(INVALID_LOGIN)
-        elif not user.active:
-            failure = AuthError("This account has been deactivated.", status.HTTP_403_FORBIDDEN)
+        else:
+            correct = verify_password(password, user.password_hash)
+            if user.locked_until and ensure_aware(user.locked_until) > now:
+                failure = AuthError(INVALID_LOGIN)
+            elif not correct:
+                _record_failure(session, user, now, settings)
+                failure = AuthError(INVALID_LOGIN)
+            elif not user.active:
+                failure = AuthError("This account has been deactivated.", status.HTTP_403_FORBIDDEN)
         if failure is None:
             return _open_session(session, user, now, settings, user_agent)
     raise failure
@@ -99,6 +131,7 @@ def _open_session(session, user: StaffUser, now, settings, user_agent: Optional[
     session.add(StaffSession(token_hash=token_hash(token), user_id=user.id, expires_at=expires,
                              user_agent=(user_agent or "")[:200] or None))
     user.failed_logins = 0
+    user.last_failed_at = None
     user.locked_until = None
     user.last_login_at = now
     audit(session, user.hospital_id, user.id, "staff_signed_in")
@@ -182,21 +215,36 @@ def change_password(staff: Staff, current: str, new: str) -> None:
     problem = password_problem(new)
     if problem:
         raise AuthError(problem, status.HTTP_400_BAD_REQUEST)
+    settings = get_settings()
+    now = utcnow()
+    failure: Optional[AuthError] = None
     with session_scope() as session:
-        user = session.get(StaffUser, staff.id)
-        if user is None or not verify_password(current, user.password_hash):
-            raise AuthError("Current password is incorrect.")
-        if current == new:
-            raise AuthError("Choose a password different from the current one.", status.HTTP_400_BAD_REQUEST)
-        user.password_hash = hash_password(new)
-        user.must_change_password = False
-        session.execute(
-            update(StaffSession)
-            .where(StaffSession.user_id == user.id, StaffSession.id != staff.session_id,
-                   StaffSession.revoked_at.is_(None))
-            .values(revoked_at=utcnow())
-        )
-        audit(session, user.hospital_id, user.id, "staff_password_changed")
+        user = session.scalar(select(StaffUser).where(StaffUser.id == staff.id).with_for_update())
+        if user is None:
+            raise AuthError("Authentication required.")
+        if not verify_password(current, user.password_hash):
+            # Counted like a failed sign-in: a stolen session cannot guess the
+            # password without limit. Reaching the limit ends every session.
+            # 400, not 401: a typo here must not look like a lost session.
+            if _record_failure(session, user, now, settings):
+                revoke_all_sessions(session, user.id)
+            failure = AuthError("Current password is incorrect.", status.HTTP_400_BAD_REQUEST)
+        elif current == new:
+            failure = AuthError("Choose a password different from the current one.", status.HTTP_400_BAD_REQUEST)
+        else:
+            user.password_hash = hash_password(new)
+            user.must_change_password = False
+            user.failed_logins = 0
+            session.execute(
+                update(StaffSession)
+                .where(StaffSession.user_id == user.id, StaffSession.id != staff.session_id,
+                       StaffSession.revoked_at.is_(None))
+                .values(revoked_at=utcnow())
+            )
+            audit(session, user.hospital_id, user.id, "staff_password_changed")
+    # Raised after the commit, so a recorded failure is kept.
+    if failure is not None:
+        raise failure
 
 
 def revoke_all_sessions(session, user_id: str) -> None:

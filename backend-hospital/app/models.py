@@ -83,6 +83,7 @@ class StaffUser(Base):
     must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     failed_logins: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_failed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     locked_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)

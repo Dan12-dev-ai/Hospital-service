@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException
 
 from app.api import admin, auth
 from app.config import Settings, get_settings
@@ -29,12 +30,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.CORS_ORIGINS,
-        allow_credentials=True,
+        # Sessions travel in the Authorization header, never in cookies.
+        allow_credentials=False,
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
     )
 
     # One error shape everywhere: {"error": "...", "error_code": "..."}.
+    # Starlette's HTTPException is the base of FastAPI's, so this also covers
+    # routing errors such as 404 for an unknown path and 405.
     @app.exception_handler(HTTPException)
     async def http_error(request: Request, exc: HTTPException):
         message = exc.detail if isinstance(exc.detail, str) else "Request failed."

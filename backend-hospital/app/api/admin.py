@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, BeforeValidator, EmailStr, Field, StringConstraints
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 
@@ -20,6 +20,19 @@ router = APIRouter(tags=["administration"])
 admin_only = require_roles(Role.ADMIN)
 
 
+def _blank_to_none(value: Any) -> Any:
+    """Forms send "" for an empty optional field; store it as no value."""
+    if isinstance(value, str):
+        return value.strip() or None
+    return value
+
+
+#: A required name: surrounding spaces dropped, then at least two characters.
+Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=2)]
+#: An optional text field where "" means none.
+OptionalText = Annotated[Optional[str], BeforeValidator(_blank_to_none)]
+
+
 # --- hospital -----------------------------------------------------------------
 
 def hospital_payload(h: Hospital) -> Dict[str, Any]:
@@ -28,8 +41,8 @@ def hospital_payload(h: Hospital) -> Dict[str, Any]:
 
 
 class HospitalUpdate(BaseModel):
-    name: Optional[str] = Field(default=None, min_length=2, max_length=160)
-    name_am: Optional[str] = Field(default=None, max_length=160)
+    name: Optional[Name] = Field(default=None, max_length=160)
+    name_am: OptionalText = Field(default=None, max_length=160)
     timezone: Optional[str] = Field(default=None, max_length=64)
 
 
@@ -66,14 +79,14 @@ def department_payload(d: Department) -> Dict[str, Any]:
 
 class DepartmentCreate(BaseModel):
     kind: str
-    name: str = Field(min_length=2, max_length=120)
-    name_am: Optional[str] = Field(default=None, max_length=120)
+    name: Name = Field(max_length=120)
+    name_am: OptionalText = Field(default=None, max_length=120)
     capacity: Optional[int] = Field(default=None, ge=0, le=5000)
 
 
 class DepartmentUpdate(BaseModel):
-    name: Optional[str] = Field(default=None, min_length=2, max_length=120)
-    name_am: Optional[str] = Field(default=None, max_length=120)
+    name: Optional[Name] = Field(default=None, max_length=120)
+    name_am: OptionalText = Field(default=None, max_length=120)
     capacity: Optional[int] = Field(default=None, ge=0, le=5000)
     active: Optional[bool] = None
 
@@ -103,7 +116,7 @@ def create_department(body: DepartmentCreate, staff: Staff = Depends(admin_only)
         raise HTTPException(status_code=400, detail="Only a ward has a bed capacity.")
     try:
         with session_scope() as session:
-            department = Department(hospital_id=staff.hospital_id, kind=body.kind, name=body.name.strip(),
+            department = Department(hospital_id=staff.hospital_id, kind=body.kind, name=body.name,
                                     name_am=body.name_am, capacity=body.capacity)
             session.add(department)
             session.flush()
@@ -137,20 +150,26 @@ def update_department(department_id: str, body: DepartmentUpdate, staff: Staff =
 
 class StaffCreate(BaseModel):
     email: EmailStr
-    full_name: str = Field(min_length=2, max_length=120)
-    full_name_am: Optional[str] = Field(default=None, max_length=120)
+    full_name: Name = Field(max_length=120)
+    full_name_am: OptionalText = Field(default=None, max_length=120)
     role: str
-    department_id: Optional[str] = None
-    phone: Optional[str] = Field(default=None, max_length=32)
+    department_id: OptionalText = Field(default=None, max_length=32)
+    phone: OptionalText = Field(default=None, max_length=32)
 
 
 class StaffUpdate(BaseModel):
-    full_name: Optional[str] = Field(default=None, min_length=2, max_length=120)
-    full_name_am: Optional[str] = Field(default=None, max_length=120)
+    full_name: Optional[Name] = Field(default=None, max_length=120)
+    full_name_am: OptionalText = Field(default=None, max_length=120)
     role: Optional[str] = None
-    department_id: Optional[str] = None
-    phone: Optional[str] = Field(default=None, max_length=32)
+    department_id: OptionalText = Field(default=None, max_length=32)
+    phone: OptionalText = Field(default=None, max_length=32)
     active: Optional[bool] = None
+
+
+#: Emails are unique across all hospitals; the message does not say whether
+#: the clash is in this hospital or another one.
+EMAIL_TAKEN = "This email cannot be used for a new account."
+
 
 
 def _check_role(role: Optional[str]) -> None:
@@ -165,9 +184,11 @@ def _check_department(session, hospital_id: str, department_id: Optional[str]) -
 
 
 def _other_active_admins(session, hospital_id: str, user_id: str) -> int:
-    return session.scalar(select(func.count(StaffUser.id)).where(
+    # The rows are locked, so two admins demoting each other at the same
+    # moment cannot both pass this check and leave the hospital with none.
+    return len(session.scalars(select(StaffUser.id).where(
         StaffUser.hospital_id == hospital_id, StaffUser.role == Role.ADMIN,
-        StaffUser.active.is_(True), StaffUser.id != user_id)) or 0
+        StaffUser.active.is_(True), StaffUser.id != user_id).with_for_update()).all())
 
 
 @router.get("/staff")
@@ -208,7 +229,7 @@ def create_staff(body: StaffCreate, staff: Staff = Depends(admin_only)) -> Dict[
             audit(session, staff.hospital_id, staff.id, "staff_created", "staff", user.id, {"role": body.role})
             return {**staff_payload(user), "temporary_password": password}
     except IntegrityError as exc:
-        raise HTTPException(status_code=409, detail="An account with this email exists.") from exc
+        raise HTTPException(status_code=409, detail=EMAIL_TAKEN) from exc
 
 
 @router.patch("/staff/{user_id}")
@@ -216,23 +237,28 @@ def update_staff(user_id: str, body: StaffUpdate, staff: Staff = Depends(admin_o
     changes = {k: v for k, v in body.model_dump(exclude_unset=True).items()
                if not (k in ("full_name", "role", "active") and v is None)}
     _check_role(changes.get("role"))
-    with session_scope() as session:
-        user = session.scalar(select(StaffUser).where(
-            StaffUser.id == user_id, StaffUser.hospital_id == staff.hospital_id))
-        if user is None:
-            raise HTTPException(status_code=404, detail="Staff member not found.")
-        if "department_id" in changes:
-            _check_department(session, staff.hospital_id, changes["department_id"])
-        losing_admin = user.role == Role.ADMIN and (
-            changes.get("role", Role.ADMIN) != Role.ADMIN or changes.get("active") is False)
-        if losing_admin and _other_active_admins(session, staff.hospital_id, user.id) == 0:
-            raise HTTPException(status_code=400, detail="The hospital must keep at least one active admin.")
-        for field, value in changes.items():
-            setattr(user, field, value)
-        if changes.get("active") is False:
-            auth.revoke_all_sessions(session, user.id)
-        audit(session, staff.hospital_id, staff.id, "staff_updated", "staff", user.id, {"fields": sorted(changes)})
-        return staff_payload(user)
+    try:
+        with session_scope() as session:
+            user = session.scalar(select(StaffUser).where(
+                StaffUser.id == user_id, StaffUser.hospital_id == staff.hospital_id).with_for_update())
+            if user is None:
+                raise HTTPException(status_code=404, detail="Staff member not found.")
+            if "department_id" in changes:
+                _check_department(session, staff.hospital_id, changes["department_id"])
+            losing_admin = user.role == Role.ADMIN and (
+                changes.get("role", Role.ADMIN) != Role.ADMIN or changes.get("active") is False)
+            if losing_admin and _other_active_admins(session, staff.hospital_id, user.id) == 0:
+                raise HTTPException(status_code=400, detail="The hospital must keep at least one active admin.")
+            for field, value in changes.items():
+                setattr(user, field, value)
+            if changes.get("active") is False:
+                auth.revoke_all_sessions(session, user.id)
+            audit(session, staff.hospital_id, staff.id, "staff_updated", "staff", user.id,
+                  {"fields": sorted(changes)})
+            return staff_payload(user)
+    except IntegrityError as exc:
+        # A department deleted between the check and the commit.
+        raise HTTPException(status_code=409, detail="The change conflicts with other data; reload and retry.") from exc
 
 
 @router.post("/staff/{user_id}/reset-password")
@@ -247,6 +273,7 @@ def reset_staff_password(user_id: str, staff: Staff = Depends(admin_only)) -> Di
         user.password_hash = hash_password(password)
         user.must_change_password = True
         user.failed_logins = 0
+        user.last_failed_at = None
         user.locked_until = None
         auth.revoke_all_sessions(session, user.id)
         audit(session, staff.hospital_id, staff.id, "staff_password_reset", "staff", user.id)

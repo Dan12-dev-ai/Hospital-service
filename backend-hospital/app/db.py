@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Iterator, Optional
 
-from sqlalchemy import create_engine
+from sqlalchemy import MetaData, create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -21,7 +21,15 @@ DEV_DATABASE_URL = "sqlite:///./hospital.db"
 
 
 class Base(DeclarativeBase):
-    pass
+    # Explicit constraint names: the same on SQLite and PostgreSQL, so later
+    # migrations can alter them by name on both.
+    metadata = MetaData(naming_convention={
+        "ix": "ix_%(table_name)s_%(column_0_N_name)s",
+        "uq": "uq_%(table_name)s_%(column_0_N_name)s",
+        "ck": "ck_%(table_name)s_%(constraint_name)s",
+        "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
+        "pk": "pk_%(table_name)s",
+    })
 
 
 def utcnow() -> datetime:
@@ -49,6 +57,9 @@ def database_url() -> str:
     url = settings.DATABASE_URL or ""
     if settings.is_production and (not url or url.startswith("sqlite")):
         raise RuntimeError("HOSPITAL_DATABASE_URL must point at PostgreSQL in production.")
+    if not url and settings.ENVIRONMENT != "development":
+        # A container that lost its URL must not quietly use a throwaway SQLite file.
+        raise RuntimeError("HOSPITAL_DATABASE_URL is not set.")
     return url or DEV_DATABASE_URL
 
 
@@ -60,9 +71,19 @@ def get_engine() -> Engine:
         if url.startswith("sqlite"):
             kwargs["connect_args"] = {"check_same_thread": False}
         _engine = create_engine(url, **kwargs)
+        if url.startswith("sqlite"):
+            # SQLite ignores foreign keys unless asked, which would hide
+            # integrity bugs in development and tests.
+            event.listen(_engine, "connect", _sqlite_foreign_keys)
         _engine_url = url
         _sessions = sessionmaker(bind=_engine, expire_on_commit=False)
     return _engine
+
+
+def _sqlite_foreign_keys(dbapi_connection, _record) -> None:
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
 
 
 def reset_engine() -> None:
