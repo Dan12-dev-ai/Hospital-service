@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, BeforeValidator, EmailStr, Field, StringConstraints
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 
@@ -15,22 +15,10 @@ from app.auth import Staff, audit, current_staff, require_roles, staff_payload
 from app.db import session_scope
 from app.models import Department, DepartmentKind, Hospital, Role, StaffUser
 from app.security import hash_password, temporary_password
+from app.validation import Name, OptionalPhone, OptionalText
 
 router = APIRouter(tags=["administration"])
 admin_only = require_roles(Role.ADMIN)
-
-
-def _blank_to_none(value: Any) -> Any:
-    """Forms send "" for an empty optional field; store it as no value."""
-    if isinstance(value, str):
-        return value.strip() or None
-    return value
-
-
-#: A required name: surrounding spaces dropped, then at least two characters.
-Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=2)]
-#: An optional text field where "" means none.
-OptionalText = Annotated[Optional[str], BeforeValidator(_blank_to_none)]
 
 
 # --- hospital -----------------------------------------------------------------
@@ -154,7 +142,7 @@ class StaffCreate(BaseModel):
     full_name_am: OptionalText = Field(default=None, max_length=120)
     role: str
     department_id: OptionalText = Field(default=None, max_length=32)
-    phone: OptionalText = Field(default=None, max_length=32)
+    phone: OptionalPhone = None
 
 
 class StaffUpdate(BaseModel):
@@ -162,7 +150,7 @@ class StaffUpdate(BaseModel):
     full_name_am: OptionalText = Field(default=None, max_length=120)
     role: Optional[str] = None
     department_id: OptionalText = Field(default=None, max_length=32)
-    phone: OptionalText = Field(default=None, max_length=32)
+    phone: OptionalPhone = None
     active: Optional[bool] = None
 
 

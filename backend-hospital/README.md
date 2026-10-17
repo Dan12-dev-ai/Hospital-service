@@ -34,6 +34,26 @@ python -m pytest tests -q
 | Hospital | `GET /hospital`, `PATCH /hospital` (admin) |
 | Departments, wards, clinics, dispensaries | `GET /departments?kind=`, `POST /departments`, `PATCH /departments/{id}` (admin) |
 | Staff accounts | `GET /staff`, `POST /staff`, `PATCH /staff/{id}`, `POST /staff/{id}/reset-password` (admin) |
+| Patients | `GET /patients?q=&status=&department_id=&ward_id=&doctor_id=`, `GET /patients/stats`, `POST /patients`, `GET /patients/{id}`, `PATCH /patients/{id}`, `POST`/`DELETE /patients/{id}/alerts` |
+| Doctors | `GET /doctors?q=&department_id=&rank=&status=`, `GET /doctors/{id}`, `PATCH /doctors/{id}/profile` (admin), `PATCH /doctors/{id}/duty` |
+
+- **Patients** get a hospital number when registered (`SPH-000124`, per
+  hospital, never reused) and can carry their Endod ID (`DE-482731`), unique
+  within the hospital. Search covers name (English or Amharic), hospital
+  number, Endod ID and phone. Phones are stored as `+251XXXXXXXXX`; an age
+  can stand in for an unknown date of birth. Registering the same name and
+  phone twice needs `confirm_duplicate`. Reception and records staff edit
+  identity and payer details (cash, CBHI, private, credit); doctors and
+  nurses move the patient through care (`opd`, `emergency`, `admitted`,
+  `discharge`, `discharged`), assign the ward, bed and attending doctor, and
+  record allergy and risk alerts. Admission checks the ward's bed capacity
+  and that the bed is free. Opening a patient's record is written to the
+  audit log.
+- **Doctors** are staff with the doctor role. The directory shows licence,
+  specialty, rank, extension, duty status (`on-duty`, `in-consultation`,
+  `on-call`, `off-duty`) with location, and patient load against daily
+  capacity. A doctor sets their own duty status; admins and nurses can set
+  anyone's.
 
 - **Sessions:** `Authorization: Bearer <token>`. The token is random; only
   its SHA-256 is stored, so sessions can be ended (sign-out, password change,
@@ -45,5 +65,5 @@ python -m pytest tests -q
 - **Isolation:** every query is scoped to the signed-in staff member's hospital.
 - **Errors** look like `{"error": "...", "error_code": "..."}`.
 
-Next: patients and doctors, appointments, pharmacy, billing, reports, and the
+Next: appointments, pharmacy, billing, reports, and the
 link to the Endod patient platform.
