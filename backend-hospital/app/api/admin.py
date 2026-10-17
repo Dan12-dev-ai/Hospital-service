@@ -2,35 +2,25 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, BeforeValidator, EmailStr, Field, StringConstraints
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from app import auth
 from app.auth import Staff, audit, current_staff, require_roles, staff_payload
-from app.db import session_scope
-from app.models import Department, DepartmentKind, Hospital, Role, StaffUser
+from app.db import session_scope, utcnow
+from app.models import (
+    Department, DepartmentKind, DoctorProfile, DutyStatus, Hospital, Patient, PatientStatus, Role, StaffUser,
+)
 from app.security import hash_password, temporary_password
+from app.validation import Name, OptionalPhone, OptionalText
 
 router = APIRouter(tags=["administration"])
 admin_only = require_roles(Role.ADMIN)
-
-
-def _blank_to_none(value: Any) -> Any:
-    """Forms send "" for an empty optional field; store it as no value."""
-    if isinstance(value, str):
-        return value.strip() or None
-    return value
-
-
-#: A required name: surrounding spaces dropped, then at least two characters.
-Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=2)]
-#: An optional text field where "" means none.
-OptionalText = Annotated[Optional[str], BeforeValidator(_blank_to_none)]
 
 
 # --- hospital -----------------------------------------------------------------
@@ -154,7 +144,7 @@ class StaffCreate(BaseModel):
     full_name_am: OptionalText = Field(default=None, max_length=120)
     role: str
     department_id: OptionalText = Field(default=None, max_length=32)
-    phone: OptionalText = Field(default=None, max_length=32)
+    phone: OptionalPhone = None
 
 
 class StaffUpdate(BaseModel):
@@ -162,7 +152,7 @@ class StaffUpdate(BaseModel):
     full_name_am: OptionalText = Field(default=None, max_length=120)
     role: Optional[str] = None
     department_id: OptionalText = Field(default=None, max_length=32)
-    phone: OptionalText = Field(default=None, max_length=32)
+    phone: OptionalPhone = None
     active: Optional[bool] = None
 
 
@@ -249,10 +239,21 @@ def update_staff(user_id: str, body: StaffUpdate, staff: Staff = Depends(admin_o
                 changes.get("role", Role.ADMIN) != Role.ADMIN or changes.get("active") is False)
             if losing_admin and _other_active_admins(session, staff.hospital_id, user.id) == 0:
                 raise HTTPException(status_code=400, detail="The hospital must keep at least one active admin.")
+            if user.role == Role.DOCTOR and changes.get("role", Role.DOCTOR) != Role.DOCTOR:
+                in_care = session.scalar(select(func.count()).where(
+                    Patient.attending_doctor_id == user.id, Patient.status != PatientStatus.DISCHARGED)) or 0
+                if in_care:
+                    raise HTTPException(status_code=400, detail=(
+                        f"This doctor attends {in_care} patient(s) still in care. Assign them another doctor first."))
             for field, value in changes.items():
                 setattr(user, field, value)
             if changes.get("active") is False:
                 auth.revoke_all_sessions(session, user.id)
+                # A doctor who has left is not on duty anywhere.
+                profile = session.get(DoctorProfile, user.id)
+                if profile is not None and profile.duty_status != DutyStatus.OFF_DUTY:
+                    profile.duty_status, profile.duty_location = DutyStatus.OFF_DUTY, None
+                    profile.duty_updated_at = utcnow()
             audit(session, staff.hospital_id, staff.id, "staff_updated", "staff", user.id,
                   {"fields": sorted(changes)})
             return staff_payload(user)
