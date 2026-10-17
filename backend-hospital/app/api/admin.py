@@ -12,8 +12,10 @@ from sqlalchemy.exc import IntegrityError
 
 from app import auth
 from app.auth import Staff, audit, current_staff, require_roles, staff_payload
-from app.db import session_scope
-from app.models import Department, DepartmentKind, Hospital, Role, StaffUser
+from app.db import session_scope, utcnow
+from app.models import (
+    Department, DepartmentKind, DoctorProfile, DutyStatus, Hospital, Patient, PatientStatus, Role, StaffUser,
+)
 from app.security import hash_password, temporary_password
 from app.validation import Name, OptionalPhone, OptionalText
 
@@ -237,10 +239,21 @@ def update_staff(user_id: str, body: StaffUpdate, staff: Staff = Depends(admin_o
                 changes.get("role", Role.ADMIN) != Role.ADMIN or changes.get("active") is False)
             if losing_admin and _other_active_admins(session, staff.hospital_id, user.id) == 0:
                 raise HTTPException(status_code=400, detail="The hospital must keep at least one active admin.")
+            if user.role == Role.DOCTOR and changes.get("role", Role.DOCTOR) != Role.DOCTOR:
+                in_care = session.scalar(select(func.count()).where(
+                    Patient.attending_doctor_id == user.id, Patient.status != PatientStatus.DISCHARGED)) or 0
+                if in_care:
+                    raise HTTPException(status_code=400, detail=(
+                        f"This doctor attends {in_care} patient(s) still in care. Assign them another doctor first."))
             for field, value in changes.items():
                 setattr(user, field, value)
             if changes.get("active") is False:
                 auth.revoke_all_sessions(session, user.id)
+                # A doctor who has left is not on duty anywhere.
+                profile = session.get(DoctorProfile, user.id)
+                if profile is not None and profile.duty_status != DutyStatus.OFF_DUTY:
+                    profile.duty_status, profile.duty_location = DutyStatus.OFF_DUTY, None
+                    profile.duty_updated_at = utcnow()
             audit(session, staff.hospital_id, staff.id, "staff_updated", "staff", user.id,
                   {"fields": sorted(changes)})
             return staff_payload(user)

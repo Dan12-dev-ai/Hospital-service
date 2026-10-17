@@ -47,11 +47,27 @@ def _optional_phone(value: Optional[str]) -> Optional[str]:
 OptionalPhone = Annotated[Optional[str], BeforeValidator(blank_to_none), AfterValidator(_optional_phone)]
 
 
+_PHONE_LIKE = re.compile(r"^[\d\s+()-]+$")
+
+
 def phone_digits(query: str) -> Optional[str]:
-    """The national digits of a phone number typed into a search box, if it looks like one."""
+    """The national digits of a phone number typed into a search box, if it looks like one.
+
+    "0911", "0911 234 567" and "+251 911..." all qualify; "SPH-000124" does not.
+    """
+    if not _PHONE_LIKE.match(query.strip()):
+        return None
     digits = _DIGITS.sub("", query)
+    if len(digits) < 4:
+        return None
     if digits.startswith("251"):
         digits = digits[3:]
     elif digits.startswith("0"):
         digits = digits[1:]
-    return digits if len(digits) >= 4 and len(digits) <= 9 else None
+    return digits[:9] or None
+
+
+def like_pattern(term: str) -> str:
+    """``%term%`` for a LIKE escaped with a backslash, so % and _ typed by a user match literally."""
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"

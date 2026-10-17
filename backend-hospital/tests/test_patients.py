@@ -73,7 +73,7 @@ class TestDirectory:
     def test_search_by_name_mrn_endod_id_and_phone(self, client, desk):
         almaz = register(client, desk, dedan_id="DE-482731")
         register(client, desk, full_name="Dawit Bekele", full_name_am="ዳዊት", phone="0922 000 111", sex="male")
-        for q in ("almaz", "አልማዝ", almaz["mrn"].lower(), "de-4827", "0911234567", "+251 911 234 567"):
+        for q in ("almaz", "አልማዝ", almaz["mrn"].lower(), "de-4827", "0911234567", "+251 911 234 567", "0911"):
             found = client.get("/patients", headers=desk, params={"q": q}).json()
             assert [p["mrn"] for p in found["items"]] == [almaz["mrn"]], q
         assert client.get("/patients", headers=desk).json()["total"] == 2
@@ -177,3 +177,76 @@ class TestCare:
         assert shown == [{"id": alert["id"], "kind": "allergy", "label": "Penicillin Allergy"}]
         assert client.delete(f"{url}/{alert['id']}", headers=nurse).status_code == 200
         assert client.get(f"/patients/{patient['id']}", headers=nurse).json()["alerts"] == []
+
+
+class TestReviewFixes:
+    def test_directory_rows_leave_out_contact_and_payer_details(self, client, desk):
+        register(client, desk)
+        row = client.get("/patients", headers=desk).json()["items"][0]
+        for hidden in ("phone", "address", "emergency_contact", "payer", "payer_number", "date_of_birth"):
+            assert hidden not in row
+        assert row["age_years"] == 48
+
+    def test_searches_are_audited(self, client, desk):
+        from sqlalchemy import select
+
+        from app.db import session_scope
+        from app.models import AuditEvent
+
+        patient = register(client, desk)
+        client.get("/patients", headers=desk, params={"q": patient["mrn"]})
+        with session_scope() as session:
+            event = session.scalar(select(AuditEvent).where(AuditEvent.action == "patients_searched"))
+        assert event is not None and patient["id"] in event.detail
+
+    def test_diagnosis_is_hidden_from_billing(self, client, desk, nurse, hospital):
+        patient = register(client, desk)
+        client.patch(f"/patients/{patient['id']}", headers=nurse, json={"diagnosis": "Malaria"})
+        make_staff(hospital, "cash@sph.example", role="billing")
+        cashier = sign_in(client, "cash@sph.example")
+        assert client.get(f"/patients/{patient['id']}", headers=cashier).json()["diagnosis"] is None
+        assert client.get(f"/patients/{patient['id']}", headers=nurse).json()["diagnosis"] == "Malaria"
+
+    def test_moving_wards_drops_the_old_bed(self, client, admin, desk, nurse):
+        ward_a, ward_b = make_ward(client, admin, "Ward A"), make_ward(client, admin, "Ward B")
+        patient = register(client, desk)
+        url = f"/patients/{patient['id']}"
+        client.patch(url, headers=nurse, json={"status": "admitted", "ward_id": ward_a, "bed": "3"})
+        moved = client.patch(url, headers=nurse, json={"ward_id": ward_b}).json()
+        assert moved["ward"]["name"] == "Ward B" and moved["bed"] is None
+
+    def test_birth_date_is_checked_against_the_hospital_date(self, client, desk, monkeypatch):
+        from datetime import date, timedelta
+
+        from app.api import patients
+
+        today = date(2026, 3, 1)
+        monkeypatch.setattr(patients, "_today", lambda hospital: today)
+        assert register(client, desk, age_years=None, date_of_birth=today.isoformat())["age_years"] == 0
+        tomorrow = (today + timedelta(days=1)).isoformat()
+        resp = client.post("/patients", headers=desk, json={**ALMAZ, "age_years": None, "date_of_birth": tomorrow,
+                                                          "full_name": "Not Born Yet"})
+        assert resp.status_code == 400
+
+    def test_empty_age_is_not_a_change(self, client, desk):
+        patient = register(client, desk)
+        assert client.patch(f"/patients/{patient['id']}", headers=desk, json={"age_years": None}).status_code == 400
+
+    def test_identity_changes_keep_the_old_value(self, client, desk):
+        import json
+
+        from sqlalchemy import select
+
+        from app.db import session_scope
+        from app.models import AuditEvent
+
+        patient = register(client, desk, dedan_id="DE-482731")
+        client.patch(f"/patients/{patient['id']}", headers=desk, json={"dedan_id": None, "address": "Bole"})
+        with session_scope() as session:
+            detail = json.loads(session.scalar(select(AuditEvent.detail).where(AuditEvent.action == "patient_updated")))
+        assert detail["identity"] == {"dedan_id": {"from": "DE-482731", "to": None}}
+
+    def test_wildcards_in_search_are_literal(self, client, desk):
+        register(client, desk)
+        assert client.get("/patients", headers=desk, params={"q": "%"}).json()["total"] == 0
+        assert client.get("/patients", headers=desk, params={"q": "_"}).json()["total"] == 0

@@ -6,7 +6,9 @@ the directory details (licence, specialty, rank, duty status).
 
 from __future__ import annotations
 
+from datetime import datetime, time, timezone
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -15,13 +17,16 @@ from sqlalchemy.exc import IntegrityError
 
 from app.auth import Staff, audit, current_staff, require_roles
 from app.db import ensure_aware, session_scope, utcnow
-from app.models import Department, DoctorProfile, DoctorRank, DutyStatus, Patient, PatientStatus, Role, StaffUser
-from app.validation import OptionalText
+from app.models import (
+    Department, DoctorProfile, DoctorRank, DutyStatus, Hospital, Patient, PatientStatus, Role, StaffUser,
+)
+from app.validation import OptionalText, like_pattern, phone_digits
 
 router = APIRouter(prefix="/doctors", tags=["doctors"])
 
-#: Patients count toward a doctor's load until they leave care.
-_ACTIVE_CARE = tuple(s for s in PatientStatus.ALL if s != PatientStatus.DISCHARGED)
+#: Patients in a bed or in the emergency bay count toward a doctor's load
+#: until they leave; outpatients count on the day they were seen.
+_ONGOING_CARE = (PatientStatus.EMERGENCY, PatientStatus.ADMITTED, PatientStatus.DISCHARGE)
 
 
 class ProfileUpdate(BaseModel):
@@ -38,12 +43,17 @@ class DutyUpdate(BaseModel):
     duty_location: OptionalText = Field(default=None, max_length=60)
 
 
-def _load(session, doctor_ids: List[str]) -> Dict[str, int]:
+def _load(session, hospital_id: str, doctor_ids: List[str]) -> Dict[str, int]:
     if not doctor_ids:
         return {}
+    hospital = session.get(Hospital, hospital_id)
+    zone = ZoneInfo(hospital.timezone)
+    midnight = datetime.combine(datetime.now(zone).date(), time.min, zone).astimezone(timezone.utc)
     return dict(session.execute(
         select(Patient.attending_doctor_id, func.count())
-        .where(Patient.attending_doctor_id.in_(doctor_ids), Patient.status.in_(_ACTIVE_CARE))
+        .where(Patient.attending_doctor_id.in_(doctor_ids), or_(
+            Patient.status.in_(_ONGOING_CARE),
+            (Patient.status == PatientStatus.OPD) & (Patient.status_changed_at >= midnight)))
         .group_by(Patient.attending_doctor_id)).all())
 
 
@@ -90,11 +100,13 @@ def _base_query(hospital_id: str):
 
 
 def _doctor_for_update(session, hospital_id: str, doctor_id: str) -> Tuple[StaffUser, DoctorProfile]:
+    # The staff row is locked, so two first edits cannot both create the profile.
     user = session.scalar(select(StaffUser).where(
-        StaffUser.id == doctor_id, StaffUser.hospital_id == hospital_id, StaffUser.role == Role.DOCTOR))
+        StaffUser.id == doctor_id, StaffUser.hospital_id == hospital_id, StaffUser.role == Role.DOCTOR)
+        .with_for_update())
     if user is None:
         raise HTTPException(status_code=404, detail="Doctor not found.")
-    profile = session.scalar(select(DoctorProfile).where(DoctorProfile.user_id == user.id).with_for_update())
+    profile = session.scalar(select(DoctorProfile).where(DoctorProfile.user_id == user.id))
     if profile is None:
         profile = DoctorProfile(user_id=user.id, hospital_id=hospital_id, duty_status=DutyStatus.OFF_DUTY)
         session.add(profile)
@@ -106,7 +118,7 @@ def _read_one(session, hospital_id: str, doctor_id: str) -> Dict[str, Any]:
     if row is None:
         raise HTTPException(status_code=404, detail="Doctor not found.")
     user, profile, department = row
-    return _payload(user, profile, department, _load(session, [user.id]).get(user.id, 0))
+    return _payload(user, profile, department, _load(session, hospital_id, [user.id]).get(user.id, 0))
 
 
 @router.get("")
@@ -134,12 +146,20 @@ def list_doctors(
     if rank:
         query = query.where(DoctorProfile.rank == rank)
     if q and q.strip():
-        like = f"%{q.strip().lower()}%"
-        query = query.where(or_(
-            func.lower(StaffUser.full_name).like(like), StaffUser.full_name_am.like(f"%{q.strip()}%"),
-            func.lower(DoctorProfile.license_number).like(like), func.lower(DoctorProfile.specialty).like(like),
-            func.lower(Department.name).like(like), StaffUser.phone.like(like), DoctorProfile.extension.like(like),
-        ))
+        term = q.strip()
+        like = like_pattern(term.lower())
+        matches = [
+            func.lower(StaffUser.full_name).like(like, escape="\\"),
+            StaffUser.full_name_am.like(like_pattern(term), escape="\\"),
+            func.lower(DoctorProfile.license_number).like(like, escape="\\"),
+            func.lower(DoctorProfile.specialty).like(like, escape="\\"),
+            func.lower(Department.name).like(like, escape="\\"),
+            DoctorProfile.extension.like(like, escape="\\"),
+        ]
+        digits = phone_digits(term)
+        if digits:
+            matches.append(StaffUser.phone.like(like_pattern(digits), escape="\\"))
+        query = query.where(or_(*matches))
     with session_scope() as session:
         rows = _rows(session, query.order_by(StaffUser.full_name))
         counts = {key: 0 for key in DutyStatus.ALL}
@@ -147,7 +167,7 @@ def list_doctors(
             counts[profile.duty_status if profile else DutyStatus.OFF_DUTY] += 1
         if status_filter:
             rows = [r for r in rows if (r[1].duty_status if r[1] else DutyStatus.OFF_DUTY) == status_filter]
-        load = _load(session, [user.id for user, _, _ in rows])
+        load = _load(session, staff.hospital_id, [user.id for user, _, _ in rows])
         return {
             "items": [_payload(user, profile, department, load.get(user.id, 0)) for user, profile, department in rows],
             "counts": {"all": sum(counts.values()), **counts},
@@ -176,7 +196,9 @@ def update_profile(doctor_id: str, body: ProfileUpdate,
             session.flush()
             return _read_one(session, staff.hospital_id, doctor_id)
     except IntegrityError as exc:
-        raise HTTPException(status_code=409, detail="Another doctor here has this licence number.") from exc
+        if "license" in str(exc.orig):
+            raise HTTPException(status_code=409, detail="Another doctor here has this licence number.") from exc
+        raise HTTPException(status_code=409, detail="The change conflicts with other data; reload and retry.") from exc
 
 
 @router.patch("/{doctor_id}/duty")

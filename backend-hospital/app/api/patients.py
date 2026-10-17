@@ -23,7 +23,7 @@ from app.models import (
     AlertKind, Department, DepartmentKind, Hospital, Patient, PatientAlert, PatientStatus, Payer, Role, Sex,
     StaffUser,
 )
-from app.validation import Name, OptionalPhone, OptionalText, phone_digits
+from app.validation import Name, OptionalPhone, OptionalText, like_pattern, phone_digits
 
 router = APIRouter(prefix="/patients", tags=["patients"])
 
@@ -39,6 +39,11 @@ DEMOGRAPHIC_FIELDS = {
     "emergency_contact_name", "emergency_contact_phone", "payer", "payer_number", "dedan_id",
 }
 CLINICAL_FIELDS = {"status", "department_id", "ward_id", "bed", "attending_doctor_id", "diagnosis"}
+#: Who sees the working diagnosis. Allergy and risk alerts are shown to everyone,
+#: since they are safety information (the pharmacy and the cashier need them too).
+DIAGNOSIS_READERS = (Role.ADMIN, Role.DOCTOR, Role.NURSE, Role.PHARMACIST, Role.RECORDS)
+#: Identity fields whose old and new values go into the audit log.
+TRACKED_FIELDS = ("full_name", "full_name_am", "sex", "date_of_birth", "phone", "dedan_id", "payer", "payer_number")
 
 _DEDAN_ID = re.compile(r"^[A-Z0-9][A-Z0-9-]{3,39}$")
 
@@ -65,13 +70,6 @@ class _Demographics(BaseModel):
         value = value.upper()
         if not _DEDAN_ID.match(value):
             raise ValueError("not a valid Endod ID, e.g. DE-482731")
-        return value
-
-    @field_validator("date_of_birth")
-    @classmethod
-    def _not_in_future(cls, value: Optional[date]) -> Optional[date]:
-        if value is not None and value > date.today():
-            raise ValueError("cannot be in the future")
         return value
 
     @model_validator(mode="after")
@@ -118,6 +116,13 @@ def _today(hospital: Hospital) -> date:
     return datetime.now(ZoneInfo(hospital.timezone)).date()
 
 
+def _check_birth(born: Optional[date], today: date) -> None:
+    # Against the hospital's date: a baby born just after midnight in Addis
+    # Ababa is still "yesterday" on a UTC server.
+    if born is not None and born > today:
+        raise HTTPException(status_code=400, detail="date_of_birth cannot be in the future.")
+
+
 def _age(born: Optional[date], today: date) -> Optional[int]:
     if born is None:
         return None
@@ -155,8 +160,12 @@ def _doctor(session, hospital_id: str, doctor_id: str) -> StaffUser:
     return doctor
 
 
-def _payloads(session, patients: List[Patient], today: date) -> List[Dict[str, Any]]:
-    """Patients as the API shows them, with names of linked rows loaded in bulk."""
+def _payloads(session, patients: List[Patient], today: date, role: str, full: bool = True) -> List[Dict[str, Any]]:
+    """Patients as the API shows them, with names of linked rows loaded in bulk.
+
+    ``full=False`` is the directory row: no contact, address or payer details.
+    Those come only with the full record, whose every opening is audited.
+    """
     department_ids = {p.department_id for p in patients if p.department_id} | {p.ward_id for p in patients if p.ward_id}
     doctor_ids = {p.attending_doctor_id for p in patients if p.attending_doctor_id}
     departments = {d.id: d for d in session.scalars(select(Department).where(Department.id.in_(department_ids)))} \
@@ -177,31 +186,35 @@ def _payloads(session, patients: List[Patient], today: date) -> List[Dict[str, A
     out = []
     for p in patients:
         doctor = doctors.get(p.attending_doctor_id) if p.attending_doctor_id else None
-        out.append({
+        row = {
             "id": p.id,
             "mrn": p.mrn,
             "dedan_id": p.dedan_id,
             "full_name": p.full_name,
             "full_name_am": p.full_name_am,
             "sex": p.sex,
-            "date_of_birth": p.date_of_birth.isoformat() if p.date_of_birth else None,
-            "dob_estimated": p.dob_estimated,
             "age_years": _age(p.date_of_birth, today),
-            "phone": p.phone,
-            "address": p.address,
-            "emergency_contact": {"name": p.emergency_contact_name, "phone": p.emergency_contact_phone},
-            "payer": p.payer,
-            "payer_number": p.payer_number,
             "status": p.status,
             "department": place(p.department_id),
             "ward": place(p.ward_id),
             "bed": p.bed,
             "attending_doctor": {"id": doctor.id, "full_name": doctor.full_name} if doctor else None,
-            "diagnosis": p.diagnosis,
+            "diagnosis": p.diagnosis if role in DIAGNOSIS_READERS else None,
             "alerts": alerts.get(p.id, []),
             "status_changed_at": ensure_aware(p.status_changed_at).isoformat() if p.status_changed_at else None,
-            "created_at": ensure_aware(p.created_at).isoformat(),
-        })
+        }
+        if full:
+            row.update({
+                "date_of_birth": p.date_of_birth.isoformat() if p.date_of_birth else None,
+                "dob_estimated": p.dob_estimated,
+                "phone": p.phone,
+                "address": p.address,
+                "emergency_contact": {"name": p.emergency_contact_name, "phone": p.emergency_contact_phone},
+                "payer": p.payer,
+                "payer_number": p.payer_number,
+                "created_at": ensure_aware(p.created_at).isoformat(),
+            })
+        out.append(row)
     return out
 
 
@@ -232,7 +245,11 @@ def list_patients(
     offset: int = Query(default=0, ge=0),
     staff: Staff = Depends(current_staff),
 ) -> Dict[str, Any]:
-    """Search by name (English or Amharic), MRN, Endod ID or phone number."""
+    """Search by name (English or Amharic), MRN, Endod ID or phone number.
+
+    Rows leave out contact and payer details; a search by name or number is
+    audited, since it can find a specific person.
+    """
     _one_of("status", status_filter, PatientStatus.ALL)
     query = select(Patient).where(Patient.hospital_id == staff.hospital_id)
     if status_filter:
@@ -245,19 +262,23 @@ def list_patients(
         query = query.where(Patient.attending_doctor_id == doctor_id)
     if q and q.strip():
         term = q.strip()
-        like = f"%{term.lower()}%"
-        matches = [func.lower(Patient.full_name).like(like), Patient.full_name_am.like(f"%{term}%"),
-                   Patient.mrn.like(f"%{term.upper()}%"), Patient.dedan_id.like(f"%{term.upper()}%")]
+        matches = [func.lower(Patient.full_name).like(like_pattern(term.lower()), escape="\\"),
+                   Patient.full_name_am.like(like_pattern(term), escape="\\"),
+                   Patient.mrn.like(like_pattern(term.upper()), escape="\\"),
+                   Patient.dedan_id.like(like_pattern(term.upper()), escape="\\")]
         digits = phone_digits(term)
         if digits:
-            matches.append(Patient.phone.like(f"%{digits}%"))
+            matches.append(Patient.phone.like(like_pattern(digits), escape="\\"))
         query = query.where(or_(*matches))
     with session_scope() as session:
         total = session.scalar(select(func.count()).select_from(query.subquery())) or 0
         patients = list(session.scalars(
             query.order_by(Patient.created_at.desc(), Patient.mrn.desc()).limit(limit).offset(offset)))
         hospital = session.get(Hospital, staff.hospital_id)
-        return {"items": _payloads(session, patients, _today(hospital)), "total": total,
+        if q and q.strip():
+            audit(session, staff.hospital_id, staff.id, "patients_searched", "patient", None,
+                  {"q": q.strip(), "results": [p.id for p in patients]})
+        return {"items": _payloads(session, patients, _today(hospital), staff.role, full=False), "total": total,
                 "limit": limit, "offset": offset}
 
 
@@ -287,6 +308,10 @@ def register_patient(body: PatientCreate, staff: Staff = Depends(require_roles(*
         with session_scope() as session:
             hospital = session.get(Hospital, staff.hospital_id)
             today = _today(hospital)
+            _check_birth(body.date_of_birth, today)
+            # Taking the number locks the hospital row first, so two desks
+            # registering the same person cannot both pass the duplicate check.
+            mrn = _next_mrn(session, staff.hospital_id)
             if body.phone and not body.confirm_duplicate:
                 existing = session.scalar(select(Patient).where(
                     Patient.hospital_id == staff.hospital_id, Patient.phone == body.phone,
@@ -299,7 +324,7 @@ def register_patient(body: PatientCreate, staff: Staff = Depends(require_roles(*
             if born is None and body.age_years is not None:
                 born, estimated = _estimated_birth(body.age_years, today), True
             patient = Patient(
-                hospital_id=staff.hospital_id, mrn=_next_mrn(session, staff.hospital_id), dedan_id=body.dedan_id,
+                hospital_id=staff.hospital_id, mrn=mrn, dedan_id=body.dedan_id,
                 full_name=body.full_name, full_name_am=body.full_name_am, sex=body.sex, date_of_birth=born,
                 dob_estimated=estimated, phone=body.phone, address=body.address,
                 emergency_contact_name=body.emergency_contact_name,
@@ -311,7 +336,7 @@ def register_patient(body: PatientCreate, staff: Staff = Depends(require_roles(*
             session.flush()
             audit(session, staff.hospital_id, staff.id, "patient_registered", "patient", patient.id,
                   {"mrn": patient.mrn})
-            return _payloads(session, [patient], today)[0]
+            return _payloads(session, [patient], today, staff.role)[0]
     except IntegrityError as exc:
         raise _conflict(exc) from exc
 
@@ -325,14 +350,14 @@ def read_patient(patient_id: str, staff: Staff = Depends(current_staff)) -> Dict
             raise HTTPException(status_code=404, detail="Patient not found.")
         # Opening a record is logged: who looked at which patient, and when.
         audit(session, staff.hospital_id, staff.id, "patient_viewed", "patient", patient.id)
-        return _payloads(session, [patient], _today(session.get(Hospital, staff.hospital_id)))[0]
+        return _payloads(session, [patient], _today(session.get(Hospital, staff.hospital_id)), staff.role)[0]
 
 
 @router.patch("/{patient_id}")
 def update_patient(patient_id: str, body: PatientUpdate, staff: Staff = Depends(current_staff)) -> Dict[str, Any]:
     changes = body.model_dump(exclude_unset=True)
-    # Required fields cannot be cleared.
-    for field in ("full_name", "sex", "payer", "status"):
+    # Required fields cannot be cleared, and an age of null means nothing.
+    for field in ("full_name", "sex", "payer", "status", "age_years"):
         if field in changes and changes[field] is None:
             changes.pop(field)
     if not changes:
@@ -352,11 +377,10 @@ def update_patient(patient_id: str, body: PatientUpdate, staff: Staff = Depends(
             today = _today(hospital)
 
             if "age_years" in changes:
-                age = changes.pop("age_years")
-                if age is not None:
-                    changes["date_of_birth"] = _estimated_birth(age, today)
-                    changes["dob_estimated"] = True
+                changes["date_of_birth"] = _estimated_birth(changes.pop("age_years"), today)
+                changes["dob_estimated"] = True
             elif "date_of_birth" in changes:
+                _check_birth(changes["date_of_birth"], today)
                 changes["dob_estimated"] = False
             if changes.get("department_id"):
                 _department(session, staff.hospital_id, changes["department_id"],
@@ -368,6 +392,9 @@ def update_patient(patient_id: str, body: PatientUpdate, staff: Staff = Depends(
             new_status = changes.get("status", old_status)
             if new_status in PatientStatus.IN_BED:
                 ward_id = changes.get("ward_id", old_ward)
+                if ward_id != old_ward and "bed" not in changes:
+                    # A bed number belongs to its ward; a move without one leaves it open.
+                    changes["bed"] = None
                 bed = changes.get("bed", old_bed)
                 if not ward_id:
                     raise HTTPException(status_code=400, detail="Choose a ward for an admitted patient.")
@@ -380,18 +407,27 @@ def update_patient(patient_id: str, body: PatientUpdate, staff: Staff = Depends(
                 changes["ward_id"] = None
                 changes["bed"] = None
 
+            before = {f: getattr(patient, f) for f in TRACKED_FIELDS if f in changes}
             for field, value in changes.items():
                 setattr(patient, field, value)
             if new_status != old_status:
                 patient.status_changed_at = utcnow()
                 audit(session, staff.hospital_id, staff.id, "patient_status_changed", "patient", patient.id,
                       {"from": old_status, "to": new_status})
+            # Identity changes keep the old value, so a wrong edit (or an unlinked
+            # Endod ID) can be traced and undone.
+            identity = {f: {"from": _plain(v), "to": _plain(getattr(patient, f))}
+                        for f, v in before.items() if v != getattr(patient, f)}
             audit(session, staff.hospital_id, staff.id, "patient_updated", "patient", patient.id,
-                  {"fields": sorted(body.model_dump(exclude_unset=True))})
+                  {"fields": sorted(changes), **({"identity": identity} if identity else {})})
             session.flush()
-            return _payloads(session, [patient], today)[0]
+            return _payloads(session, [patient], today, staff.role)[0]
     except IntegrityError as exc:
         raise _conflict(exc) from exc
+
+
+def _plain(value: Any) -> Any:
+    return value.isoformat() if isinstance(value, date) else value
 
 
 def _take_bed(session, hospital_id: str, patient: Patient, ward_id: str, bed: Optional[str]) -> None:

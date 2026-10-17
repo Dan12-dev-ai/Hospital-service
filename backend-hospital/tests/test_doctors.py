@@ -69,3 +69,47 @@ def test_other_hospitals_doctors_are_out_of_reach(client, admin):
     assert client.get(f"/doctors/{stranger}", headers=admin).status_code == 404
     assert client.patch(f"/doctors/{stranger}/duty", headers=admin, json={"duty_status": "on-duty"}).status_code == 404
     assert client.get("/doctors", headers=admin).json()["items"] == []
+
+
+def test_phone_search_takes_local_formats(client, admin, hospital):
+    doc = make_staff(hospital, "doc@sph.example", role="doctor")
+    client.patch(f"/staff/{doc}", headers=admin, json={"phone": "0911 000 111"})
+    for q in ("0911000111", "+251911000111", "0911 000"):
+        assert [d["id"] for d in client.get("/doctors", headers=admin, params={"q": q}).json()["items"]] == [doc], q
+
+
+def test_a_doctor_with_patients_keeps_the_doctor_role(client, admin, hospital):
+    doc = make_staff(hospital, "doc@sph.example", role="doctor")
+    patient = client.post("/patients", headers=admin, json={"full_name": "Almaz Tefera", "sex": "female"}).json()
+    client.patch(f"/patients/{patient['id']}", headers=admin, json={"attending_doctor_id": doc})
+    resp = client.patch(f"/staff/{doc}", headers=admin, json={"role": "pharmacist"})
+    assert resp.status_code == 400 and "Assign them another doctor" in resp.json()["error"]
+    client.patch(f"/patients/{patient['id']}", headers=admin, json={"status": "discharged"})
+    assert client.patch(f"/staff/{doc}", headers=admin, json={"role": "pharmacist"}).status_code == 200
+
+
+def test_deactivating_a_doctor_takes_them_off_duty(client, admin, hospital):
+    doc = make_staff(hospital, "doc@sph.example", role="doctor")
+    client.patch(f"/doctors/{doc}/duty", headers=admin, json={"duty_status": "on-duty", "duty_location": "ER"})
+    client.patch(f"/staff/{doc}", headers=admin, json={"active": False})
+    shown = client.get(f"/doctors/{doc}", headers=admin).json()
+    assert shown["duty_status"] == "off-duty" and shown["duty_location"] is None
+
+
+def test_outpatients_count_toward_load_only_on_the_day(client, admin, hospital):
+    from datetime import timedelta
+
+    from sqlalchemy import update
+
+    from app.db import session_scope, utcnow
+    from app.models import Patient
+
+    doc = make_staff(hospital, "doc@sph.example", role="doctor")
+    for name in ("Almaz Tefera", "Dawit Bekele"):
+        p = client.post("/patients", headers=admin, json={"full_name": name, "sex": "female"}).json()
+        client.patch(f"/patients/{p['id']}", headers=admin, json={"attending_doctor_id": doc})
+    assert client.get(f"/doctors/{doc}", headers=admin).json()["load"]["patients"] == 2
+    with session_scope() as session:
+        session.execute(update(Patient).where(Patient.full_name == "Dawit Bekele")
+                        .values(status_changed_at=utcnow() - timedelta(days=2)))
+    assert client.get(f"/doctors/{doc}", headers=admin).json()["load"]["patients"] == 1
