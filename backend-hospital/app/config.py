@@ -1,0 +1,46 @@
+"""Settings, read from the environment (prefix ``HOSPITAL_``) or ``.env``."""
+
+from __future__ import annotations
+
+from typing import Annotated, List, Optional
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="HOSPITAL_", env_file=".env", extra="ignore")
+
+    ENVIRONMENT: str = "development"
+    #: SQLAlchemy URL of this service's own database, e.g.
+    #: ``postgresql+psycopg://hospital:pw@postgres:5432/hospital``.
+    DATABASE_URL: Optional[str] = None
+    #: How long a staff sign-in lasts, in seconds (default 12 hours: one shift).
+    SESSION_TTL_SECONDS: int = 43200
+    #: Failed sign-ins before an account is locked, and for how long.
+    LOGIN_LOCKOUT_ATTEMPTS: int = 8
+    LOGIN_LOCKOUT_MINUTES: int = 15
+    #: Origins of the staff portal (comma-separated).
+    CORS_ORIGINS: Annotated[List[str], NoDecode] = Field(default=["http://localhost:3000"])
+    DEFAULT_TIMEZONE: str = "Africa/Addis_Ababa"
+
+    @field_validator("ENVIRONMENT", mode="before")
+    @classmethod
+    def _lower(cls, value):
+        return value.strip().lower() if isinstance(value, str) else value
+
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
+    def _split(cls, value):
+        if isinstance(value, str):
+            return [part.strip() for part in value.split(",") if part.strip()]
+        return value
+
+    @property
+    def is_production(self) -> bool:
+        return self.ENVIRONMENT == "production"
+
+
+def get_settings() -> Settings:
+    """Fresh each call: cheap, and tests can change the environment."""
+    return Settings()

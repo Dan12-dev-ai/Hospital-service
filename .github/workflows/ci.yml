@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    name: Hospital backend tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend-hospital
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: hospital
+          POSTGRES_PASSWORD: ci-only
+          POSTGRES_DB: hospital
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U hospital" --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend-hospital/requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - name: Tests (SQLite)
+        run: python -m pytest tests -q
+      - name: Tests (PostgreSQL)
+        env:
+          HOSPITAL_TEST_DATABASE_URL: postgresql+psycopg://hospital:ci-only@localhost:5432/hospital
+        run: python -m pytest tests -q
+      - name: Migrations apply on PostgreSQL
+        env:
+          HOSPITAL_DATABASE_URL: postgresql+psycopg://hospital:ci-only@localhost:5432/hospital
+        run: |
+          python -c "from app import models; from app.db import Base, get_engine; Base.metadata.drop_all(get_engine())"
+          alembic upgrade head
+          alembic downgrade base
+          alembic upgrade head
+          python -m app.cli bootstrap --code CI --name "CI Hospital" --admin-email admin@ci.example --admin-name Admin
+
+  backend-image:
+    name: Hospital backend image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t endod-hospital backend-hospital
