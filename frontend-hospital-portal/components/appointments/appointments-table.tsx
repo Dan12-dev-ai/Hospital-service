@@ -22,8 +22,8 @@ export function AppointmentsTable({
   total: number;
 }) {
   return (
-    <div className="flex flex-col overflow-hidden rounded-2xl shadow-[0_4px_20px_-2px_rgba(0,0,0,0.04)] mb-space-lg">
-      <div className="overflow-x-auto">
+    <div className="mb-space-lg flex flex-col overflow-hidden rounded-2xl bg-surface-container-lowest shadow-soft">
+      <div className="custom-scrollbar overflow-x-auto">
         <table className="w-full text-left border-collapse">
           <thead>
             <tr className="bg-surface-container-low uppercase tracking-wider text-outline font-label-sm text-label-sm">
@@ -39,7 +39,7 @@ export function AppointmentsTable({
               ))}
             </tr>
           </thead>
-          <tbody className="font-body-md text-body-md divide-y-0">
+          <tbody className="divide-y divide-surface-variant font-body-md text-body-md">
             {rows.length > 0 ? (
               rows.map((row) => (
                 <AppointmentRow key={row.id} row={row} />
@@ -59,7 +59,7 @@ export function AppointmentsTable({
       </div>
 
       {/* Pagination */}
-      <div className="flex flex-col sm:flex-row items-center justify-between px-space-lg py-space-md gap-space-sm bg-surface-container-low/40">
+      <div className="flex flex-col sm:flex-row items-center justify-between gap-space-sm bg-surface-container-low px-space-lg py-space-md">
         <div className="flex items-center gap-2 text-outline font-body-sm text-body-sm">
           <span>
             Showing <strong className="text-on-surface font-semibold">1-6</strong>

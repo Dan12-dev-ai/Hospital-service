@@ -1,8 +1,6 @@
 import type { Metadata } from "next";
-import {
-  PlaceholderPage,
-  PortalShell,
-} from "@/components/dashboard/portal-shell";
+import { PortalShell } from "@/components/dashboard/portal-shell";
+import { PatientsDirectory } from "@/components/patients/patients-directory";
 
 export const metadata: Metadata = {
   title: "Dedan Health OS • Patients",
@@ -10,12 +8,8 @@ export const metadata: Metadata = {
 
 export default function PatientsPage() {
   return (
-    <PortalShell>
-      <PlaceholderPage
-        title="Patients"
-        description="Patient registry, records and digital health IDs."
-        icon="construction"
-      />
+    <PortalShell showTopBar={false}>
+      <PatientsDirectory />
     </PortalShell>
   );
 }

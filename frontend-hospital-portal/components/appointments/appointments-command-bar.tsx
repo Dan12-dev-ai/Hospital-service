@@ -36,7 +36,7 @@ export function AppointmentsCommandBar() {
         <button
           type="button"
           onClick={() => showToast("Filter panel focused")}
-          className="flex items-center gap-1.5 rounded-xl px-space-md py-2.5 bg-surface-container-lowest text-on-surface font-label-md text-label-md shadow-[0_4px_20px_-2px_rgba(0,0,0,0.04)] hover:bg-surface-container-high transition-all"
+          className="flex items-center gap-1.5 rounded-xl px-space-md py-2.5 bg-surface-container-lowest text-on-surface font-label-md text-label-md shadow-soft hover:bg-surface-container-high transition-all"
         >
           <Icon name="tune" className="text-[18px] text-outline" />
           <span>Filter View</span>
@@ -91,7 +91,7 @@ export function AppointmentsKpis() {
       {KpiQuads.map((kpi) => (
         <div
           key={kpi.label}
-          className="flex flex-col justify-between h-32 rounded-2xl bg-surface-container-lowest p-space-lg shadow-[0_4px_20px_-2px_rgba(0,0,0,0.04)]"
+          className="flex flex-col justify-between h-32 rounded-2xl bg-surface-container-lowest p-space-lg shadow-soft"
         >
           <div className="flex items-center justify-between">
             <span className="font-label-md text-label-md text-outline">

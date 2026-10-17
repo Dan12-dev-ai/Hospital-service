@@ -48,7 +48,7 @@ export const AppointmentsToolbar = forwardRef<HTMLInputElement, AppointmentsTool
     ref
   ) {
     return (
-      <div className="flex flex-col gap-space-md rounded-2xl bg-surface-container-lowest p-space-md shadow-[0_4px_20px_-2px_rgba(0,0,0,0.04)] mb-space-lg">
+      <div className="flex flex-col gap-space-md rounded-2xl bg-surface-container-lowest p-space-md shadow-soft mb-space-lg">
         <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-space-md">
           {/* Universal Quick Search */}
           <div className="relative flex-1 min-w-0">

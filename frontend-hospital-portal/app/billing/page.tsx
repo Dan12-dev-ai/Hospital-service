@@ -1,8 +1,6 @@
 import type { Metadata } from "next";
-import {
-  PlaceholderPage,
-  PortalShell,
-} from "@/components/dashboard/portal-shell";
+import { PortalShell } from "@/components/dashboard/portal-shell";
+import { BillingDirectory } from "@/components/billing/billing-directory";
 
 export const metadata: Metadata = {
   title: "Dedan Health OS • Billing",
@@ -11,11 +9,7 @@ export const metadata: Metadata = {
 export default function BillingPage() {
   return (
     <PortalShell>
-      <PlaceholderPage
-        title="Billing"
-        description="Invoices, insurance claims and payment tracking."
-        icon="construction"
-      />
+      <BillingDirectory />
     </PortalShell>
   );
 }
