@@ -23,7 +23,7 @@ export function AppointmentRow({ row }: { row: AppointmentRow }) {
             />
           ) : (
             <div
-              className={`flex h-10 w-10 items-center justify-center rounded-full shrink-0 shadow-xs shrink-0 font-label-md text-label-md font-bold ${row.initialsClass}`}
+              className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full font-label-md text-label-md font-bold shadow-xs ${row.initialsClass}`}
             >
               {row.initials}
             </div>

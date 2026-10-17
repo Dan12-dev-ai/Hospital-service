@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { PortalShell } from "@/components/dashboard/portal-shell";
 import { AppointmentsDirectory } from "@/components/appointments/appointments-directory";
 
 export const metadata: Metadata = {
@@ -6,6 +7,9 @@ export const metadata: Metadata = {
 };
 
 export default function AppointmentsPage() {
-  return <AppointmentsDirectory />;
+  return (
+    <PortalShell showTopBar={false}>
+      <AppointmentsDirectory />
+    </PortalShell>
+  );
 }
-
