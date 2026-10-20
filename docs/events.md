@@ -80,5 +80,6 @@ service fee is not included).
 ```
 
 ### `appointment.cancelled`
-`{"appointment_id", "hospital_id", "by": "patient"}`: the patient cancelled
-(and was refunded).
+`{"appointment_id", "hospital_id", "by": "patient" | "endod"}`: the patient
+cancelled (and was refunded), or Endod refunded a booking the hospital had not
+confirmed or declined two hours after its time.

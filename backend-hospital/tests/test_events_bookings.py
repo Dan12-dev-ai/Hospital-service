@@ -274,6 +274,14 @@ class TestBookingsFromThePlatform:
         booking = client.get("/bookings", headers=admin).json()["items"][0]
         assert booking["status"] == "cancelled" and booking["reason"] == "Cancelled by the patient."
 
+    def test_an_unanswered_booking_cancelled_by_endod_says_so(self, client, admin, bus, hospital_ready):
+        payload = request_payload(hospital_ready, mode="video")
+        send(bus, "appointment.requested", payload)
+        send(bus, "appointment.cancelled", {"appointment_id": payload["appointment_id"], "by": "endod"})
+        run_worker(bus)
+        booking = client.get("/bookings", headers=admin).json()["items"][0]
+        assert booking["status"] == "cancelled" and booking["reason"].startswith("Cancelled by Endod")
+
     def test_bookings_belong_to_their_hospital(self, client, admin, bus, hospital_ready):
         send(bus, "appointment.requested", request_payload(hospital_ready))
         run_worker(bus)
