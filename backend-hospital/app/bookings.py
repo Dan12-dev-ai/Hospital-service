@@ -59,6 +59,12 @@ class _Ref(BaseModel):
     appointment_id: str = Field(min_length=1, max_length=64)
 
 
+class _Cancelled(_Ref):
+    #: "patient" (in the app), or "endod" (the booking was never answered in
+    #: time and the patient was refunded).
+    by: str = Field(default="patient", max_length=20)
+
+
 def _parse(model, payload: Dict[str, Any]):
     try:
         return model.model_validate(payload)
@@ -68,7 +74,16 @@ def _parse(model, payload: Dict[str, Any]):
 
 def on_requested(session: Session, payload: Dict[str, Any]) -> None:
     """A patient booked (and paid for) a visit here."""
-    request = _parse(Requested, payload)
+    try:
+        request = _parse(Requested, payload)
+    except PermanentEventError:
+        ids = (payload.get("appointment_id"), payload.get("hospital_id"))
+        if all(isinstance(v, str) and 0 < len(v) <= 64 for v in ids):
+            # The patient has paid: answer, so the platform refunds them,
+            # rather than drop the request where no one sees it.
+            _reject_unknown(session, payload, "The booking details could not be accepted.")
+            return
+        raise
     if session.scalar(select(Booking.id).where(Booking.external_id == request.appointment_id)) is not None:
         return  # already known (a redelivery under a new event id)
     hospital = session.get(Hospital, request.hospital_id)
@@ -98,7 +113,7 @@ def on_requested(session: Session, payload: Dict[str, Any]) -> None:
 
 def on_patient_cancelled(session: Session, payload: Dict[str, Any]) -> None:
     """The patient cancelled in the Endod app (and has been refunded there)."""
-    ref = _parse(_Ref, payload)
+    ref = _parse(_Cancelled, payload)
     booking = session.scalar(select(Booking).where(Booking.external_id == ref.appointment_id).with_for_update())
     if booking is None:
         # The booking has not arrived yet (its event is being retried): try
@@ -107,7 +122,8 @@ def on_patient_cancelled(session: Session, payload: Dict[str, Any]) -> None:
     if booking.status not in BookingStatus.OPEN:
         return
     booking.status = BookingStatus.CANCELLED
-    booking.reason = "Cancelled by the patient."
+    booking.reason = ("Cancelled by Endod: not answered in time; the patient was refunded."
+                      if ref.by == "endod" else "Cancelled by the patient.")
     booking.decided_at = utcnow()
 
 

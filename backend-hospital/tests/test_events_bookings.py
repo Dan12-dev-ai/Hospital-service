@@ -274,6 +274,14 @@ class TestBookingsFromThePlatform:
         booking = client.get("/bookings", headers=admin).json()["items"][0]
         assert booking["status"] == "cancelled" and booking["reason"] == "Cancelled by the patient."
 
+    def test_an_unanswered_booking_cancelled_by_endod_says_so(self, client, admin, bus, hospital_ready):
+        payload = request_payload(hospital_ready, mode="video")
+        send(bus, "appointment.requested", payload)
+        send(bus, "appointment.cancelled", {"appointment_id": payload["appointment_id"], "by": "endod"})
+        run_worker(bus)
+        booking = client.get("/bookings", headers=admin).json()["items"][0]
+        assert booking["status"] == "cancelled" and booking["reason"].startswith("Cancelled by Endod")
+
     def test_bookings_belong_to_their_hospital(self, client, admin, bus, hospital_ready):
         send(bus, "appointment.requested", request_payload(hospital_ready))
         run_worker(bus)
@@ -412,11 +420,24 @@ class TestReviewFixes:
         {"duration_minutes": 100000},
         {"patient": {"dedan_id": "DE1", "name": "A", "phone": "x" * 50}},
     ])
-    def test_malformed_requests_are_dead_lettered_at_once(self, client, admin, bus, hospital_ready, change):
-        send(bus, "appointment.requested", {**request_payload(hospital_ready), **change})
-        run_worker(bus)
-        assert len(bus.xrange("endod:dead-letter")) == 1
+    def test_malformed_paid_requests_are_declined_so_the_patient_is_refunded(self, client, admin, bus,
+                                                                              hospital_ready, change):
+        payload = {**request_payload(hospital_ready), **change}
+        send(bus, "appointment.requested", payload)
+        run_worker(bus, rounds=2)  # handled, then the reply published
+        assert bus.xrange("endod:dead-letter") == []
         assert client.get("/bookings", headers=admin).json()["items"] == []
+        replies = [(t, p) for t, p in stream(bus) if t == "appointment.rejected"]
+        assert len(replies) == 1
+        assert replies[0][1]["appointment_id"] == payload["appointment_id"]
+        assert replies[0][1]["hospital_id"] == hospital_ready
+
+    @pytest.mark.parametrize("ids", [{"appointment_id": None}, {"hospital_id": 5}, {"appointment_id": "x" * 80}])
+    def test_requests_that_cannot_be_answered_are_dead_lettered(self, client, admin, bus, hospital_ready, ids):
+        send(bus, "appointment.requested", {**request_payload(hospital_ready), "price": -5, **ids})
+        run_worker(bus, rounds=2)
+        assert len(bus.xrange("endod:dead-letter")) == 1
+        assert [t for t, _ in stream(bus) if t == "appointment.rejected"] == []
 
     def test_an_offset_time_is_stored_as_the_same_instant(self, client, admin, bus, hospital_ready):
         when = (datetime.now(timezone(timedelta(hours=3))) + timedelta(days=1)).replace(microsecond=0)

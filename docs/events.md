@@ -50,7 +50,7 @@ announcement (listed or unlisted), so a late, older one is ignored.
 incomplete). Existing appointments are unaffected.
 
 ### `appointment.confirmed`
-In-person visits are confirmed on arrival; video visits when a doctor approves
+In-person visits are confirmed on receipt; video visits when a doctor approves
 (then `meeting_room` and `doctor_name` are set).
 `{"appointment_id", "hospital_id", "status": "confirmed", "meeting_room", "doctor_name", "reason": null}`
 
@@ -80,5 +80,6 @@ service fee is not included).
 ```
 
 ### `appointment.cancelled`
-`{"appointment_id", "hospital_id", "by": "patient"}`: the patient cancelled
-(and was refunded).
+`{"appointment_id", "hospital_id", "by": "patient" | "endod"}`: the patient
+cancelled (and was refunded), or Endod refunded a booking the hospital had not
+confirmed or declined two hours after its time.
