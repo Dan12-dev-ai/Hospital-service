@@ -103,3 +103,14 @@ test("change password from the top bar", async ({ page }) => {
   });
   expect(again.status()).toBe(200);
 });
+
+for (const next of ["/%09/evil.example", "//evil.example", "/%5Cevil.example", "https://evil.example"]) {
+  test(`after sign-in, never leaves the portal (next=${next})`, async ({ page }) => {
+    await page.goto(`/login?next=${next}`);
+    await page.getByLabel("Email").fill(hospital.accounts.admin.email);
+    await page.getByLabel("Password").fill(hospital.password);
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await expect(page.getByTestId("signed-in-name")).toBeVisible();
+    expect(new URL(page.url()).host).toBe(new URL(test.info().project.use.baseURL ?? "http://localhost").host);
+  });
+}

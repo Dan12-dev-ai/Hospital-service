@@ -8,10 +8,20 @@ import type { Staff } from "@/lib/api-types";
 import { FormError, inputClass, labelClass, primaryButtonClass } from "@/components/common/states";
 
 /** Only paths inside the portal (never another site) are followed after sign-in. */
-export function safeNext(value: string | null): string {
-  if (!value || !value.startsWith("/") || value.startsWith("//") || value.startsWith("/\\")) return "/";
-  if (value.startsWith("/login") || value.startsWith("/signup")) return "/";
-  return value;
+export function safeNext(value: string | null, origin = "https://portal.invalid"): string {
+  // Browsers drop tabs and newlines inside URLs ("/<TAB>/evil.com" becomes
+  // "//evil.com"), so any control character or backslash is refused, and
+  // the result must stay on this site once resolved.
+  if (!value || !value.startsWith("/") || /[\u0000-\u001f\u007f\\]/.test(value)) return "/";
+  let url: URL;
+  try {
+    url = new URL(value, origin);
+  } catch {
+    return "/";
+  }
+  if (url.origin !== origin) return "/";
+  if (url.pathname.startsWith("/login") || url.pathname.startsWith("/signup")) return "/";
+  return `${url.pathname}${url.search}${url.hash}`;
 }
 
 export function LoginForm() {
