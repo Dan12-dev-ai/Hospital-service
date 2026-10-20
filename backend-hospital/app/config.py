@@ -24,12 +24,35 @@ class Settings(BaseSettings):
     CORS_ORIGINS: Annotated[List[str], NoDecode] = Field(default=["http://localhost:3000"])
     DEFAULT_TIMEZONE: str = "Africa/Addis_Ababa"
 
+    # --- Events to and from the Endod patient platform (Redis Streams) ---
+    #: A plain Redis URL (development, tests), e.g. ``redis://localhost:6379/0``.
+    REDIS_URL: Optional[str] = None
+    #: Sentinels as ``host:port`` pairs (comma-separated). When set, the
+    #: current master is found through them instead of REDIS_URL.
+    REDIS_SENTINELS: Annotated[List[str], NoDecode] = Field(default=[])
+    REDIS_SENTINEL_MASTER: str = "endod"
+    REDIS_PASSWORD: Optional[str] = None
+    REDIS_DB: int = 0
+
+    # --- Video visits (self-hosted Jitsi with token sign-in) ---
+    JITSI_DOMAIN: str = "meet.endod-health.com"
+    JITSI_APP_ID: str = "endod"
+    JITSI_APP_SECRET: Optional[str] = None
+    #: The ``sub`` claim the Jitsi server expects (its XMPP domain).
+    JITSI_JWT_SUB: str = "meet.jitsi"
+
+    # --- Hospital sign-up ---
+    #: Hospitals may sign themselves up through the portal; Endod approves them.
+    SIGNUP_ENABLED: bool = True
+    #: Key for Endod's platform-admin endpoints (approve / suspend hospitals).
+    PLATFORM_ADMIN_KEY: Optional[str] = None
+
     @field_validator("ENVIRONMENT", mode="before")
     @classmethod
     def _lower(cls, value):
         return value.strip().lower() if isinstance(value, str) else value
 
-    @field_validator("CORS_ORIGINS", mode="before")
+    @field_validator("CORS_ORIGINS", "REDIS_SENTINELS", mode="before")
     @classmethod
     def _split(cls, value):
         if isinstance(value, str):

@@ -50,6 +50,25 @@ OptionalPhone = Annotated[Optional[str], BeforeValidator(blank_to_none), AfterVa
 _PHONE_LIKE = re.compile(r"^[\d\s+()-]+$")
 
 
+_CONTACT = re.compile(r"^\+?[\d\s()-]{3,20}$")
+
+
+def _contact_number(value: Optional[str]) -> Optional[str]:
+    """A hospital's phone or hotline: a mobile (stored +251...), a landline or a short code like 907."""
+    if value is None:
+        return None
+    if not _CONTACT.match(value):
+        raise ValueError("enter a phone number, e.g. 011 551 7611, 0911 234 567 or 907")
+    try:
+        return normalize_phone(value)
+    except ValueError:
+        return re.sub(r"\s+", " ", value).strip()
+
+
+#: A hospital phone number or hotline (mobile, landline or short code).
+ContactNumber = Annotated[Optional[str], BeforeValidator(blank_to_none), AfterValidator(_contact_number)]
+
+
 def phone_digits(query: str) -> Optional[str]:
     """The national digits of a phone number typed into a search box, if it looks like one.
 

@@ -9,7 +9,9 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
+from sqlalchemy import (
+    Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base, new_id, utcnow
@@ -95,6 +97,57 @@ class DoctorRank:
     ALL = (CHIEF, SENIOR_CONSULTANT, ATTENDING, RESIDENT)
 
 
+class HospitalStatus:
+    """Where a hospital is in Endod's onboarding."""
+
+    #: Signed up through the portal; not yet shown to patients.
+    PENDING = "pending"
+    #: Checked by Endod: listed in the patient app and bookable.
+    APPROVED = "approved"
+    #: Taken off the patient app (by Endod).
+    SUSPENDED = "suspended"
+    ALL = (PENDING, APPROVED, SUSPENDED)
+
+
+class HospitalKind:
+    PUBLIC = "public"
+    PRIVATE = "private"
+    ALL = (PUBLIC, PRIVATE)
+
+
+class Service:
+    """What a hospital offers, in the patient app's terms (shared taxonomy)."""
+
+    GENERAL = "general_medicine"
+    EMERGENCY = "emergency"
+    MATERNAL = "maternal_health"
+    PEDIATRICS = "pediatrics"
+    CARDIOLOGY = "cardiology"
+    RESPIRATORY = "respiratory"
+    ALL = (GENERAL, EMERGENCY, MATERNAL, PEDIATRICS, CARDIOLOGY, RESPIRATORY)
+
+
+class VisitMode:
+    IN_PERSON = "in_person"
+    VIDEO = "video"
+    ALL = (IN_PERSON, VIDEO)
+
+
+class BookingStatus:
+    """An appointment booked by a patient through Endod."""
+
+    #: A video visit waiting for a doctor to approve it.
+    AWAITING_DOCTOR = "awaiting_doctor"
+    #: In-person visits are confirmed on arrival; video ones once approved.
+    CONFIRMED = "confirmed"
+    REJECTED = "rejected"
+    #: Cancelled by the patient (through Endod) or by the hospital.
+    CANCELLED = "cancelled"
+    COMPLETED = "completed"
+    ALL = (AWAITING_DOCTOR, CONFIRMED, REJECTED, CANCELLED, COMPLETED)
+    OPEN = (AWAITING_DOCTOR, CONFIRMED)
+
+
 class Hospital(Base):
     __tablename__ = "hospitals"
 
@@ -109,6 +162,29 @@ class Hospital(Base):
     #: The last hospital number issued; the next patient gets this plus one.
     mrn_counter: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    # --- What patients see in the Endod app (listed once approved) ---
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default=HospitalStatus.APPROVED,
+                                        server_default=text("'approved'"))
+    kind: Mapped[str] = mapped_column(String(8), nullable=False, default=HospitalKind.PUBLIC,
+                                      server_default=text("'public'"))
+    city: Mapped[Optional[str]] = mapped_column(String(100))
+    address: Mapped[Optional[str]] = mapped_column(String(200))
+    #: +251XXXXXXXXX, or a short landline / hotline.
+    phone: Mapped[Optional[str]] = mapped_column(String(20))
+    ambulance_phone: Mapped[Optional[str]] = mapped_column(String(20))
+    #: Has a 24-hour emergency department.
+    emergency: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    latitude: Mapped[Optional[float]] = mapped_column(Float)
+    longitude: Mapped[Optional[float]] = mapped_column(Float)
+    #: Comma-separated Service values.
+    services: Mapped[Optional[str]] = mapped_column(String(200))
+    open_hours: Mapped[Optional[str]] = mapped_column(String(80))
+    video_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    #: Visit prices in santim (1/100 birr); set by the hospital.
+    price_in_person: Mapped[Optional[int]] = mapped_column(Integer)
+    price_video: Mapped[Optional[int]] = mapped_column(Integer)
+    approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
 class Department(Base):
@@ -259,3 +335,68 @@ class PatientAlert(Base):
     label: Mapped[str] = mapped_column(String(120), nullable=False)
     created_by: Mapped[Optional[str]] = mapped_column(ForeignKey("staff_users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class Booking(Base):
+    """An appointment a patient booked at this hospital through the Endod app.
+
+    Created from the platform's ``appointment.requested`` event; every change
+    here is sent back as an event. The patient has already paid Endod (the
+    price in ``price``); Endod pays the hospital.
+    """
+
+    __tablename__ = "bookings"
+    __table_args__ = (Index("ix_bookings_hospital_time", "hospital_id", "scheduled_at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False)
+    #: The appointment's id in the Endod platform.
+    external_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    patient_dedan_id: Mapped[str] = mapped_column(String(16), nullable=False)
+    patient_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    patient_phone: Mapped[Optional[str]] = mapped_column(String(20))
+    visit_mode: Mapped[str] = mapped_column(String(10), nullable=False)
+    service: Mapped[Optional[str]] = mapped_column(String(40))
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    duration_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    #: Santim the patient paid for the visit (Endod's fee is not included).
+    price: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: The doctor who approved (video) or was assigned.
+    doctor_id: Mapped[Optional[str]] = mapped_column(ForeignKey("staff_users.id", ondelete="SET NULL"))
+    #: Jitsi room of a video visit, set when a doctor approves it.
+    meeting_room: Mapped[Optional[str]] = mapped_column(String(64), unique=True)
+    reason: Mapped[Optional[str]] = mapped_column(String(300))
+    decided_by: Mapped[Optional[str]] = mapped_column(ForeignKey("staff_users.id", ondelete="SET NULL"))
+    decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow,
+                                                 onupdate=utcnow)
+
+
+class OutboxEvent(Base):
+    """An event waiting to be sent to the Endod platform.
+
+    Written in the same transaction as the change it describes, so a change is
+    never saved without its event or announced without being saved.
+    """
+
+    __tablename__ = "outbox_events"
+    __table_args__ = (Index("ix_outbox_unpublished", "published_at", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    type: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class ProcessedEvent(Base):
+    """An event from the platform already handled (so a redelivery is skipped)."""
+
+    __tablename__ = "processed_events"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    type: Mapped[str] = mapped_column(String(64), nullable=False)
+    processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)

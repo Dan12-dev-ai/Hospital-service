@@ -56,7 +56,30 @@ def main(argv: list[str] | None = None) -> int:
     boot.add_argument("--name-am")
     boot.add_argument("--admin-email", required=True)
     boot.add_argument("--admin-name", required=True)
+    for name, help_text in (("approve", "list a hospital in the Endod app"), ("suspend", "take a hospital off the Endod app")):
+        cmd = commands.add_parser(name, help=help_text)
+        cmd.add_argument("--code", required=True, help="the hospital's code, e.g. SPH")
+    commands.add_parser("hospitals", help="list hospitals and their status")
     args = parser.parse_args(argv)
+
+    if args.command in ("approve", "suspend"):
+        from app.api.onboarding import set_status
+        from app.models import HospitalStatus
+
+        with session_scope() as session:
+            hospital = session.scalar(select(Hospital).where(Hospital.code == args.code.strip().upper()))
+            if hospital is None:
+                raise SystemExit(f"No hospital with code {args.code}.")
+            hospital_id = hospital.id
+        result = set_status(hospital_id, HospitalStatus.APPROVED if args.command == "approve" else HospitalStatus.SUSPENDED)
+        print(f"{result['code']}: {result['status']}" + ("" if result["listed"] else
+              f" (not listed yet; missing {', '.join(result['missing_for_listing'])})"))
+        return 0
+    if args.command == "hospitals":
+        with session_scope() as session:
+            for h in session.scalars(select(Hospital).order_by(Hospital.created_at)):
+                print(f"{h.code:8} {h.status:10} {h.name}")
+        return 0
 
     if args.command == "bootstrap":
         password = bootstrap(args.code, args.name, args.name_am, args.admin_email, args.admin_name)

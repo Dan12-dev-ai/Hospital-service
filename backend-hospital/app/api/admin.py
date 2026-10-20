@@ -2,22 +2,24 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 
-from app import auth
+from app import auth, listing
 from app.auth import Staff, audit, current_staff, require_roles, staff_payload
 from app.db import session_scope, utcnow
 from app.models import (
-    Department, DepartmentKind, DoctorProfile, DutyStatus, Hospital, Patient, PatientStatus, Role, StaffUser,
+    Department, DepartmentKind, DoctorProfile, DutyStatus, Hospital, HospitalKind, HospitalStatus, Patient,
+    PatientStatus, Role, Service, StaffUser,
 )
 from app.security import hash_password, temporary_password
-from app.validation import Name, OptionalPhone, OptionalText
+from app.validation import ContactNumber, Name, OptionalPhone, OptionalText
 
 router = APIRouter(tags=["administration"])
 admin_only = require_roles(Role.ADMIN)
@@ -25,15 +27,61 @@ admin_only = require_roles(Role.ADMIN)
 
 # --- hospital -----------------------------------------------------------------
 
+def _birr(santim: Optional[int]) -> Optional[str]:
+    return None if santim is None else f"{Decimal(santim) / 100:.2f}"
+
+
 def hospital_payload(h: Hospital) -> Dict[str, Any]:
-    return {"id": h.id, "code": h.code, "name": h.name, "name_am": h.name_am, "timezone": h.timezone,
-            "directory_facility_id": h.directory_facility_id}
+    return {
+        "id": h.id, "code": h.code, "name": h.name, "name_am": h.name_am, "timezone": h.timezone,
+        "directory_facility_id": h.directory_facility_id,
+        # Onboarding: pending until Endod approves; listed for patients once
+        # approved and the listing is complete.
+        "status": h.status,
+        "listed": listing.bookable(h),
+        "missing_for_listing": listing.missing_for_listing(h),
+        "kind": h.kind, "city": h.city, "address": h.address, "phone": h.phone,
+        "ambulance_phone": h.ambulance_phone, "emergency": h.emergency,
+        "latitude": h.latitude, "longitude": h.longitude,
+        "services": listing.services_of(h), "open_hours": h.open_hours,
+        "video_enabled": h.video_enabled,
+        # Birr, as text with two decimals (exact; never a float).
+        "price_in_person": _birr(h.price_in_person),
+        "price_video": _birr(h.price_video),
+    }
+
+
+Price = Optional[Decimal]
 
 
 class HospitalUpdate(BaseModel):
     name: Optional[Name] = Field(default=None, max_length=160)
     name_am: OptionalText = Field(default=None, max_length=160)
     timezone: Optional[str] = Field(default=None, max_length=64)
+    kind: Optional[str] = None
+    city: OptionalText = Field(default=None, max_length=100)
+    address: OptionalText = Field(default=None, max_length=200)
+    phone: ContactNumber = None
+    ambulance_phone: ContactNumber = None
+    emergency: Optional[bool] = None
+    latitude: Optional[float] = Field(default=None, ge=-90, le=90)
+    longitude: Optional[float] = Field(default=None, ge=-180, le=180)
+    services: Optional[List[str]] = Field(default=None, max_length=len(Service.ALL))
+    open_hours: OptionalText = Field(default=None, max_length=80)
+    video_enabled: Optional[bool] = None
+    #: Birr, up to two decimals.
+    price_in_person: Price = Field(default=None, ge=0, le=1_000_000, decimal_places=2)
+    price_video: Price = Field(default=None, ge=0, le=1_000_000, decimal_places=2)
+
+    @field_validator("services")
+    @classmethod
+    def _services(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        if value is None:
+            return None
+        unknown = [s for s in value if s not in Service.ALL]
+        if unknown:
+            raise ValueError(f"unknown services {unknown}; use {list(Service.ALL)}")
+        return list(dict.fromkeys(value))
 
 
 @router.get("/hospital")
@@ -50,13 +98,28 @@ def update_hospital(body: HospitalUpdate, staff: Staff = Depends(admin_only)) ->
             ZoneInfo(changes["timezone"] or "")
         except (ZoneInfoNotFoundError, ValueError) as exc:
             raise HTTPException(status_code=400, detail="Unknown timezone.") from exc
-    if changes.get("name") is None:
-        changes.pop("name", None)
+    for field in ("name", "kind", "emergency", "video_enabled"):
+        if field in changes and changes[field] is None:
+            changes.pop(field)
+    if changes.get("kind") is not None and changes["kind"] not in HospitalKind.ALL:
+        raise HTTPException(status_code=400, detail=f"kind must be one of {list(HospitalKind.ALL)}.")
+    if ("latitude" in changes) != ("longitude" in changes):
+        raise HTTPException(status_code=400, detail="Give latitude and longitude together.")
+    if "services" in changes:
+        changes["services"] = ",".join(changes["services"] or []) or None
+    for field in ("price_in_person", "price_video"):
+        if field in changes and changes[field] is not None:
+            changes[field] = int((changes[field] * 100).to_integral_value())
     with session_scope() as session:
-        hospital = session.get(Hospital, staff.hospital_id)
+        hospital = session.scalar(select(Hospital).where(Hospital.id == staff.hospital_id).with_for_update())
         for field, value in changes.items():
             setattr(hospital, field, value)
+        if hospital.video_enabled and hospital.price_video is None:
+            raise HTTPException(status_code=400, detail="Set a video visit price before turning video visits on.")
         audit(session, staff.hospital_id, staff.id, "hospital_updated", detail={"fields": sorted(changes)})
+        # Patients see the change through the Endod app.
+        if hospital.status == HospitalStatus.APPROVED:
+            listing.announce(session, hospital)
         return hospital_payload(hospital)
 
 
