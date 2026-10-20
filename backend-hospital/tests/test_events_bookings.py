@@ -129,9 +129,11 @@ class TestApprovalAndListing:
         assert snapshot["services"] == ["general_medicine", "emergency"] and snapshot["ambulance_phone"] == "907"
         assert "admin_email" not in json.dumps(snapshot)
 
+        # Each announcement carries a rising version, so a late one cannot win.
+        assert events[0][1]["version"] < snapshot["version"]
         client.post(f"/platform/hospitals/{hid}/suspend", headers=key)
         run_worker(bus)
-        assert stream(bus)[-1] == ("hospital.unlisted", {"hospital_id": hid})
+        assert stream(bus)[-1] == ("hospital.unlisted", {"hospital_id": hid, "version": snapshot["version"] + 1})
 
     def test_pending_hospitals_are_never_announced(self, client, bus):
         signed = client.post("/onboarding", json=SIGNUP).json()
@@ -372,3 +374,131 @@ class TestEventDelivery:
         hosts = [(c.connection_pool.connection_kwargs["host"], c.connection_pool.connection_kwargs["port"])
                  for c in client.connection_pool.sentinel_manager.sentinels]
         assert hosts == [("s1", 26379), ("s2", 26380)]
+
+
+class TestReviewFixes:
+    def test_a_cancellation_before_its_booking_is_retried_not_lost(self, client, admin, bus, hospital_ready,
+                                                                     monkeypatch):
+        from app import eventbus
+
+        monkeypatch.setattr(eventbus, "RETRY_AFTER_MS", 0)
+        payload = request_payload(hospital_ready)
+        send(bus, "appointment.cancelled", {"appointment_id": payload["appointment_id"], "by": "patient"})
+        run_worker(bus)  # the cancel cannot apply yet: stays pending
+        assert bus.xpending("endod:patient", "hospital-service")["pending"] == 1
+        send(bus, "appointment.requested", payload)
+        run_worker(bus, rounds=2)
+        booking = client.get("/bookings", headers=admin).json()["items"][0]
+        assert booking["status"] == "cancelled"
+        assert bus.xpending("endod:patient", "hospital-service")["pending"] == 0
+
+    def test_a_real_integrity_error_is_retried_not_acknowledged(self, client, bus, hospital_ready, monkeypatch):
+        from sqlalchemy.exc import IntegrityError
+
+        from app import bookings, eventbus
+
+        def broken(session, payload):
+            raise IntegrityError("insert", {}, Exception("NOT NULL constraint failed"))
+
+        monkeypatch.setitem(bookings.HANDLERS, "appointment.requested", broken)
+        send(bus, "appointment.requested", request_payload(hospital_ready))
+        eventbus.consume_once(bus, bookings.HANDLERS, block_ms=10)
+        assert bus.xpending("endod:patient", "hospital-service")["pending"] == 1
+
+    @pytest.mark.parametrize("change", [
+        {"scheduled_at": "2030-01-01T09:00:00"},  # no offset
+        {"price": 150.0},  # a float, not santim
+        {"price": -5},
+        {"duration_minutes": 100000},
+        {"patient": {"dedan_id": "DE1", "name": "A", "phone": "x" * 50}},
+    ])
+    def test_malformed_requests_are_dead_lettered_at_once(self, client, admin, bus, hospital_ready, change):
+        send(bus, "appointment.requested", {**request_payload(hospital_ready), **change})
+        run_worker(bus)
+        assert len(bus.xrange("endod:dead-letter")) == 1
+        assert client.get("/bookings", headers=admin).json()["items"] == []
+
+    def test_an_offset_time_is_stored_as_the_same_instant(self, client, admin, bus, hospital_ready):
+        when = (datetime.now(timezone(timedelta(hours=3))) + timedelta(days=1)).replace(microsecond=0)
+        send(bus, "appointment.requested", request_payload(hospital_ready, when=when))
+        run_worker(bus)
+        stored = datetime.fromisoformat(client.get("/bookings", headers=admin).json()["items"][0]["scheduled_at"])
+        assert stored == when
+
+    def test_forwarded_for_is_ignored_unless_proxies_are_trusted(self, client, monkeypatch):
+        for i in range(6):
+            resp = client.post("/onboarding", json={**SIGNUP, "admin_email": f"s{i}@x.example"},
+                               headers={"X-Forwarded-For": f"10.0.0.{i}"})
+        assert resp.status_code == 429  # one client, whatever the header says
+        from app.api import onboarding
+
+        onboarding._signups.clear()
+        monkeypatch.setenv("HOSPITAL_TRUSTED_PROXY_HOPS", "1")
+        resp = client.post("/onboarding", json={**SIGNUP, "admin_email": "t@x.example"},
+                           headers={"X-Forwarded-For": "spoofed, 203.0.113.9"})
+        assert resp.status_code == 201
+
+    def test_video_visit_permissions(self, client, admin, bus, hospital_ready):
+        make_staff(hospital_ready, "doc@sph.example", role="doctor")
+        make_staff(hospital_ready, "doc2@sph.example", role="doctor")
+        make_staff(hospital_ready, "desk@sph.example", role="reception")
+        doctor, other = sign_in(client, "doc@sph.example"), sign_in(client, "doc2@sph.example")
+        desk = sign_in(client, "desk@sph.example")
+        send(bus, "appointment.requested", request_payload(hospital_ready, "video"))
+        send(bus, "appointment.requested", request_payload(hospital_ready, "video"))
+        run_worker(bus)
+        first, second = [b["id"] for b in client.get("/bookings", headers=admin).json()["items"]]
+        assert client.post(f"/bookings/{first}/reject", headers=desk, json={"reason": "Busy day"}).status_code == 403
+        client.post(f"/bookings/{first}/approve", headers=doctor, json={})
+        assert client.post(f"/bookings/{first}/cancel", headers=other, json={"reason": "Not mine"}).status_code == 403
+        assert client.post(f"/bookings/{first}/cancel", headers=desk, json={"reason": "Front desk"}).status_code == 403
+        assert client.post(f"/bookings/{first}/cancel", headers=doctor, json={"reason": "Emergency"}).status_code == 200
+        # Cancelling a visit nobody approved yet is a rejection.
+        declined = client.post(f"/bookings/{second}/cancel", headers=admin, json={"reason": "No doctor free"})
+        assert declined.json()["status"] == "rejected"
+
+    def test_unapproved_visits_expire_and_past_ones_cannot_be_approved(self, client, admin, bus, hospital_ready):
+        from app import bookings
+        from app.db import session_scope
+        from app.models import Booking
+        from sqlalchemy import update
+
+        make_staff(hospital_ready, "doc@sph.example", role="doctor")
+        doctor = sign_in(client, "doc@sph.example")
+        send(bus, "appointment.requested", request_payload(hospital_ready, "video"))
+        run_worker(bus)
+        bid = client.get("/bookings", headers=admin).json()["items"][0]["id"]
+        with session_scope() as session:
+            session.execute(update(Booking).values(scheduled_at=datetime.now(timezone.utc) - timedelta(minutes=5)))
+        assert client.post(f"/bookings/{bid}/approve", headers=doctor, json={}).status_code == 409
+        assert bookings.expire_unapproved() == 0  # still within the grace period
+        with session_scope() as session:
+            session.execute(update(Booking).values(scheduled_at=datetime.now(timezone.utc) - timedelta(hours=1)))
+        assert bookings.expire_unapproved() == 1
+        run_worker(bus)
+        assert stream(bus)[-1][0] == "appointment.rejected"
+        assert client.get(f"/bookings/{bid}", headers=admin).json()["status"] == "rejected"
+
+    def test_endod_sees_who_signed_up_and_can_remove_a_pending_sign_up(self, client):
+        signed = client.post("/onboarding", json=SIGNUP).json()
+        key = {"X-Platform-Key": PLATFORM_KEY}
+        listed = client.get("/platform/hospitals", headers=key).json()
+        assert listed[0]["contact"]["email"] == "admin@tash.example"
+        hid = signed["hospital"]["id"]
+        assert client.delete(f"/platform/hospitals/{hid}", headers=key).status_code == 200
+        # The email is free again.
+        assert client.post("/onboarding", json=SIGNUP).status_code == 201
+
+    def test_events_count_as_sent_only_once_a_replica_has_them(self, client, admin, hospital_ready, monkeypatch):
+        import redis
+
+        from app import eventbus
+
+        monkeypatch.setenv("HOSPITAL_REDIS_MIN_REPLICAS", "1")
+        bus = fakeredis.FakeRedis(decode_responses=True)
+        monkeypatch.setattr(bus, "wait", lambda *_: 0, raising=False)
+        with pytest.raises(redis.ConnectionError):
+            eventbus.publish_pending(bus)
+        monkeypatch.setattr(bus, "wait", lambda *_: 1, raising=False)
+        assert eventbus.publish_pending(bus) >= 1
+        assert eventbus.publish_pending(bus) == 0

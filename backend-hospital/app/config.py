@@ -32,7 +32,12 @@ class Settings(BaseSettings):
     REDIS_SENTINELS: Annotated[List[str], NoDecode] = Field(default=[])
     REDIS_SENTINEL_MASTER: str = "endod"
     REDIS_PASSWORD: Optional[str] = None
+    #: The sentinels' own password, when they have one (often they do not).
+    REDIS_SENTINEL_PASSWORD: Optional[str] = None
     REDIS_DB: int = 0
+    #: Replicas that must hold an event before it counts as sent (WAIT).
+    #: 0 with a single Redis; 1 with Sentinel and a replica.
+    REDIS_MIN_REPLICAS: int = 0
 
     # --- Video visits (self-hosted Jitsi with token sign-in) ---
     JITSI_DOMAIN: str = "meet.endod-health.com"
@@ -46,6 +51,10 @@ class Settings(BaseSettings):
     SIGNUP_ENABLED: bool = True
     #: Key for Endod's platform-admin endpoints (approve / suspend hospitals).
     PLATFORM_ADMIN_KEY: Optional[str] = None
+    #: Reverse proxies in front of this service that append to
+    #: X-Forwarded-For (the portal's server, nginx...). The client address is
+    #: the entry this many hops from the right; 0 trusts no header at all.
+    TRUSTED_PROXY_HOPS: int = 0
 
     @field_validator("ENVIRONMENT", mode="before")
     @classmethod

@@ -25,11 +25,26 @@ def _stop(*_args) -> None:
     _running = False
 
 
-def run_once(client: redis.Redis) -> int:
-    """One round: send what is queued, handle what arrived. Returns the work done."""
-    sent = eventbus.publish_pending(client)
-    handled = eventbus.consume_once(client, bookings.HANDLERS, block_ms=1000)
-    return sent + handled
+#: Seconds between the slower chores.
+EXPIRE_EVERY = 60
+HOUSEKEEPING_EVERY = 3600
+_last = {"expire": 0.0, "housekeeping": 0.0}
+
+
+def run_once(client: redis.Redis, now: float | None = None) -> int:
+    """One round: send what is queued, handle what arrived, and now and then
+    decline unapproved video visits and clean up. Returns the work done."""
+    now = time.monotonic() if now is None else now
+    work = 0
+    if now - _last["expire"] >= EXPIRE_EVERY:
+        work += bookings.expire_unapproved()
+        _last["expire"] = now
+    work += eventbus.publish_pending(client)
+    work += eventbus.consume_once(client, bookings.HANDLERS, block_ms=1000)
+    if now - _last["housekeeping"] >= HOUSEKEEPING_EVERY:
+        eventbus.housekeeping(client)
+        _last["housekeeping"] = now
+    return work
 
 
 def main() -> int:

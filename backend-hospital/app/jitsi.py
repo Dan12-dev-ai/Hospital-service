@@ -44,7 +44,8 @@ def _b64(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
-def token(room: str, display_name: str, moderator: bool, now: float | None = None) -> str:
+def token(room: str, display_name: str, moderator: bool, now: float | None = None,
+          expires_at: float | None = None) -> str:
     settings = get_settings()
     if not settings.JITSI_APP_SECRET:
         raise JitsiError("Video visits are not configured.")
@@ -56,8 +57,12 @@ def token(room: str, display_name: str, moderator: bool, now: float | None = Non
         "sub": settings.JITSI_JWT_SUB,
         "room": room,
         "nbf": issued - 60,
-        "exp": issued + TOKEN_TTL_SECONDS,
-        "context": {"user": {"name": display_name[:80], "moderator": moderator}},
+        # Valid to join until the visit's window closes (and at least 10 minutes).
+        "exp": int(max(expires_at, issued + 600)) if expires_at else issued + TOKEN_TTL_SECONDS,
+        # The doctor runs the call. Prosody's token_affiliation reads
+        # "affiliation"; "moderator" is read by other setups.
+        "context": {"user": {"name": display_name[:80], "moderator": moderator,
+                             "affiliation": "owner" if moderator else "member"}},
         "moderator": moderator,
     }
     signing_input = f"{_b64(json.dumps(header, separators=(',', ':')).encode())}." \
@@ -66,11 +71,11 @@ def token(room: str, display_name: str, moderator: bool, now: float | None = Non
     return f"{signing_input}.{_b64(signature)}"
 
 
-def join_details(room: str, display_name: str, moderator: bool) -> Dict[str, Any]:
+def join_details(room: str, display_name: str, moderator: bool, closes_at: datetime | None = None) -> Dict[str, Any]:
     settings = get_settings()
     return {
         "domain": settings.JITSI_DOMAIN,
         "room": room,
-        "jwt": token(room, display_name, moderator),
+        "jwt": token(room, display_name, moderator, expires_at=closes_at.timestamp() if closes_at else None),
         "url": f"https://{settings.JITSI_DOMAIN}/{room}",
     }

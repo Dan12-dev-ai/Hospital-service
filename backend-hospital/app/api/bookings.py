@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app import jitsi
 from app.auth import Staff, audit, require_roles
@@ -52,6 +52,13 @@ def _payload(b: Booking, doctors: Dict[str, str]) -> Dict[str, Any]:
         "decided_at": ensure_aware(b.decided_at).isoformat() if b.decided_at else None,
         "created_at": ensure_aware(b.created_at).isoformat(),
     }
+
+
+def _video_owner_only(staff: Staff, booking: Booking) -> None:
+    """A video visit is the assigned doctor's (or an admin's) to cancel or complete."""
+    if booking.visit_mode == VisitMode.VIDEO and booking.doctor_id and staff.role != Role.ADMIN \
+            and booking.doctor_id != staff.id:
+        raise BookingError("Only this visit's doctor or an admin can do that.", 403)
 
 
 def _names(session, bookings: List[Booking]) -> Dict[str, str]:
@@ -107,9 +114,11 @@ def list_bookings(
             query = query.where(Booking.scheduled_at >= start, Booking.scheduled_at < start + timedelta(days=1))
         bookings = list(session.scalars(query.order_by(Booking.scheduled_at)))
         counts: Dict[str, int] = {s: 0 for s in BookingStatus.ALL}
-        for status in session.scalars(select(Booking.status).where(Booking.hospital_id == staff.hospital_id)):
-            counts[status] = counts.get(status, 0) + 1
-        return {"items": [_payload(b, _names(session, bookings)) for b in bookings], "counts": counts}
+        counts.update(dict(session.execute(
+            select(Booking.status, func.count()).where(Booking.hospital_id == staff.hospital_id)
+            .group_by(Booking.status)).all()))
+        names = _names(session, bookings)
+        return {"items": [_payload(b, names) for b in bookings], "counts": counts}
 
 
 @router.get("/{booking_id}")
@@ -143,20 +152,33 @@ def approve(booking_id: str, body: Approval,
 
 @router.post("/{booking_id}/reject")
 def reject_booking(booking_id: str, body: Reason,
-                   staff: Staff = Depends(require_roles(Role.DOCTOR, Role.ADMIN, Role.RECEPTION))) -> Dict[str, Any]:
+                   staff: Staff = Depends(require_roles(Role.DOCTOR, Role.ADMIN))) -> Dict[str, Any]:
+    """Declining a video visit is a clinical decision: doctors (or an admin)."""
     return _decide(staff, booking_id, lambda s, b: reject(s, b, body.reason, staff.id))
 
 
 @router.post("/{booking_id}/cancel")
 def cancel_booking(booking_id: str, body: Reason,
                    staff: Staff = Depends(require_roles(Role.ADMIN, Role.RECEPTION, Role.DOCTOR))) -> Dict[str, Any]:
-    return _decide(staff, booking_id, lambda s, b: cancel(s, b, body.reason, staff.id))
+    def action(session, booking):
+        if booking.visit_mode == VisitMode.VIDEO and staff.role == Role.RECEPTION:
+            raise BookingError("Video visits are cancelled by their doctor or an admin.", 403)
+        _video_owner_only(staff, booking)
+        cancel(session, booking, body.reason, staff.id)
+
+    return _decide(staff, booking_id, action)
 
 
 @router.post("/{booking_id}/complete")
 def complete_booking(booking_id: str,
                      staff: Staff = Depends(require_roles(Role.DOCTOR, Role.NURSE, Role.ADMIN))) -> Dict[str, Any]:
-    return _decide(staff, booking_id, lambda s, b: complete(s, b, staff.id))
+    def action(session, booking):
+        if booking.visit_mode == VisitMode.VIDEO and staff.role == Role.NURSE:
+            raise BookingError("A video visit is completed by its doctor or an admin.", 403)
+        _video_owner_only(staff, booking)
+        complete(session, booking, staff.id)
+
+    return _decide(staff, booking_id, action)
 
 
 @router.post("/{booking_id}/video")
@@ -174,7 +196,7 @@ def join_video(booking_id: str, staff: Staff = Depends(require_roles(Role.DOCTOR
         if not opens <= now <= closes:
             raise HTTPException(status_code=409, detail="The video room opens 30 minutes before the visit.")
         try:
-            details = jitsi.join_details(booking.meeting_room, staff.full_name, moderator=True)
+            details = jitsi.join_details(booking.meeting_room, staff.full_name, moderator=True, closes_at=closes)
         except jitsi.JitsiError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         audit(session, staff.hospital_id, staff.id, "booking_video_joined", "booking", booking.id)

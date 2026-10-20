@@ -15,11 +15,18 @@ Every entry has the fields `id` (unique event id), `type`, `source`,
 `occurred_at` (ISO-8601, UTC) and `payload` (JSON).
 
 **Guarantees.** Events are written to an outbox table in the same database
-transaction as the change, then relayed to Redis: none is lost while Redis is
-down, and none is sent for a change that was rolled back. Delivery is at least
-once; each receiver records handled event ids in the same transaction as the
-effect, so handling is exactly once. A failing event is retried after 30
-seconds, up to 5 times, then moved to the dead-letter stream.
+transaction as the change, then relayed to Redis by one publisher at a time,
+in order; they count as sent only once Redis (and, with `REDIS_MIN_REPLICAS`,
+a replica) has them. None is lost while Redis is down, and none is sent for a
+change that was rolled back. Delivery is at least once; each receiver records
+handled event ids in the same transaction as the effect, so handling is
+exactly once. A failing event is retried after 30 seconds, up to 5 times, then
+moved to the dead-letter stream; a malformed one (fails validation) goes there
+at once. An event that arrives before the one it depends on (a cancellation
+before its booking) is retried until that one has been handled.
+
+Every payload is validated by the receiver; times must carry their offset and
+money must be whole santim.
 
 Money is in **santim** (integer, 1/100 birr). Times are ISO-8601 with offset.
 
@@ -27,18 +34,19 @@ Money is in **santim** (integer, 1/100 birr). Times are ISO-8601 with offset.
 
 ### `hospital.listed`
 A hospital patients can book. A full snapshot, sent on approval and on every
-change; the platform replaces its copy.
+change; the platform replaces its copy. `version` rises with every
+announcement (listed or unlisted), so a late, older one is ignored.
 
 ```json
 {"hospital_id": "…", "code": "TASH", "name": "…", "name_am": "…", "kind": "public|private",
  "city": "…", "address": "…", "phone": "…", "ambulance_phone": "…", "emergency": true,
  "latitude": 9.03, "longitude": 38.74, "services": ["general_medicine", "emergency"],
  "open_hours": "…", "timezone": "Africa/Addis_Ababa",
- "video_enabled": true, "price_in_person": 15000, "price_video": 12050}
+ "video_enabled": true, "price_in_person": 15000, "price_video": 12050, "version": 6}
 ```
 
 ### `hospital.unlisted`
-`{"hospital_id": "…"}`: not bookable any more (suspended, or the listing is
+`{"hospital_id": "…", "version": 7}`: not bookable any more (suspended, or the listing is
 incomplete). Existing appointments are unaffected.
 
 ### `appointment.confirmed`
@@ -47,7 +55,8 @@ In-person visits are confirmed on arrival; video visits when a doctor approves
 `{"appointment_id", "hospital_id", "status": "confirmed", "meeting_room", "doctor_name", "reason": null}`
 
 ### `appointment.rejected`
-A video visit was declined, or the hospital cannot take the booking. The
+A video visit was declined (by a doctor, or automatically 15 minutes after its
+start time with no approval), or the hospital cannot take the booking. The
 platform refunds the patient. `{"appointment_id", "hospital_id", "status", "reason", …}`
 
 ### `appointment.cancelled`

@@ -52,10 +52,12 @@ def bookable(hospital: Hospital) -> bool:
 
 def announce(session: Session, hospital: Hospital) -> None:
     """Tell the patient platform the hospital's current listing (in this transaction)."""
+    hospital.listing_version = (hospital.listing_version or 0) + 1
     if bookable(hospital):
-        eventbus.emit(session, "hospital.listed", snapshot(hospital))
+        eventbus.emit(session, "hospital.listed", {**snapshot(hospital), "version": hospital.listing_version})
     else:
-        eventbus.emit(session, "hospital.unlisted", {"hospital_id": hospital.id})
+        eventbus.emit(session, "hospital.unlisted", {"hospital_id": hospital.id,
+                                                     "version": hospital.listing_version})
 
 
 def missing_for_listing(hospital: Hospital) -> List[str]:

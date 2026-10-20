@@ -185,6 +185,9 @@ class Hospital(Base):
     price_in_person: Mapped[Optional[int]] = mapped_column(Integer)
     price_video: Mapped[Optional[int]] = mapped_column(Integer)
     approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    #: Raised on every announcement, so the platform can ignore an older one
+    #: that arrives late.
+    listing_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
 
 
 class Department(Base):

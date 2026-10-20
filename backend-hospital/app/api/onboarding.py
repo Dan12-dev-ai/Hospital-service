@@ -14,7 +14,7 @@ import hmac
 import re
 import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from typing import Any, Deque, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
@@ -35,7 +35,9 @@ router = APIRouter(tags=["onboarding"])
 
 #: Sign-ups per address per hour (a hospital signs up once).
 SIGNUPS_PER_HOUR = 5
-_signups: Dict[str, Deque[float]] = {}
+#: Addresses tracked; the least recently seen are forgotten first.
+_TRACKED = 10_000
+_signups: "OrderedDict[str, Deque[float]]" = OrderedDict()
 _signups_lock = threading.Lock()
 
 
@@ -53,15 +55,28 @@ class HospitalSignup(BaseModel):
 def _rate_limited(key: str) -> bool:
     now = time.monotonic()
     with _signups_lock:
-        hits = _signups.setdefault(key, deque())
+        hits = _signups.pop(key, None) or deque()
+        _signups[key] = hits  # most recently seen last
         while hits and hits[0] < now - 3600:
             hits.popleft()
         if len(hits) >= SIGNUPS_PER_HOUR:
             return True
         hits.append(now)
-        if len(_signups) > 10_000:
-            _signups.clear()
+        while len(_signups) > _TRACKED:
+            _signups.popitem(last=False)
         return False
+
+
+def client_address(request: Request) -> str:
+    """The caller's address. X-Forwarded-For is used only through the configured
+    number of trusted proxies (counted from the right), so a client cannot
+    choose its own address by sending the header."""
+    hops = get_settings().TRUSTED_PROXY_HOPS
+    if hops > 0:
+        entries = [e.strip() for e in request.headers.get("x-forwarded-for", "").split(",") if e.strip()]
+        if len(entries) >= hops:
+            return entries[-hops]
+    return request.client.host if request.client else "unknown"
 
 
 def _code_for(session, name: str) -> str:
@@ -84,8 +99,7 @@ def sign_up(body: HospitalSignup, request: Request) -> Dict[str, Any]:
     settings = get_settings()
     if not settings.SIGNUP_ENABLED:
         raise HTTPException(status_code=403, detail="Sign-up is closed. Contact Endod to join.")
-    forwarded = request.headers.get("x-forwarded-for", "").split(",")[-1].strip()
-    if _rate_limited(forwarded or (request.client.host if request.client else "unknown")):
+    if _rate_limited(client_address(request)):
         raise HTTPException(status_code=429, detail="Too many sign-ups from here. Try again later.")
     if body.kind not in HospitalKind.ALL:
         raise HTTPException(status_code=400, detail=f"kind must be one of {list(HospitalKind.ALL)}.")
@@ -138,7 +152,16 @@ def list_hospitals(status_filter: Optional[str] = Query(default=None, alias="sta
         query = select(Hospital).order_by(Hospital.created_at.desc())
         if status_filter:
             query = query.where(Hospital.status == status_filter)
-        return [hospital_payload(h) for h in session.scalars(query)]
+        hospitals = list(session.scalars(query))
+        # Who signed up, so Endod can check the hospital before approving it.
+        admins: Dict[str, Dict[str, str]] = {}
+        for user in session.scalars(select(StaffUser).where(
+                StaffUser.hospital_id.in_([h.id for h in hospitals] or [""]), StaffUser.role == Role.ADMIN)
+                .order_by(StaffUser.created_at)):
+            admins.setdefault(user.hospital_id, {"name": user.full_name, "email": user.email,
+                                                 "phone": user.phone or ""})
+        return [{**hospital_payload(h), "created_at": h.created_at.isoformat(), "contact": admins.get(h.id)}
+                for h in hospitals]
 
 
 def set_status(hospital_id: str, new_status: str) -> Dict[str, Any]:
@@ -164,3 +187,16 @@ def approve(hospital_id: str) -> Dict[str, Any]:
 @router.post("/platform/hospitals/{hospital_id}/suspend", dependencies=[Depends(platform_admin)])
 def suspend(hospital_id: str) -> Dict[str, Any]:
     return set_status(hospital_id, HospitalStatus.SUSPENDED)
+
+
+@router.delete("/platform/hospitals/{hospital_id}", dependencies=[Depends(platform_admin)])
+def remove_pending(hospital_id: str) -> Dict[str, Any]:
+    """Delete a sign-up Endod will not accept (only while pending), freeing its emails."""
+    with session_scope() as session:
+        hospital = session.scalar(select(Hospital).where(Hospital.id == hospital_id).with_for_update())
+        if hospital is None:
+            raise HTTPException(status_code=404, detail="Hospital not found.")
+        if hospital.status != HospitalStatus.PENDING:
+            raise HTTPException(status_code=409, detail="Only a pending sign-up can be deleted; suspend instead.")
+        session.delete(hospital)
+    return {"deleted": hospital_id}
