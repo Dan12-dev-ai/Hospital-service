@@ -1,6 +1,5 @@
-import { DashboardProvider } from "@/components/dashboard/dashboard-context";
-import { Sidebar } from "@/components/dashboard/sidebar";
-import { TopBar } from "@/components/dashboard/top-bar";
+import type { ReactNode } from "react";
+import { PortalShell } from "@/components/dashboard/portal-shell";
 import { AlertBanner } from "@/components/dashboard/alert-banner";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { KpiGrid } from "@/components/dashboard/kpi-grid";
@@ -10,48 +9,56 @@ import { AppointmentsCard } from "@/components/dashboard/appointments-card";
 import { AlertsCard } from "@/components/dashboard/alerts-card";
 import { MiniCalendar } from "@/components/dashboard/mini-calendar";
 import { AgendaTimeline } from "@/components/dashboard/agenda-timeline";
+import { SampleBadge } from "@/components/common/states";
+
+/** A dashboard card whose content is illustrative (no backend for it yet). */
+function Sample({ children }: { children: ReactNode }) {
+  return (
+    <div className="relative">
+      <SampleBadge className="absolute -top-2 right-4 z-10 shadow-sm" />
+      {children}
+    </div>
+  );
+}
 
 export default function DashboardPage() {
   return (
-    <DashboardProvider>
-      <div className="flex min-h-screen flex-col gap-5 p-4 lg:p-6 xl:flex-row">
-        {/* Left Sidebar (Rounded floating template card) */}
-        <Sidebar />
+    <PortalShell>
+      {/* Video visits waiting for a doctor (real) */}
+      <AlertBanner />
 
-        {/* Main Content Area */}
-        <main className="flex min-w-0 flex-1 flex-col gap-5">
-          {/* Top Floating Header Bar */}
-          <TopBar />
+      <PageHeader />
 
-          {/* Operational Banner / Live Intake Toast */}
-          <AlertBanner />
+      {/* Patients, bookings and doctors on duty are real; invoices are sample data. */}
+      <KpiGrid />
 
-          {/* Dashboard Header Title & Action Buttons */}
-          <PageHeader />
-
-          {/* 4 KPI Metrics Row */}
-          <KpiGrid />
-
-          {/* Middle Section: Charts + Appointments + Alerts */}
-          <div className="grid grid-cols-1 gap-5 xl:grid-cols-3">
-            {/* Left 2 Cols: Charts + Appointments + Alerts */}
-            <div className="flex flex-col gap-5 xl:col-span-2">
-              <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
-                <RevenueChart />
-                <PatientOverviewChart />
-              </div>
-              <AppointmentsCard />
-              <AlertsCard />
-            </div>
-
-            {/* Right Column: Calendar + Agenda Timeline */}
-            <div className="flex flex-col gap-5">
-              <MiniCalendar />
-              <AgendaTimeline />
-            </div>
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-3">
+        <div className="flex flex-col gap-5 xl:col-span-2">
+          <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+            <Sample>
+              <RevenueChart />
+            </Sample>
+            <Sample>
+              <PatientOverviewChart />
+            </Sample>
           </div>
-        </main>
+          <Sample>
+            <AppointmentsCard />
+          </Sample>
+          <Sample>
+            <AlertsCard />
+          </Sample>
+        </div>
+
+        <div className="flex flex-col gap-5">
+          <Sample>
+            <MiniCalendar />
+          </Sample>
+          <Sample>
+            <AgendaTimeline />
+          </Sample>
+        </div>
       </div>
-    </DashboardProvider>
+    </PortalShell>
   );
 }

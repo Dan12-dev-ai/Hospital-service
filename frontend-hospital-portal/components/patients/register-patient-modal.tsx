@@ -1,144 +1,174 @@
 "use client";
 
-import { Icon } from "@/components/ui/icon";
-import { useDashboard } from "@/components/dashboard/dashboard-context";
+import { useState } from "react";
+import {
+  FormError,
+  Modal,
+  inputClass,
+  labelClass,
+  primaryButtonClass,
+  secondaryButtonClass,
+} from "@/components/common/states";
+import { ApiError, apiFetch } from "@/lib/api";
+import type { ApiPatient } from "@/lib/api-types";
 
+type Payer = "cash" | "cbhi" | "private" | "credit";
+
+const PAYERS: { value: Payer; label: string }[] = [
+  { value: "cash", label: "Cash" },
+  { value: "cbhi", label: "CBHI (community insurance)" },
+  { value: "private", label: "Private insurance" },
+  { value: "credit", label: "Credit agreement" },
+];
+
+/** Registers a patient (POST /patients); the hospital number is issued by the backend. */
 export function RegisterPatientModal({
-  open,
   onClose,
+  onRegistered,
 }: {
-  open: boolean;
   onClose: () => void;
+  onRegistered: (patient: ApiPatient) => void;
 }) {
-  const { showToast } = useDashboard();
+  const [form, setForm] = useState({
+    full_name: "",
+    full_name_am: "",
+    sex: "female",
+    birth: "dob" as "dob" | "age",
+    date_of_birth: "",
+    age_years: "",
+    phone: "",
+    payer: "cash" as Payer,
+    payer_number: "",
+    dedan_id: "",
+  });
+  const [error, setError] = useState<string | null>(null);
+  const [duplicate, setDuplicate] = useState(false);
+  const [busy, setBusy] = useState(false);
 
-  if (!open) return null;
+  function set(key: keyof typeof form, value: string) {
+    setForm((current) => ({ ...current, [key]: value }));
+    setDuplicate(false);
+  }
 
-  function submit() {
-    showToast("Patient registered successfully & Digital Health ID generated!");
-    onClose();
+  async function submit(confirmDuplicate: boolean) {
+    if (form.full_name.trim().length < 2) return setError("Enter the patient's full name.");
+    if (form.birth === "age" && form.age_years && !/^\d{1,3}$/.test(form.age_years)) {
+      return setError("Age is a whole number of years.");
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const patient = await apiFetch<ApiPatient>("patients", {
+        method: "POST",
+        body: {
+          full_name: form.full_name.trim(),
+          full_name_am: form.full_name_am.trim() || null,
+          sex: form.sex,
+          date_of_birth: form.birth === "dob" && form.date_of_birth ? form.date_of_birth : null,
+          age_years: form.birth === "age" && form.age_years ? Number(form.age_years) : null,
+          phone: form.phone.trim() || null,
+          payer: form.payer,
+          payer_number: form.payer_number.trim() || null,
+          dedan_id: form.dedan_id.trim() || null,
+          confirm_duplicate: confirmDuplicate,
+        },
+      });
+      onRegistered(patient);
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : "Could not register the patient.";
+      setError(message);
+      // Same name and phone already registered: the backend asks for confirmation.
+      setDuplicate(err instanceof ApiError && err.status === 409 && message.includes("confirm_duplicate"));
+      setBusy(false);
+    }
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-inverse-surface/40 p-4 backdrop-blur-sm">
-      <div className="flex w-full max-w-lg flex-col gap-4 rounded-3xl bg-surface-container-lowest p-6 shadow-2xl">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-primary text-on-primary">
-              <Icon name="person_add" className="text-[18px]" />
-            </div>
-            <h3 className="text-headline-md font-headline-md text-on-surface">
-              Register New Patient (አዲስ ታካሚ ምዝገባ)
-            </h3>
-          </div>
-          <button
-            type="button"
-            aria-label="Close dialog"
-            onClick={onClose}
-            className="text-outline transition-colors hover:text-on-surface"
-          >
-            <Icon name="close" className="text-[20px]" />
-          </button>
-        </div>
-
-        <div className="space-y-3">
-          <div>
-            <label
-              htmlFor="patient-name"
-              className="mb-1 block text-label-sm font-label-sm text-on-surface-variant"
-            >
-              Full Name (English &amp; Amharic)
-            </label>
-            <input
-              id="patient-name"
-              type="text"
-              placeholder="e.g., Abebech Mengistu (አበበች መንግስቱ)"
-              className="w-full rounded-xl bg-surface-container-low px-3.5 py-2.5 font-body-md text-body-md text-on-surface placeholder:text-outline focus:outline-none"
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label
-                htmlFor="patient-dob"
-                className="mb-1 block text-label-sm font-label-sm text-on-surface-variant"
-              >
-                Date of Birth / Age
-              </label>
-              <input
-                id="patient-dob"
-                type="text"
-                placeholder="DD/MM/YYYY or Years"
-                className="w-full rounded-xl bg-surface-container-low px-3.5 py-2.5 font-body-md text-body-md text-on-surface placeholder:text-outline focus:outline-none"
-              />
-            </div>
-            <div>
-              <label
-                htmlFor="patient-sex"
-                className="mb-1 block text-label-sm font-label-sm text-on-surface-variant"
-              >
-                Biological Sex
-              </label>
-              <select
-                id="patient-sex"
-                defaultValue="Female (ሴት)"
-                className="w-full cursor-pointer rounded-xl bg-surface-container-low px-3.5 py-2.5 font-body-md text-body-md text-on-surface focus:outline-none"
-              >
-                <option>Female (ሴት)</option>
-                <option>Male (ወንድ)</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label
-                htmlFor="patient-phone"
-                className="mb-1 block text-label-sm font-label-sm text-on-surface-variant"
-              >
-                Phone Number
-              </label>
-              <input
-                id="patient-phone"
-                type="tel"
-                placeholder="+251 91..."
-                className="w-full rounded-xl bg-surface-container-low px-3.5 py-2.5 font-body-md text-body-md text-on-surface placeholder:text-outline focus:outline-none"
-              />
-            </div>
-            <div>
-              <label
-                htmlFor="patient-insurance"
-                className="mb-1 block text-label-sm font-label-sm text-on-surface-variant"
-              >
-                Insurance / CBHI
-              </label>
-              <input
-                id="patient-insurance"
-                type="text"
-                placeholder="CBHI / Private / Cash"
-                className="w-full rounded-xl bg-surface-container-low px-3.5 py-2.5 font-body-md text-body-md text-on-surface placeholder:text-outline focus:outline-none"
-              />
-            </div>
-          </div>
-        </div>
-
-        <div className="flex items-center justify-end gap-2 pt-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-xl bg-surface-container px-4 py-2 text-label-md font-label-md text-on-surface-variant transition-colors hover:bg-surface-container-high"
-          >
+    <Modal
+      title="Register New Patient (አዲስ ታካሚ ምዝገባ)"
+      icon="person_add"
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" onClick={onClose} className={secondaryButtonClass}>
             Cancel
           </button>
-          <button
-            type="button"
-            onClick={submit}
-            className="rounded-xl bg-primary px-5 py-2 text-label-md font-label-md text-on-primary shadow-glow transition-all hover:bg-surface-tint"
-          >
-            Complete Registration
-          </button>
+          {duplicate ? (
+            <button type="button" disabled={busy} onClick={() => submit(true)} className={primaryButtonClass}>
+              Register anyway
+            </button>
+          ) : (
+            <button type="button" disabled={busy} onClick={() => submit(false)} className={primaryButtonClass}>
+              {busy ? "Registering…" : "Complete Registration"}
+            </button>
+          )}
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label htmlFor="patient-name" className={labelClass}>Full name</label>
+            <input id="patient-name" maxLength={120} value={form.full_name} onChange={(e) => set("full_name", e.target.value)} className={inputClass} />
+          </div>
+          <div>
+            <label htmlFor="patient-name-am" className={labelClass}>Name in Amharic</label>
+            <input id="patient-name-am" maxLength={120} value={form.full_name_am} onChange={(e) => set("full_name_am", e.target.value)} className={inputClass} />
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label htmlFor="patient-sex" className={labelClass}>Sex</label>
+            <select id="patient-sex" value={form.sex} onChange={(e) => set("sex", e.target.value)} className={inputClass}>
+              <option value="female">Female (ሴት)</option>
+              <option value="male">Male (ወንድ)</option>
+            </select>
+          </div>
+          <div>
+            <label htmlFor="patient-birth" className={labelClass}>Birth</label>
+            <select id="patient-birth" value={form.birth} onChange={(e) => set("birth", e.target.value)} className={inputClass}>
+              <option value="dob">Date of birth known</option>
+              <option value="age">Only the age is known</option>
+            </select>
+          </div>
+        </div>
+        {form.birth === "dob" ? (
+          <div>
+            <label htmlFor="patient-dob" className={labelClass}>Date of birth</label>
+            <input id="patient-dob" type="date" value={form.date_of_birth} onChange={(e) => set("date_of_birth", e.target.value)} className={inputClass} />
+          </div>
+        ) : (
+          <div>
+            <label htmlFor="patient-age" className={labelClass}>Age (years)</label>
+            <input id="patient-age" inputMode="numeric" value={form.age_years} onChange={(e) => set("age_years", e.target.value)} className={inputClass} />
+          </div>
+        )}
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label htmlFor="patient-phone" className={labelClass}>Mobile</label>
+            <input id="patient-phone" type="tel" placeholder="0911 234 567" value={form.phone} onChange={(e) => set("phone", e.target.value)} className={inputClass} />
+          </div>
+          <div>
+            <label htmlFor="patient-dedan" className={labelClass}>Endod ID (optional)</label>
+            <input id="patient-dedan" placeholder="DE-482731" value={form.dedan_id} onChange={(e) => set("dedan_id", e.target.value)} className={inputClass} />
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label htmlFor="patient-payer" className={labelClass}>Payer</label>
+            <select id="patient-payer" value={form.payer} onChange={(e) => set("payer", e.target.value)} className={inputClass}>
+              {PAYERS.map((p) => (
+                <option key={p.value} value={p.value}>{p.label}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label htmlFor="patient-payer-number" className={labelClass}>Membership / policy no.</label>
+            <input id="patient-payer-number" maxLength={40} value={form.payer_number} onChange={(e) => set("payer_number", e.target.value)} className={inputClass} />
+          </div>
         </div>
       </div>
-    </div>
+      <FormError message={error} />
+    </Modal>
   );
 }

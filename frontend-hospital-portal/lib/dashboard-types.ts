@@ -1,3 +1,5 @@
+import type { Role } from "@/lib/api-types";
+
 export type NavItem = {
   label: string;
   icon: string;
@@ -6,6 +8,8 @@ export type NavItem = {
   badge?: string;
   /** Green "online" dot indicator */
   dot?: boolean;
+  /** Roles that see this link (everyone when absent). */
+  roles?: Role[];
 };
 
 export type AppointmentStatus = "requested" | "checkedin" | "confirmed";
@@ -28,8 +32,11 @@ export type KpiMetric = {
   label: string;
   icon: string;
   value: string;
-  trend: string;
+  /** Only on sample cards (no real trend data exists yet). */
+  trend?: string;
   caption: string;
+  /** Illustrative numbers, not from the hospital service. */
+  sample?: boolean;
 };
 
 export type AgendaEvent = {
