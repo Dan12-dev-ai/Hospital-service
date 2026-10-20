@@ -10,9 +10,9 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Dedan Health OS • Clinical Portal",
+  title: "Dedan Health OS • Hospital Portal",
   description:
-    "Dedan Health OS clinical portal for St. Paul's Millennium Medical Center — patients, appointments, billing, pharmacy and reports.",
+    "The Endod hospital portal: Endod bookings and video visits, patients, doctors and hospital settings.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

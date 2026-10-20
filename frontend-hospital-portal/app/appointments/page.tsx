@@ -1,6 +1,8 @@
+import { Suspense } from "react";
 import type { Metadata } from "next";
 import { PortalShell } from "@/components/dashboard/portal-shell";
-import { AppointmentsDirectory } from "@/components/appointments/appointments-directory";
+import { BookingsDirectory } from "@/components/bookings/bookings-directory";
+import { LoadingState } from "@/components/common/states";
 
 export const metadata: Metadata = {
   title: "Dedan Health OS • Appointments",
@@ -8,8 +10,11 @@ export const metadata: Metadata = {
 
 export default function AppointmentsPage() {
   return (
-    <PortalShell showTopBar={false}>
-      <AppointmentsDirectory />
+    <PortalShell>
+      {/* The status filter can come from the URL (?status=awaiting_doctor). */}
+      <Suspense fallback={<LoadingState label="Loading bookings…" />}>
+        <BookingsDirectory />
+      </Suspense>
     </PortalShell>
   );
 }

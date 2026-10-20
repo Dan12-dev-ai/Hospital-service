@@ -4,8 +4,8 @@ import { forwardRef } from "react";
 import { cn } from "cn";
 import { Icon } from "@/components/ui/icon";
 import { useDashboard } from "@/components/dashboard/dashboard-context";
-import { patientTabs } from "@/lib/patients-data";
-import type { PatientTabKey } from "@/lib/patient-types";
+import type { Department, PatientStats } from "@/lib/api-types";
+import { PATIENT_TABS, type PatientTabKey } from "@/lib/patient-types";
 
 type PatientsToolbarProps = {
   query: string;
@@ -18,8 +18,9 @@ type PatientsToolbarProps = {
   onWardChange: (value: string) => void;
   denseView: boolean;
   onDenseViewToggle: () => void;
-  departments: string[];
-  wards: string[];
+  departments: Department[];
+  wards: Department[];
+  stats: PatientStats | null;
 };
 
 export const PatientsToolbar = forwardRef<
@@ -39,6 +40,7 @@ export const PatientsToolbar = forwardRef<
     onDenseViewToggle,
     departments,
     wards,
+    stats,
   },
   ref
 ) {
@@ -67,7 +69,7 @@ export const PatientsToolbar = forwardRef<
 
       <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
         <div className="custom-scrollbar inline-flex max-w-full gap-1 overflow-x-auto rounded-2xl bg-surface-container-low/80 p-1">
-          {patientTabs.map((item) => (
+          {PATIENT_TABS.map((item) => (
             <button
               key={item.key}
               type="button"
@@ -80,7 +82,9 @@ export const PatientsToolbar = forwardRef<
               )}
             >
               {item.label}
-              {item.count && <span> ({item.count})</span>}
+              {stats && (
+                <span> ({(item.key === "all" ? stats.total : stats.by_status[item.key]).toLocaleString("en-US")})</span>
+              )}
             </button>
           ))}
         </div>
@@ -89,13 +93,13 @@ export const PatientsToolbar = forwardRef<
           <SelectPill
             value={department}
             onChange={onDepartmentChange}
-            options={departments}
+            options={[{ value: "all", label: "All Departments" }, ...departments.map((d) => ({ value: d.id, label: d.name }))]}
             ariaLabel="Filter by department"
           />
           <SelectPill
             value={ward}
             onChange={onWardChange}
-            options={wards}
+            options={[{ value: "all", label: "All Wards" }, ...wards.map((d) => ({ value: d.id, label: d.name }))]}
             ariaLabel="Filter by ward"
           />
           <button
@@ -128,7 +132,7 @@ function SelectPill({
 }: {
   value: string;
   onChange: (value: string) => void;
-  options: string[];
+  options: { value: string; label: string }[];
   ariaLabel: string;
 }) {
   return (
@@ -140,8 +144,8 @@ function SelectPill({
         className="cursor-pointer appearance-none rounded-xl bg-surface-container-low px-3 py-1.5 text-label-sm font-label-sm text-on-surface focus:outline-none"
       >
         {options.map((option) => (
-          <option key={option} value={option}>
-            {option}
+          <option key={option.value} value={option.value}>
+            {option.label}
           </option>
         ))}
       </select>

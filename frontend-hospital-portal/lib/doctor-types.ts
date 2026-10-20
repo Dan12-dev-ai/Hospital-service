@@ -1,47 +1,76 @@
-export type DoctorStatus =
-  | "on-duty"
-  | "in-consultation"
-  | "on-call"
-  | "off-duty";
+import type { ApiDoctor, DoctorRank, DutyStatus } from "@/lib/api-types";
 
+export type DoctorStatus = DutyStatus;
+export type DoctorStatusFilter = "all" | DoctorStatus;
+
+export const DUTY_LABELS: Record<DutyStatus, string> = {
+  "on-duty": "On Duty",
+  "in-consultation": "In Consultation",
+  "on-call": "On-Call / Surgery",
+  "off-duty": "Off Duty",
+};
+
+export const RANK_OPTIONS: { value: DoctorRank; label: string }[] = [
+  { value: "chief", label: "Chief of Department" },
+  { value: "senior-consultant", label: "Senior Consultant" },
+  { value: "attending", label: "Attending Physician" },
+  { value: "resident", label: "Resident / Fellow" },
+];
+
+const STATUS_STYLES: Record<DutyStatus, { badge: string; dot: string; bar: string }> = {
+  "on-duty": { badge: "bg-secondary-fixed/40 text-on-secondary-container font-medium", dot: "bg-secondary", bar: "bg-primary-container" },
+  "in-consultation": { badge: "bg-primary-fixed/40 text-on-primary-fixed-variant font-medium", dot: "bg-primary animate-pulse", bar: "bg-primary" },
+  "on-call": { badge: "bg-tertiary-fixed/30 text-tertiary-container font-medium", dot: "bg-tertiary", bar: "bg-tertiary" },
+  "off-duty": { badge: "bg-surface-container text-on-surface-variant", dot: "bg-outline", bar: "bg-outline" },
+};
+
+/** What a row of the doctors table shows, derived from the API's doctor. */
 export type Doctor = {
   id: string;
   name: string;
-  nameAm: string;
+  nameAm: string | null;
   license: string;
-  credentials: string;
-  /** e.g. "F / 46" */
-  demographics: string;
-  photo: string;
-  /** Filter key — matches the department <select> option value */
-  department: string;
-  /** Display label, e.g. "General Surgery & Trauma" */
+  credentials: string | null;
   departmentLabel: string;
-  specialty: string;
-  /** Filter key — matches the rank <select> option value */
-  rank: string;
-  rankLabel: string;
+  specialty: string | null;
+  rankLabel: string | null;
   status: DoctorStatus;
-  /** Display text inside the status pill, e.g. "On Duty • OPD Rm 204" */
   statusLabel: string;
-  /** Status pill background/text classes (varies per row in the template) */
   statusBadgeClass: string;
-  /** Status pill leading dot color class */
   statusDotClass: string;
-  /** e.g. "18 / 22 Patients" */
   loadLabel: string;
-  /** e.g. "82%" or "OR Active" — shown on the right of the load bar */
   loadCaption: string;
-  /** 0-100 fill width of the load progress bar */
   loadPercent: number;
-  /** Progress bar fill color class */
   loadBarClass: string;
   phone: string;
   extension: string;
-  /** Toast messages for the row action buttons */
-  profileMessage: string;
-  scheduleMessage: string;
-  messageMessage: string;
+  source: ApiDoctor;
 };
 
-export type DoctorStatusFilter = "all" | DoctorStatus;
+export function toDoctorView(doctor: ApiDoctor): Doctor {
+  const style = STATUS_STYLES[doctor.duty_status];
+  const { patients, capacity, percent } = doctor.load;
+  return {
+    id: doctor.id,
+    name: doctor.full_name,
+    nameAm: doctor.full_name_am,
+    license: doctor.license_number ?? "No licence on file",
+    credentials: doctor.credentials,
+    departmentLabel: doctor.department?.name ?? "No department",
+    specialty: doctor.specialty,
+    rankLabel: RANK_OPTIONS.find((r) => r.value === doctor.rank)?.label ?? null,
+    status: doctor.duty_status,
+    statusLabel: doctor.duty_location
+      ? `${DUTY_LABELS[doctor.duty_status]} • ${doctor.duty_location}`
+      : DUTY_LABELS[doctor.duty_status],
+    statusBadgeClass: style.badge,
+    statusDotClass: style.dot,
+    loadLabel: capacity ? `${patients} / ${capacity} Patients` : `${patients} Patients`,
+    loadCaption: percent !== null ? `${percent}%` : "No capacity set",
+    loadPercent: percent ?? 0,
+    loadBarClass: style.bar,
+    phone: doctor.phone ?? "—",
+    extension: doctor.extension ? `Ext. ${doctor.extension}` : "",
+    source: doctor,
+  };
+}

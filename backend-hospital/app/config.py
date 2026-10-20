@@ -52,7 +52,8 @@ class Settings(BaseSettings):
     #: Key for Endod's platform-admin endpoints (approve / suspend hospitals).
     PLATFORM_ADMIN_KEY: Optional[str] = None
     #: Reverse proxies in front of this service that append to
-    #: X-Forwarded-For (the portal's server, nginx...). The client address is
+    #: X-Forwarded-For (Cloudflare, nginx; the portal passes the header on
+    #: unchanged, so it is not a hop). The client address is
     #: the entry this many hops from the right; 0 trusts no header at all.
     TRUSTED_PROXY_HOPS: int = 0
 

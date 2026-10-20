@@ -1,36 +1,59 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Endod hospital portal
 
-## Getting Started
+The staff portal of the hospital service (Next.js App Router). It talks to
+`../backend-hospital` through its own server: the browser only calls `/api/*`
+on this origin, and the route handlers in `app/api/` pass the calls on to the
+hospital service with the staff member's session.
 
-First, run the development server:
+## Run locally
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+```sh
+npm ci
+HOSPITAL_API_URL=http://127.0.0.1:8020 npm run dev   # the backend's address (default shown)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+| Variable | Meaning |
+| --- | --- |
+| `HOSPITAL_API_URL` | Where the hospital service listens (server side only). Default `http://127.0.0.1:8020`. |
+| `SESSION_COOKIE_SECURE` | `true`/`false` to force the session cookie's `Secure` flag; by default it is set in production. |
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Sessions
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- Sign-in (`/api/auth/login`) and hospital sign-up (`/api/onboarding`) put the
+  backend's session token into the `hp_session` cookie: httpOnly, SameSite=Lax,
+  Secure in production. Page code never sees the token.
+- `app/api/[...path]/route.ts` forwards the staff API (`auth/me`,
+  `auth/password`, `hospital`, `departments`, `staff`, `patients`, `doctors`,
+  `bookings`) with the token as a bearer header; anything else is a 404, so
+  Endod's `/platform/*` endpoints are never reachable through the portal.
+  Changes must be JSON and, when the browser sends an `Origin`, from this origin.
+- `proxy.ts` sends signed-out visitors to `/login`. A session the backend no
+  longer accepts gets a 401, the cookie is dropped and the page goes to `/login`.
+- Staff with a temporary password are sent to `/account/password` until they
+  change it.
+- The handlers forward the caller's `X-Forwarded-For` unchanged. Set the
+  backend's `HOSPITAL_TRUSTED_PROXY_HOPS` only when a proxy in front of the
+  portal appends the real client address (the sign-up rate limit uses it).
 
-## Learn More
+## What is real
 
-To learn more about Next.js, take a look at the following resources:
+Real: sign-in, sign-out, password change, hospital sign-up (pending until
+Endod approves), hospital settings, Endod bookings and video visits, the
+doctors and patients directories, and the dashboard's patient, booking and
+doctor counts. Billing, pharmacy, reports and the rest of the dashboard are
+sample data and carry a "Sample data" badge.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Browser tests
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+The Playwright tests run against the real hospital service (uvicorn with a
+throwaway SQLite database, started by `playwright.config.ts`) and the built
+portal (`next start`), in the system Chrome:
 
-## Deploy on Vercel
+```sh
+npx next build
+npx playwright test             # or E2E_NEXT_DEV=1 npx playwright test (no build)
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+The backend's Python is `../.venv` by default; set `E2E_PYTHON` to use another
+one. Test data is written by `e2e/seed.py`, which stores bookings the way the
+event worker does (`app.bookings.on_requested`).

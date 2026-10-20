@@ -3,19 +3,15 @@
 import { forwardRef } from "react";
 import { cn } from "cn";
 import { Icon } from "@/components/ui/icon";
-import { doctorDepartments, doctorRanks } from "@/lib/doctors-data";
-import type { DoctorStatusFilter } from "@/lib/doctor-types";
+import type { Department, DoctorList } from "@/lib/api-types";
+import { RANK_OPTIONS, type DoctorStatusFilter } from "@/lib/doctor-types";
 
-const STATUS_FILTERS: {
-  key: DoctorStatusFilter;
-  label: string;
-  count: number;
-}[] = [
-  { key: "all", label: "All Doctors", count: 148 },
-  { key: "on-duty", label: "On Duty", count: 42 },
-  { key: "in-consultation", label: "In Consultation", count: 26 },
-  { key: "on-call", label: "On-Call / Surgery", count: 14 },
-  { key: "off-duty", label: "Off Duty", count: 66 },
+const STATUS_FILTERS: { key: DoctorStatusFilter; label: string }[] = [
+  { key: "all", label: "All Doctors" },
+  { key: "on-duty", label: "On Duty" },
+  { key: "in-consultation", label: "In Consultation" },
+  { key: "on-call", label: "On-Call / Surgery" },
+  { key: "off-duty", label: "Off Duty" },
 ];
 
 type DoctorsToolbarProps = {
@@ -23,10 +19,13 @@ type DoctorsToolbarProps = {
   onQueryChange: (value: string) => void;
   department: string;
   onDepartmentChange: (value: string) => void;
+  departments: Department[];
   rank: string;
   onRankChange: (value: string) => void;
   status: DoctorStatusFilter;
   onStatusChange: (status: DoctorStatusFilter) => void;
+  /** Per-status counts from the API (they follow every filter except the status). */
+  counts: DoctorList["counts"] | null;
 };
 
 export const DoctorsToolbar = forwardRef<HTMLInputElement, DoctorsToolbarProps>(
@@ -36,10 +35,12 @@ export const DoctorsToolbar = forwardRef<HTMLInputElement, DoctorsToolbarProps>(
       onQueryChange,
       department,
       onDepartmentChange,
+      departments,
       rank,
       onRankChange,
       status,
       onStatusChange,
+      counts,
     },
     ref
   ) {
@@ -71,13 +72,16 @@ export const DoctorsToolbar = forwardRef<HTMLInputElement, DoctorsToolbarProps>(
             <SelectPill
               value={department}
               onChange={onDepartmentChange}
-              options={doctorDepartments}
+              options={[
+                { value: "all", label: "All Departments" },
+                ...departments.map((d) => ({ value: d.id, label: d.name })),
+              ]}
               ariaLabel="Filter by department"
             />
             <SelectPill
               value={rank}
               onChange={onRankChange}
-              options={doctorRanks}
+              options={[{ value: "all", label: "All Ranks" }, ...RANK_OPTIONS]}
               ariaLabel="Filter by rank"
             />
           </div>
@@ -97,7 +101,8 @@ export const DoctorsToolbar = forwardRef<HTMLInputElement, DoctorsToolbarProps>(
                   : "text-on-surface-variant hover:bg-surface-container"
               )}
             >
-              {filter.label} ({filter.count})
+              {filter.label}
+              {counts ? ` (${filter.key === "all" ? counts.all : counts[filter.key]})` : ""}
             </button>
           ))}
         </div>

@@ -8,7 +8,7 @@ export const metadata: Metadata = {
 
 export default function DoctorsPage() {
   return (
-    <PortalShell showTopBar={false}>
+    <PortalShell>
       <DoctorsDirectory />
     </PortalShell>
   );

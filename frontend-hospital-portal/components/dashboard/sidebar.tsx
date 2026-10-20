@@ -4,8 +4,9 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { cn } from "cn";
 import { Icon } from "@/components/ui/icon";
-import { useDashboard } from "@/components/dashboard/dashboard-context";
-import { currentUser, facility, navItems } from "@/lib/dashboard-data";
+import { useSession } from "@/components/session/session-context";
+import { navItems } from "@/lib/dashboard-data";
+import { initialsOf } from "@/lib/format";
 import { SidebarLink } from "@/components/dashboard/sidebar-link";
 
 export function Sidebar() {
@@ -110,7 +111,11 @@ function SidebarBody({
   onToggleCollapse?: () => void;
   onClose?: () => void;
 }) {
-  const { showToast } = useDashboard();
+  const session = useSession();
+  const staff = session.status === "ready" ? session.staff : null;
+  const hospital = session.status === "ready" ? session.hospital : null;
+  const items = navItems.filter((item) => !item.roles || (staff !== null && item.roles.includes(staff.role)));
+  const [signingOut, setSigningOut] = useState(false);
 
   return (
     <>
@@ -171,10 +176,10 @@ function SidebarBody({
             </div>
             <div className="flex min-w-0 flex-col">
               <span className="truncate text-[11px] font-semibold text-slate-800">
-                {facility.name}
+                {hospital?.name ?? "Loading…"}
               </span>
               <span className="truncate text-[10px] font-medium text-slate-400">
-                {facility.nameAm}
+                {hospital?.name_am ?? hospital?.code ?? ""}
               </span>
             </div>
           </div>
@@ -182,7 +187,7 @@ function SidebarBody({
 
         {/* Navigation Links */}
         <nav className="space-y-0.5">
-          {navItems.map((item) => (
+          {items.map((item) => (
             <SidebarLink
               key={item.href}
               item={item}
@@ -199,25 +204,29 @@ function SidebarBody({
             "flex items-center gap-2.5 rounded-2xl border border-slate-100 bg-slate-50/70 p-2",
             collapsed && "justify-center"
           )}
-          title={collapsed ? currentUser.name : undefined}
+          title={collapsed ? staff?.full_name : undefined}
         >
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-teal-800 text-xs font-bold text-teal-100">
-            {currentUser.initials}
+            {staff ? initialsOf(staff.full_name) : "…"}
           </div>
           {!collapsed && (
             <div className="flex min-w-0 flex-col">
               <span className="truncate text-[11px] font-semibold text-slate-800">
-                {currentUser.name}
+                {staff?.full_name ?? ""}
               </span>
               <span className="truncate text-[10px] text-slate-400">
-                {currentUser.email}
+                {staff?.email ?? ""}
               </span>
             </div>
           )}
         </div>
         <button
           type="button"
-          onClick={() => showToast("Signing out of Dedan Health OS...")}
+          disabled={signingOut}
+          onClick={async () => {
+            setSigningOut(true);
+            await session.signOut();
+          }}
           title={collapsed ? "Sign Out" : undefined}
           className={cn(
             "flex w-full items-center justify-center gap-2 rounded-2xl border border-red-200/80 bg-red-50/40 px-3 py-2 text-[11px] font-semibold text-rose-600 transition-colors hover:bg-red-50",
