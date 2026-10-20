@@ -1,0 +1,89 @@
+# The Endod hospital service: its own Postgres, the API, the event worker
+# and the staff portal (hospital.endod-health.com).
+#
+# It shares nothing with the patient platform except the event bus: the
+# worker and API join the "endod-bus" network that Endod's Compose project
+# creates (Redis with Sentinel). Start that project first.
+#
+#   cd deploy && docker compose --env-file .env up -d --build
+
+name: endod-hospital
+
+x-api-env: &api-env
+  HOSPITAL_ENVIRONMENT: production
+  HOSPITAL_DATABASE_URL: postgresql+psycopg://hospital:${POSTGRES_PASSWORD}@postgres:5432/hospital
+  HOSPITAL_CORS_ORIGINS: https://hospital.endod-health.com
+  HOSPITAL_REDIS_SENTINELS: endod-sentinel-1:26379,endod-sentinel-2:26379,endod-sentinel-3:26379
+  HOSPITAL_REDIS_SENTINEL_MASTER: endod
+  HOSPITAL_REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD (the same as Endod's)}
+  HOSPITAL_REDIS_SENTINEL_PASSWORD: ${REDIS_SENTINEL_PASSWORD:-}
+  HOSPITAL_REDIS_MIN_REPLICAS: "1"
+  HOSPITAL_JITSI_DOMAIN: meet.endod-health.com
+  HOSPITAL_JITSI_APP_ID: endod
+  HOSPITAL_JITSI_APP_SECRET: ${JITSI_APP_SECRET:?set JITSI_APP_SECRET (the same as Endod's)}
+  HOSPITAL_PLATFORM_ADMIN_KEY: ${PLATFORM_ADMIN_KEY:?set PLATFORM_ADMIN_KEY}
+  HOSPITAL_SIGNUP_ENABLED: "true"
+  # Cloudflare adds the visitor and nginx adds Cloudflare; the portal passes
+  # the header on unchanged. So the visitor is two entries from the right.
+  HOSPITAL_TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-2}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: hospital
+      POSTGRES_USER: hospital
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hospital -d hospital"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ../backend-hospital
+    restart: unless-stopped
+    environment: *api-env
+    networks: [default, bus]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build: ../backend-hospital
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker"]
+    environment: *api-env
+    healthcheck:
+      disable: true
+    networks: [default, bus]
+    depends_on:
+      api:
+        condition: service_healthy
+
+  portal:
+    build: ../frontend-hospital-portal
+    restart: unless-stopped
+    environment:
+      HOSPITAL_API_URL: http://api:8000
+    networks:
+      default: {}
+      shared_edge:
+        aliases: [endod-hospital-portal]
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+
+networks:
+  bus:
+    external: true
+    name: endod-bus
+  shared_edge:
+    external: true
+    name: ${SHARED_NGINX_NETWORK:-eyita_edge}
