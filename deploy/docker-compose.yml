@@ -23,8 +23,9 @@ x-api-env: &api-env
   HOSPITAL_JITSI_APP_SECRET: ${JITSI_APP_SECRET:?set JITSI_APP_SECRET (the same as Endod's)}
   HOSPITAL_PLATFORM_ADMIN_KEY: ${PLATFORM_ADMIN_KEY:?set PLATFORM_ADMIN_KEY}
   HOSPITAL_SIGNUP_ENABLED: "true"
-  # The portal's server, nginx and Cloudflare each add one entry.
-  HOSPITAL_TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-3}
+  # Cloudflare adds the visitor and nginx adds Cloudflare; the portal passes
+  # the header on unchanged. So the visitor is two entries from the right.
+  HOSPITAL_TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-2}
 
 services:
   postgres:
