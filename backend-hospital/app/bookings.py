@@ -68,7 +68,16 @@ def _parse(model, payload: Dict[str, Any]):
 
 def on_requested(session: Session, payload: Dict[str, Any]) -> None:
     """A patient booked (and paid for) a visit here."""
-    request = _parse(Requested, payload)
+    try:
+        request = _parse(Requested, payload)
+    except PermanentEventError:
+        ids = (payload.get("appointment_id"), payload.get("hospital_id"))
+        if all(isinstance(v, str) and 0 < len(v) <= 64 for v in ids):
+            # The patient has paid: answer, so the platform refunds them,
+            # rather than drop the request where no one sees it.
+            _reject_unknown(session, payload, "The booking details could not be accepted.")
+            return
+        raise
     if session.scalar(select(Booking.id).where(Booking.external_id == request.appointment_id)) is not None:
         return  # already known (a redelivery under a new event id)
     hospital = session.get(Hospital, request.hospital_id)

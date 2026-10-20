@@ -50,7 +50,7 @@ announcement (listed or unlisted), so a late, older one is ignored.
 incomplete). Existing appointments are unaffected.
 
 ### `appointment.confirmed`
-In-person visits are confirmed on arrival; video visits when a doctor approves
+In-person visits are confirmed on receipt; video visits when a doctor approves
 (then `meeting_room` and `doctor_name` are set).
 `{"appointment_id", "hospital_id", "status": "confirmed", "meeting_room", "doctor_name", "reason": null}`
 
