@@ -96,7 +96,7 @@ export type BackendResult = { status: number; body: unknown };
 
 export async function callBackend(
   path: string,
-  init: { method: string; headers: Headers; body?: string }
+  init: { method: string; headers: Headers; body?: string | Uint8Array<ArrayBuffer> }
 ): Promise<BackendResult> {
   let response: Response;
   try {
@@ -127,4 +127,36 @@ export async function callBackend(
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The header the portal's own pages add to file uploads (see lib/api.ts). */
+export const UPLOAD_HEADER = "x-portal-upload";
+
+function sameOrigin(request: NextRequest): boolean {
+  const origin = request.headers.get("origin");
+  const host = request.headers.get("x-forwarded-host") ?? request.headers.get("host");
+  if (!origin || !host) return false;
+  try {
+    return new URL(origin).host === host;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Uploads are multipart, which a cross-site HTML form can send without a
+ * CORS preflight, so the JSON rule cannot protect them. They need, besides
+ * the SameSite session cookie: an Origin header naming this portal, and a
+ * custom header (which a form cannot set, and which makes a cross-site
+ * script's request preflighted, and refused).
+ */
+export function rejectCrossSiteUpload(request: NextRequest): NextResponse | null {
+  if (!sameOrigin(request) || request.headers.get(UPLOAD_HEADER) !== "1") {
+    return errorResponse(403, "Cross-site request refused.", "CSRF");
+  }
+  const type = (request.headers.get("content-type") ?? "").toLowerCase();
+  if (!type.startsWith("multipart/form-data")) {
+    return errorResponse(415, "Send the file as multipart/form-data.", "UNSUPPORTED_MEDIA_TYPE");
+  }
+  return null;
 }

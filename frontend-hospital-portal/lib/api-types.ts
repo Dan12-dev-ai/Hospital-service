@@ -71,6 +71,8 @@ export type Hospital = {
   /** Birr, as text with two decimals. */
   price_in_person: string | null;
   price_video: string | null;
+  /** People ahead in a queue when the "get ready" SMS goes out (0 = off). */
+  queue_notify_ahead: number;
 };
 
 export const MISSING_LABELS: Record<string, string> = {

@@ -1,0 +1,4 @@
+mrn,endod_id,category,title,occurred_at,recorded_by,condition,icd10_code,status,drug,dose,route,frequency,duration,quantity,test,value,unit,reference_range,flag,specimen,modality,body_part,findings,impression,complaint,plan,notes
+SPH-000124,,diagnosis,Hypertension,2025-01-05,Dr. Hana Bekele,Essential hypertension,I10,chronic,,,,,,,,,,,,,,,,,,,
+,DE482731,lab_result,Malaria RDT,2025-01-05T10:00:00+03:00,Lab,,,,,,,,,,Malaria RDT,positive,,,high,blood,,,,,,,
+SPH-000124,,prescription,,2025-01-05,Dr. Hana Bekele,,,,Amoxicillin,500 mg,oral,three times daily,7 days,21,,,,,,,,,,,,,

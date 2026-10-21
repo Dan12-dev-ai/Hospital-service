@@ -21,6 +21,16 @@ export const navItems: NavItem[] = [
     // The backend's booking viewers.
     roles: ["admin", "doctor", "nurse", "reception"],
   },
+  // Doctors' queues: the desk runs them all, a doctor their own.
+  { label: "Queue", icon: "format_list_numbered", href: "/queue", roles: ["admin", "reception", "doctor"] },
+  // Records patients shared through Endod: the clinical record readers.
+  {
+    label: "Shared records",
+    icon: "folder_shared",
+    href: "/shared",
+    roles: ["admin", "doctor", "nurse", "pharmacist", "records"],
+  },
+  { label: "Import", icon: "upload_file", href: "/import", roles: ["admin", "records"] },
   { label: "Billing", icon: "receipt_long", href: "/billing" },
   { label: "Pharmacy", icon: "medication", href: "/pharmacy" },
   { label: "Reports", icon: "description", href: "/reports" },

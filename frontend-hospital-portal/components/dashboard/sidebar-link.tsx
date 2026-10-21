@@ -14,7 +14,8 @@ export function SidebarLink({
   collapsed?: boolean;
 }) {
   const pathname = usePathname();
-  const isActive = pathname === item.href;
+  // A patient's page (/patients/<id>) keeps "Patients" highlighted.
+  const isActive = pathname === item.href || (item.href !== "/" && pathname.startsWith(`${item.href}/`));
 
   return (
     <Link

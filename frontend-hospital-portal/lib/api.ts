@@ -124,3 +124,42 @@ export function useApi<T>(path: string | null) {
     reload,
   };
 }
+
+/**
+ * Uploads one file through the portal's upload route (multipart, with the
+ * header that route requires). `path` is the backend path, e.g.
+ * `patients/<id>/uploads` or `imports/preview`.
+ */
+export async function apiUpload<T>(path: string, file: File): Promise<T> {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  let response: Response;
+  try {
+    response = await fetch(`/api/upload/${path.replace(/^\/+/, "")}`, {
+      method: "POST",
+      body: form,
+      headers: { Accept: "application/json", "X-Portal-Upload": "1" },
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+  } catch {
+    throw new ApiError("Cannot reach the portal. Check your connection.", 0);
+  }
+  let parsed: unknown = null;
+  try {
+    parsed = await response.json();
+  } catch {
+    parsed = null;
+  }
+  if (!response.ok) {
+    const { message, code } = messageOf(parsed, response.status);
+    if (response.status === 401) goToLogin();
+    throw new ApiError(message, response.status, code);
+  }
+  return parsed as T;
+}
+
+/** Where the browser opens (or, with `download`, saves) a record file. */
+export function fileUrl(path: string, download = false): string {
+  return `/api/download/${path.replace(/^\/+/, "")}${download ? "?download=1" : ""}`;
+}
