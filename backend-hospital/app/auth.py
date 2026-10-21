@@ -13,10 +13,13 @@ from sqlalchemy import select, update
 
 from app.config import get_settings
 from app.db import ensure_aware, session_scope, utcnow
-from app.models import AuditEvent, Hospital, StaffSession, StaffUser
+from app.models import AuditEvent, Hospital, HospitalStatus, StaffSession, StaffUser
 from app.security import hash_password, new_session_token, password_problem, token_hash, verify_password
 
 INVALID_LOGIN = "Incorrect email or password."
+#: Every staff route but sign-in, onboarding and sign-out answers this (403)
+#: until Endod approves the hospital. The portal recognises the message.
+NOT_APPROVED = "Your hospital is not approved by Endod yet. Finish your application to continue."
 
 
 class AuthError(Exception):
@@ -36,6 +39,8 @@ class Staff:
     full_name: str
     role: str
     must_change_password: bool
+    #: The hospital's status (pending, approved, suspended) when signed in.
+    hospital_status: str = HospitalStatus.APPROVED
 
 
 def audit(session, hospital_id: str, actor_id: Optional[str], action: str,
@@ -61,7 +66,8 @@ def staff_payload(user: StaffUser, hospital: Optional[Hospital] = None) -> Dict[
         "last_login_at": ensure_aware(user.last_login_at).isoformat() if user.last_login_at else None,
     }
     if hospital is not None:
-        payload["hospital"] = {"id": hospital.id, "code": hospital.code, "name": hospital.name, "name_am": hospital.name_am}
+        payload["hospital"] = {"id": hospital.id, "code": hospital.code, "name": hospital.name,
+                               "name_am": hospital.name_am, "status": hospital.status}
     return payload
 
 
@@ -155,13 +161,14 @@ def resolve_session(token: str) -> Staff:
     now = utcnow()
     with session_scope() as session:
         row = session.execute(
-            select(StaffSession, StaffUser)
+            select(StaffSession, StaffUser, Hospital.status)
             .join(StaffUser, StaffUser.id == StaffSession.user_id)
+            .join(Hospital, Hospital.id == StaffUser.hospital_id)
             .where(StaffSession.token_hash == token_hash(token))
         ).first()
         if row is None:
             raise AuthError("Authentication required.")
-        sess, user = row
+        sess, user, hospital_status = row
         if sess.revoked_at is not None or ensure_aware(sess.expires_at) <= now:
             raise AuthError("Your session has ended. Please sign in again.")
         if not user.active:
@@ -169,6 +176,7 @@ def resolve_session(token: str) -> Staff:
         return Staff(
             id=user.id, hospital_id=user.hospital_id, session_id=sess.id, email=user.email,
             full_name=user.full_name, role=user.role, must_change_password=user.must_change_password,
+            hospital_status=hospital_status,
         )
 
 
@@ -184,7 +192,15 @@ def signed_in_staff(authorization: Optional[str] = Header(default=None)) -> Staf
 
 
 def current_staff(staff: Staff = Depends(signed_in_staff)) -> Staff:
-    """A signed-in staff member cleared to use the portal."""
+    """A signed-in staff member cleared to use the portal: their hospital is
+    not waiting for Endod's approval, and their password is not temporary.
+
+    Every staff route depends on this (directly or through require_roles),
+    except sign-in, sign-out, the password change and the onboarding routes
+    (app.api.onboarding), which a pending hospital needs.
+    """
+    if staff.hospital_status == HospitalStatus.PENDING:
+        raise HTTPException(status_code=403, detail=NOT_APPROVED)
     if staff.must_change_password:
         raise HTTPException(status_code=403, detail="Change your temporary password to continue.")
     return staff

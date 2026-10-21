@@ -41,7 +41,24 @@ python -m pytest tests -q
 | Queues | `GET /queue?day=`, `POST /queue/check-in`, `POST /queue/{doctor_id}/call-next`, `POST /queue/entries/{id}/done|skip|cancel` |
 | Shared with us | `GET /shared?patient_id=`, `GET /shared/{share_id}/files/{file_id}` |
 | Imports | `POST /imports/preview` (the file as the body), `POST /imports/{id}/confirm`, `GET /imports/template.csv` |
-| Endod platform only (`X-Platform-Key`) | `GET /platform/records/{record_id}/files/{file_id}` |
+| Joining Endod (a pending hospital's admin) | `POST /onboarding` (public: the account), `GET /onboarding/application`, `PATCH /onboarding/contact|facility|location|documents`, `POST`/`GET /onboarding/documents/{kind}` (one file as the body), `GET /onboarding/demo-slots`, `POST /onboarding/demo`, `POST /onboarding/submit` |
+| Endod platform only (`X-Platform-Key`) | `GET /platform/records/{record_id}/files/{file_id}`; `GET /platform/hospitals`, `POST /platform/hospitals/{id}/approve|suspend|reject`, `DELETE /platform/hospitals/{id}`; `GET /platform/applications?status=`, `GET /platform/applications/{hospital_id}`, `GET /platform/applications/{hospital_id}/documents/{kind}` |
+
+- **Joining Endod** (`app/onboarding.py`): a hospital or clinic applies
+  through the portal's wizard: the contact person's account first, then the
+  facility, its location, four required documents (Ministry of Health
+  license, trade license, TIN certificate, the owner's or manager's ID; PDF or
+  image, 10 MB each) with the license number, and a 30-minute demo with Endod
+  (weekdays 09:00 to 17:00 Addis Ababa time, tomorrow to 30 days ahead, one
+  hospital per slot). Each step is saved, so the wizard resumes where it
+  stopped. Until Endod approves it, the hospital is *pending* and every staff
+  route but sign-in, sign-out, the password change and `/onboarding/*`
+  answers 403. Booking or moving the demo emits `onboarding.demo_booked`
+  ([docs/events.md](../docs/events.md)) so the platform texts the contact
+  person. Endod reviews with `python -m app.cli applications`,
+  `python -m app.cli application --code X` (details and the documents' paths)
+  and `approve --code X`, or the platform API; a rejection carries a reason
+  the hospital sees, and it can fix and resubmit.
 
 - **Patients** get a hospital number when registered (`SPH-000124`, per
   hospital, never reused) and can carry their Endod ID (`DE482731`), unique

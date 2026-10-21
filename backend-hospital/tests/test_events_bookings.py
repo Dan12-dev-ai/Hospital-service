@@ -73,8 +73,12 @@ class TestOnboarding:
         assert body["hospital"]["status"] == "pending" and body["hospital"]["code"] == "TASH"
         assert body["hospital"]["listed"] is False
         headers = {"Authorization": f"Bearer {body['access_token']}"}
-        # The portal works while pending.
-        assert client.get("/hospital", headers=headers).json()["status"] == "pending"
+        # While pending, only the application is open; the rest of the portal is not.
+        refused = client.get("/hospital", headers=headers)
+        assert refused.status_code == 403 and "not approved" in refused.json()["error"]
+        application = client.get("/onboarding/application", headers=headers).json()
+        assert application["status"] == "draft" and application["facility"]["city"] == "Addis Ababa"
+        assert client.get("/auth/me", headers=headers).json()["hospital"]["status"] == "pending"
 
     @pytest.mark.parametrize("change,status", [
         ({"password": "short"}, 400), ({"kind": "military"}, 400), ({"admin_email": "nope"}, 422),
@@ -137,7 +141,14 @@ class TestApprovalAndListing:
 
     def test_pending_hospitals_are_never_announced(self, client, bus):
         signed = client.post("/onboarding", json=SIGNUP).json()
-        listed_hospital(client, {"Authorization": f"Bearer {signed['access_token']}"})
+        headers = {"Authorization": f"Bearer {signed['access_token']}"}
+        # Settings are closed while pending; the application's steps announce nothing.
+        assert client.patch("/hospital", headers=headers, json={"city": "Adama"}).status_code == 403
+        assert client.patch("/onboarding/location", headers=headers, json={
+            "address": "Bole Road", "latitude": 9.03, "longitude": 38.74}).status_code == 200
+        assert client.patch("/onboarding/facility", headers=headers, json={
+            "facility_type": "hospital", "ownership": "public", "name": "Tikur Anbessa", "city": "Addis Ababa",
+            "phone": "011 551 7611", "services": ["general_medicine"], "open_hours": "24/7"}).status_code == 200
         run_worker(bus)
         assert stream(bus) == []
 
