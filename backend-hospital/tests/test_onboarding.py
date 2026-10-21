@@ -55,7 +55,13 @@ def addis(day: int, hour: int, minute: int = 0, month: int = 10) -> str:
     return datetime(2026, month, day, hour, minute, tzinfo=ADDIS).isoformat()
 
 
+_phones = iter(range(10_000_000, 99_999_999))
+
+
 def apply(client, **change):
+    """A new application (the account step). Each further hospital gets its own mobile."""
+    if "admin_phone" not in change and change.get("admin_email", ACCOUNT["admin_email"]) != ACCOUNT["admin_email"]:
+        change["admin_phone"] = f"09{next(_phones)}"
     resp = client.post("/onboarding", json={**ACCOUNT, **change})
     assert resp.status_code == 201, resp.text
     body = resp.json()
@@ -65,6 +71,14 @@ def apply(client, **change):
 def upload(client, headers, kind, data=PDF, name="license.pdf"):
     return client.post(f"/onboarding/documents/{kind}", content=data,
                        headers={**headers, "X-Filename": name, "Content-Type": "application/octet-stream"})
+
+
+def ready(client, **change):
+    """A new application with its four documents: ready to book a demo."""
+    headers, hospital_id = apply(client, **change)
+    for kind in KINDS:
+        assert upload(client, headers, kind).status_code == 201
+    return headers, hospital_id
 
 
 def complete(client, headers, demo_at=None):
@@ -320,13 +334,13 @@ class TestDemo:
                            json={"demo_at": "2026-10-26T09:00:00"}).status_code == 422
 
     def test_the_same_instant_in_utc_is_the_same_slot(self, client):
-        headers, _ = apply(client)
+        headers, _ = ready(client)
         booked = client.post("/onboarding/demo", headers=headers, json={"demo_at": "2026-10-26T06:00:00Z"}).json()
         assert booked["demo"]["demo_at"] == "2026-10-26T09:00:00+03:00"
 
     def test_a_slot_is_for_one_hospital_and_is_hidden_from_the_others(self, client):
-        first, _ = apply(client)
-        second, _ = apply(client, admin_email="b@clinic.example", hospital_name="Abebe Clinic")
+        first, _ = ready(client)
+        second, _ = ready(client, admin_email="b@clinic.example", hospital_name="Abebe Clinic")
         assert client.post("/onboarding/demo", headers=first, json={"demo_at": addis(26, 9)}).status_code == 200
         taken = client.post("/onboarding/demo", headers=second, json={"demo_at": addis(26, 9)})
         assert taken.status_code == 409 and "Another hospital" in taken.json()["error"]
@@ -342,8 +356,8 @@ class TestDemo:
         """Both requests pass the "is it free" check; the database lets only one in."""
         from app import onboarding
 
-        first, _ = apply(client)
-        second, _ = apply(client, admin_email="b@clinic.example", hospital_name="Abebe Clinic")
+        first, _ = ready(client)
+        second, _ = ready(client, admin_email="b@clinic.example", hospital_name="Abebe Clinic")
         client.post("/onboarding/demo", headers=first, json={"demo_at": addis(29, 11)})
         monkeypatch.setattr(onboarding, "taken_slots", lambda *_a, **_k: set())
         lost = client.post("/onboarding/demo", headers=second, json={"demo_at": addis(29, 11)})
@@ -351,7 +365,7 @@ class TestDemo:
         assert client.get("/onboarding/application", headers=second).json()["demo"] is None
 
     def test_concurrent_bookings_of_one_slot(self, client):
-        accounts = [apply(client, admin_email=f"h{i}@race.example", hospital_name=f"Race Clinic {i}")[0]
+        accounts = [ready(client, admin_email=f"h{i}@race.example", hospital_name=f"Race Clinic {i}")[0]
                     for i in range(4)]
         barrier = threading.Barrier(len(accounts))
         results = []
@@ -374,7 +388,7 @@ class TestDemo:
             assert session.scalar(select(func.count()).select_from(DemoBooking)) == 1
 
     def test_the_contact_is_texted_through_the_platform(self, client, bus):
-        headers, hospital_id = apply(client)
+        headers, hospital_id = ready(client)
         client.post("/onboarding/demo", headers=headers, json={"demo_at": addis(26, 10)})
         client.post("/onboarding/demo", headers=headers, json={"demo_at": addis(26, 10)})  # same time: no news
         client.post("/onboarding/demo", headers=headers, json={"demo_at": addis(2, 11, 30, month=11)})
@@ -456,6 +470,11 @@ class TestEndodReview:
         assert app["status"] == "rejected" and app["rejection_reason"] == reason["reason"]
         assert client.get("/hospital", headers=headers).status_code == 403  # still pending
         assert upload(client, headers, "tin_certificate", PNG, "tin.png").status_code == 201
+        # Sending it back released the demo slot: they book again before resubmitting.
+        assert app["demo"] is None
+        assert client.post("/onboarding/submit", headers=headers).json()["error"] == \
+            "Finish these steps first: demo booking."
+        assert client.post("/onboarding/demo", headers=headers, json={"demo_at": addis(28, 11)}).status_code == 200
         resubmitted = client.post("/onboarding/submit", headers=headers).json()
         assert resubmitted["status"] == "submitted" and resubmitted["rejection_reason"] is None
         assert client.post(f"/platform/hospitals/{hospital_id}/approve", headers=KEY).json()["status"] == "approved"
@@ -513,8 +532,8 @@ def test_migration_0005_keeps_existing_hospitals_and_their_patients(tmp_path, mo
         assert connection.execute(text("SELECT count(*) FROM patients")).scalar() == 1
         assert connection.execute(text("SELECT count(*) FROM staff_users")).scalar() == 1
     with get_engine().begin() as connection:
-        connection.execute(text("INSERT INTO demo_bookings (id, hospital_id, slot_start, created_at, updated_at) "
-                                "VALUES ('d1', 'h1', '2026-10-26 06:00:00', '2026-01-01', '2026-01-01')"))
+        connection.execute(text("INSERT INTO demo_bookings (id, hospital_id, slot_start, phone, created_at, updated_at) "
+                                "VALUES ('d1', 'h1', '2026-10-26 06:00:00', '+251911000000', '2026-01-01', '2026-01-01')"))
     command.downgrade(config, "0004")
     with get_engine().connect() as connection:
         assert connection.execute(text("SELECT count(*) FROM patients")).scalar() == 1
@@ -522,3 +541,151 @@ def test_migration_0005_keeps_existing_hospitals_and_their_patients(tmp_path, mo
         columns = [row[1] for row in connection.execute(text("PRAGMA table_info(hospitals)"))]
     dbmod.reset_engine()
     assert "facility_type" not in columns
+
+
+class TestReviewFixes:
+    """Lockout by application, slot hoarding, approval rules, staff of an applicant."""
+
+    def test_a_suspended_applicant_stays_locked_out(self, client, bus):
+        headers, hospital_id = ready(client)
+        client.post("/onboarding/demo", headers=headers, json={"demo_at": addis(26, 10)})
+        assert client.post(f"/platform/hospitals/{hospital_id}/suspend", headers=KEY).status_code == 200
+        refused = client.get("/patients", headers=headers)
+        assert refused.status_code == 403 and "not approved" in refused.json()["error"]
+        assert client.get("/hospital", headers=headers).status_code == 403
+        status = client.get("/onboarding/status", headers=headers).json()
+        assert status["status"] == "suspended" and status["locked"] is True and status["demo_at"] is None
+        assert client.get("/auth/me", headers=headers).json()["hospital"]["locked"] is True
+        # Its slot went back to the calendar, and it cannot book another.
+        assert client.post("/onboarding/demo", headers=headers, json={"demo_at": addis(27, 10)}).status_code == 409
+        other, _ = ready(client, admin_email="o@other.example", hospital_name="Other Clinic")
+        assert client.post("/onboarding/demo", headers=other, json={"demo_at": addis(26, 10)}).status_code == 200
+
+    def test_submitted_and_rejected_applications_are_locked_out(self, client):
+        headers, hospital_id = apply(client)
+        complete(client, headers)
+        client.post("/onboarding/submit", headers=headers)
+        assert client.get("/patients", headers=headers).status_code == 403
+        client.post(f"/platform/hospitals/{hospital_id}/reject", headers=KEY, json={"reason": "Clearer TIN please"})
+        assert client.get("/patients", headers=headers).status_code == 403
+
+    def test_hospitals_approved_before_keep_their_access_when_suspended(self, client, admin, hospital):
+        assert client.get("/auth/me", headers=admin).json()["hospital"]["locked"] is False
+        client.post(f"/platform/hospitals/{hospital}/suspend", headers=KEY)
+        assert client.get("/patients", headers=admin).status_code == 200
+        # The auto-created application is approved, so Endod can bring it back.
+        assert client.post(f"/platform/hospitals/{hospital}/approve", headers=KEY).json()["status"] == "approved"
+
+    def test_a_demo_needs_the_four_documents(self, client):
+        headers, _ = apply(client)
+        for kind in KINDS[:3]:
+            upload(client, headers, kind)
+        refused = client.post("/onboarding/demo", headers=headers, json={"demo_at": addis(26, 10)})
+        assert refused.status_code == 400 and refused.json()["error"] == "Upload all four documents before booking a demo."
+        upload(client, headers, KINDS[3])
+        assert client.post("/onboarding/demo", headers=headers, json={"demo_at": addis(26, 10)}).status_code == 200
+
+    def test_one_demo_per_mobile_number_across_hospitals(self, client):
+        first, _ = ready(client)
+        client.post("/onboarding/demo", headers=first, json={"demo_at": addis(26, 10)})
+        # The same person, the number written another way, for another facility.
+        second, _ = ready(client, admin_email="again@other.example", hospital_name="Second Clinic",
+                          admin_phone="+251 911 234 567")
+        refused = client.post("/onboarding/demo", headers=second, json={"demo_at": addis(26, 11)})
+        assert refused.status_code == 409 and "already has a demo" in refused.json()["error"]
+        # Switching the first application to that number elsewhere is refused too.
+        third, _ = ready(client, admin_email="third@other.example", hospital_name="Third Clinic")
+        client.post("/onboarding/demo", headers=third, json={"demo_at": addis(26, 12)})
+        moved = client.patch("/onboarding/contact", headers=third, json={
+            "full_name": "Third Person", "title": "Owner", "phone": "0911 234 567"})
+        assert moved.status_code == 409
+
+    def test_an_unsubmitted_booking_is_released_after_a_day(self, client, bus, monkeypatch):
+        from app import chores, onboarding
+
+        draft, draft_id = ready(client)
+        client.post("/onboarding/demo", headers=draft, json={"demo_at": addis(29, 10)})
+        kept, _ = apply(client, admin_email="kept@other.example", hospital_name="Kept Clinic")
+        complete(client, kept, demo_at=addis(29, 11))
+        client.post("/onboarding/submit", headers=kept)
+        before = len(published(bus))
+
+        monkeypatch.setattr(onboarding, "now", lambda: FRIDAY_4PM_ADDIS + timedelta(hours=23))
+        other, _ = ready(client, admin_email="o@other.example", hospital_name="Other Clinic")
+        taken = client.post("/onboarding/demo", headers=other, json={"demo_at": addis(29, 10)})
+        assert taken.status_code == 409  # still held within the day
+
+        monkeypatch.setattr(onboarding, "now", lambda: FRIDAY_4PM_ADDIS + timedelta(hours=25))
+        assert chores.run() >= 1  # the worker releases it
+        assert client.get("/onboarding/application", headers=draft).json()["demo"] is None
+        assert client.post("/onboarding/demo", headers=other, json={"demo_at": addis(29, 10)}).status_code == 200
+        # The submitted one keeps its slot; the released one sent nothing more.
+        assert client.get("/onboarding/application", headers=kept).json()["demo"]["demo_at"] == addis(29, 11)
+        events = published(bus)
+        assert len(events) == before + 1 and all(e["hospital_id"] != draft_id for e in events[before:])
+
+    def test_a_lazy_check_also_releases_a_stale_booking(self, client, monkeypatch):
+        from app import onboarding
+
+        draft, _ = ready(client)
+        client.post("/onboarding/demo", headers=draft, json={"demo_at": addis(30, 10)})
+        monkeypatch.setattr(onboarding, "now", lambda: FRIDAY_4PM_ADDIS + timedelta(hours=25))
+        other, _ = ready(client, admin_email="o@other.example", hospital_name="Other Clinic")
+        days = client.get("/onboarding/demo-slots", headers=other).json()["days"]
+        assert addis(30, 10) in next(d for d in days if d["date"] == "2026-10-30")["slots"]
+
+    def test_approval_needs_a_submitted_application(self, client):
+        headers, hospital_id = apply(client)
+        refused = client.post(f"/platform/hospitals/{hospital_id}/approve", headers=KEY)
+        assert refused.status_code == 409
+        assert refused.json()["error"] == ("The hospital's application is not submitted yet (status: draft); "
+                                           "only a submitted application can be approved.")
+        complete(client, headers)
+        client.post("/onboarding/submit", headers=headers)
+        client.post(f"/platform/hospitals/{hospital_id}/reject", headers=KEY, json={"reason": "Fix the TIN"})
+        assert client.post(f"/platform/hospitals/{hospital_id}/approve", headers=KEY).status_code == 409
+        assert client.get("/hospital", headers=headers).status_code == 403
+
+    def test_other_staff_of_an_applicant_see_its_status_only(self, client):
+        headers, hospital_id = apply(client)
+        complete(client, headers)
+        client.post("/onboarding/submit", headers=headers)
+        make_staff(hospital_id, "nurse@bethel.example", role="nurse")
+        make_staff(hospital_id, "second-admin@bethel.example", role="admin")
+        for email in ("nurse@bethel.example", "second-admin@bethel.example"):
+            other = sign_in(client, email)
+            status = client.get("/onboarding/status", headers=other).json()
+            assert status == {**status, "name": "Bethel Teaching Hospital", "status": "submitted", "applicant": False,
+                              "locked": True, "contact_phone": None, "demo_at": addis(26, 10)}
+            refused = client.get("/onboarding/application", headers=other)
+            assert refused.status_code == 403 and "contact person" in refused.json()["error"]
+            assert client.post("/onboarding/demo", headers=other, json={"demo_at": addis(27, 10)}).status_code == 403
+            assert client.get("/patients", headers=other).status_code == 403
+        mine = client.get("/onboarding/status", headers=headers).json()
+        assert mine["applicant"] is True and mine["contact_phone"] == "+251911234567"
+
+    def test_a_temporary_password_can_be_changed_while_applying(self, client):
+        _headers, hospital_id = apply(client)
+        make_staff(hospital_id, "temp@bethel.example", role="nurse", must_change=True)
+        temp = sign_in(client, "temp@bethel.example")
+        assert client.get("/onboarding/status", headers=temp).json()["must_change_password"] is True
+        assert client.post("/auth/password", headers=temp, json={
+            "current_password": "StaffPass123", "new_password": "Brand-new-pass-1"}).status_code == 200
+        status = client.get("/onboarding/status", headers=temp).json()
+        assert status["must_change_password"] is False and status["status"] == "draft"
+
+    def test_a_demo_that_has_passed_must_be_booked_again(self, client):
+        from sqlalchemy import update
+
+        from app.db import session_scope
+        from app.models import DemoBooking
+
+        headers, _ = apply(client)
+        complete(client, headers)
+        with session_scope() as session:
+            session.execute(update(DemoBooking).values(slot_start=FRIDAY_4PM_ADDIS - timedelta(days=1)))
+        app = client.get("/onboarding/application", headers=headers).json()
+        assert app["missing"]["demo"] == ["demo_at"] and app["next_step"] == "demo"
+        assert client.post("/onboarding/submit", headers=headers).status_code == 400
+        client.post("/onboarding/demo", headers=headers, json={"demo_at": addis(27, 9)})
+        assert client.post("/onboarding/submit", headers=headers).json()["status"] == "submitted"

@@ -10,10 +10,13 @@ from typing import Any, Callable, Dict, Optional
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy import select, update
+from sqlalchemy.orm import object_session
 
 from app.config import get_settings
 from app.db import ensure_aware, session_scope, utcnow
-from app.models import AuditEvent, Hospital, HospitalStatus, StaffSession, StaffUser
+from app.models import (
+    ApplicationStatus, AuditEvent, Hospital, HospitalStatus, OnboardingApplication, StaffSession, StaffUser,
+)
 from app.security import hash_password, new_session_token, password_problem, token_hash, verify_password
 
 INVALID_LOGIN = "Incorrect email or password."
@@ -41,6 +44,21 @@ class Staff:
     must_change_password: bool
     #: The hospital's status (pending, approved, suspended) when signed in.
     hospital_status: str = HospitalStatus.APPROVED
+    #: The hospital's onboarding application is not approved: only the
+    #: application (and sign-in, sign-out, the password) is open to it.
+    locked: bool = False
+
+
+def onboarding_locked(hospital_status: str, application_status: Optional[str]) -> bool:
+    """True until Endod approves the hospital's application, whatever the
+    hospital's own status (a pending applicant that was suspended stays locked).
+
+    A hospital without an application predates onboarding: it is locked only
+    while pending. One approved once and suspended later keeps its access.
+    """
+    if application_status is None:
+        return hospital_status == HospitalStatus.PENDING
+    return application_status != ApplicationStatus.APPROVED
 
 
 def audit(session, hospital_id: str, actor_id: Optional[str], action: str,
@@ -66,8 +84,11 @@ def staff_payload(user: StaffUser, hospital: Optional[Hospital] = None) -> Dict[
         "last_login_at": ensure_aware(user.last_login_at).isoformat() if user.last_login_at else None,
     }
     if hospital is not None:
+        session = object_session(hospital)
+        application = session.get(OnboardingApplication, hospital.id) if session is not None else None
         payload["hospital"] = {"id": hospital.id, "code": hospital.code, "name": hospital.name,
-                               "name_am": hospital.name_am, "status": hospital.status}
+                               "name_am": hospital.name_am, "status": hospital.status,
+                               "locked": onboarding_locked(hospital.status, application.status if application else None)}
     return payload
 
 
@@ -161,14 +182,15 @@ def resolve_session(token: str) -> Staff:
     now = utcnow()
     with session_scope() as session:
         row = session.execute(
-            select(StaffSession, StaffUser, Hospital.status)
+            select(StaffSession, StaffUser, Hospital.status, OnboardingApplication.status)
             .join(StaffUser, StaffUser.id == StaffSession.user_id)
             .join(Hospital, Hospital.id == StaffUser.hospital_id)
+            .outerjoin(OnboardingApplication, OnboardingApplication.hospital_id == Hospital.id)
             .where(StaffSession.token_hash == token_hash(token))
         ).first()
         if row is None:
             raise AuthError("Authentication required.")
-        sess, user, hospital_status = row
+        sess, user, hospital_status, application_status = row
         if sess.revoked_at is not None or ensure_aware(sess.expires_at) <= now:
             raise AuthError("Your session has ended. Please sign in again.")
         if not user.active:
@@ -176,7 +198,7 @@ def resolve_session(token: str) -> Staff:
         return Staff(
             id=user.id, hospital_id=user.hospital_id, session_id=sess.id, email=user.email,
             full_name=user.full_name, role=user.role, must_change_password=user.must_change_password,
-            hospital_status=hospital_status,
+            hospital_status=hospital_status, locked=onboarding_locked(hospital_status, application_status),
         )
 
 
@@ -199,7 +221,7 @@ def current_staff(staff: Staff = Depends(signed_in_staff)) -> Staff:
     except sign-in, sign-out, the password change and the onboarding routes
     (app.api.onboarding), which a pending hospital needs.
     """
-    if staff.hospital_status == HospitalStatus.PENDING:
+    if staff.locked:
         raise HTTPException(status_code=403, detail=NOT_APPROVED)
     if staff.must_change_password:
         raise HTTPException(status_code=403, detail="Change your temporary password to continue.")

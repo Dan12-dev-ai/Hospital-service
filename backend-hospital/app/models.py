@@ -770,8 +770,10 @@ class OnboardingDocument(Base):
 class DemoBooking(Base):
     """The 30-minute demo a pending hospital booked with Endod.
 
-    One per hospital, and one hospital per slot: both are unique, so two
-    hospitals racing for the same time cannot both get it.
+    One per hospital, one hospital per slot and one per contact mobile: all
+    unique, so two hospitals racing for the same time cannot both get it. A
+    booking is released (deleted) when its application is not submitted
+    within a day of booking, or is sent back or suspended (app.onboarding).
     """
 
     __tablename__ = "demo_bookings"
@@ -781,6 +783,9 @@ class DemoBooking(Base):
                                              unique=True)
     #: The start of the slot, in UTC.
     slot_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, unique=True)
+    #: The contact person's mobile (+251...): one active demo per number,
+    #: across hospitals, so one person cannot hold many slots.
+    phone: Mapped[str] = mapped_column(String(20), nullable=False, unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow,
                                                  onupdate=utcnow)

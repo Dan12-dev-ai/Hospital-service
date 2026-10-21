@@ -24,7 +24,7 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app import auth, files, listing
+from app import auth, files, listing, onboarding
 from app.api.admin import hospital_payload
 from app.auth import audit
 from app.config import get_settings
@@ -185,20 +185,38 @@ def list_hospitals(status_filter: Optional[str] = Query(default=None, alias="sta
                 for h in hospitals]
 
 
-def set_status(hospital_id: str, new_status: str) -> Dict[str, Any]:
-    """Approve or suspend a hospital, and update the patient app's listing."""
+NOT_SUBMITTED = ("The hospital's application is not submitted yet (status: {status}); "
+                 "only a submitted application can be approved.")
+
+
+def set_status(hospital_id: str, new_status: str, force: bool = False) -> Dict[str, Any]:
+    """Approve or suspend a hospital, and update the patient app's listing.
+
+    Approving needs a submitted application (or one approved before: a
+    suspended hospital coming back). ``force`` (the CLI's ``--force``) skips
+    that check on purpose, and the audit log says so.
+    """
     with session_scope() as session:
         hospital = session.scalar(select(Hospital).where(Hospital.id == hospital_id).with_for_update())
         if hospital is None:
             raise HTTPException(status_code=404, detail="Hospital not found.")
+        application = onboarding.application_for(session, hospital, lock=True)
+        forced = False
+        if new_status == HospitalStatus.APPROVED and application.status not in (
+                ApplicationStatus.SUBMITTED, ApplicationStatus.APPROVED):
+            if not force:
+                raise HTTPException(status_code=409, detail=NOT_SUBMITTED.format(status=application.status))
+            forced = True
         hospital.status = new_status
         if new_status == HospitalStatus.APPROVED and hospital.approved_at is None:
             hospital.approved_at = utcnow()
         if new_status == HospitalStatus.APPROVED:
-            application = session.get(OnboardingApplication, hospital.id)
-            if application is not None:
-                application.status = ApplicationStatus.APPROVED
-        audit(session, hospital.id, None, f"hospital_{new_status}", "hospital", hospital.id)
+            application.status = ApplicationStatus.APPROVED
+        elif application.status != ApplicationStatus.APPROVED:
+            # A suspended applicant gives its demo slot back.
+            onboarding.release_demo(session, hospital.id)
+        audit(session, hospital.id, None, f"hospital_{new_status}", "hospital", hospital.id,
+              {"forced": True, "application_status": "not submitted"} if forced else None)
         listing.announce(session, hospital)
         session.flush()
         return hospital_payload(hospital)

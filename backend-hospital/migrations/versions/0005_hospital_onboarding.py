@@ -58,12 +58,14 @@ def upgrade() -> None:
     sa.Column('id', sa.String(length=32), nullable=False),
     sa.Column('hospital_id', sa.String(length=32), nullable=False),
     sa.Column('slot_start', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('phone', sa.String(length=20), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
     sa.ForeignKeyConstraint(['hospital_id'], ['hospitals.id'],
                             name=op.f('fk_demo_bookings_hospital_id_hospitals'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_demo_bookings')),
     sa.UniqueConstraint('hospital_id', name=op.f('uq_demo_bookings_hospital_id')),
+    sa.UniqueConstraint('phone', name=op.f('uq_demo_bookings_phone')),
     sa.UniqueConstraint('slot_start', name=op.f('uq_demo_bookings_slot_start'))
     )
 

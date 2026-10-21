@@ -51,13 +51,18 @@ python -m pytest tests -q
   image, 10 MB each) with the license number, and a 30-minute demo with Endod
   (weekdays 09:00 to 17:00 Addis Ababa time, tomorrow to 30 days ahead, one
   hospital per slot). Each step is saved, so the wizard resumes where it
-  stopped. Until Endod approves it, the hospital is *pending* and every staff
-  route but sign-in, sign-out, the password change and `/onboarding/*`
-  answers 403. Booking or moving the demo emits `onboarding.demo_booked`
+  stopped. Until Endod approves the *application* (whatever the hospital's
+  status: a suspended applicant stays locked), every staff route but sign-in,
+  sign-out, the password change and `/onboarding/*` answers 403; staff other
+  than the contact person see only `GET /onboarding/status`. A demo needs the
+  four documents, one mobile holds one demo, and a booking is released if the
+  application is not submitted within 24 hours, or is sent back or suspended.
+  Booking or moving the demo emits `onboarding.demo_booked`
   ([docs/events.md](../docs/events.md)) so the platform texts the contact
   person. Endod reviews with `python -m app.cli applications`,
   `python -m app.cli application --code X` (details and the documents' paths)
-  and `approve --code X`, or the platform API; a rejection carries a reason
+  and `approve --code X` (a submitted application only; `--force` overrides
+  that and is written to the audit log), or the platform API; a rejection carries a reason
   the hospital sees, and it can fix and resubmit.
 
 - **Patients** get a hospital number when registered (`SPH-000124`, per

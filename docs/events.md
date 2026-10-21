@@ -79,6 +79,11 @@ until the hospital is approved.
 ```
 
 * `booking_id` stays the same when the time changes (one demo per hospital).
+* A booking is released, silently, when its application is not submitted
+  within 24 hours of booking, or Endod sends the application back or
+  suspends it. Nothing is sent for a release; a later booking has a new
+  `booking_id` and `changed: false`.
+* One demo at a time per contact mobile, across hospitals.
 * `phone` is an Ethiopian mobile in E.164 (`+2519…` or `+2517…`).
 * `demo_at` is the start, in Addis Ababa time with its offset; demos are on
   weekdays between 09:00 and 17:00 Addis Ababa time.

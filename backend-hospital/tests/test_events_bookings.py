@@ -59,6 +59,15 @@ def listed_hospital(client, admin, video=True):
     return resp.json()
 
 
+def mark_submitted(hospital_id):
+    """The hospital's application as submitted (the wizard is tested in test_onboarding.py)."""
+    from app.db import session_scope
+    from app.models import OnboardingApplication
+
+    with session_scope() as session:
+        session.get(OnboardingApplication, hospital_id).status = "submitted"
+
+
 SIGNUP = {"hospital_name": "Tikur Anbessa Specialized Hospital", "kind": "public", "city": "Addis Ababa",
           "phone": "011 551 7611", "admin_name": "Hiwot Admin", "admin_email": "admin@tash.example",
           "password": "Strong-pass-123"}
@@ -118,6 +127,10 @@ class TestApprovalAndListing:
         pending = client.get("/platform/hospitals?status=pending", headers=key).json()
         assert [h["id"] for h in pending] == [hid]
 
+        # Only a submitted application can be approved.
+        refused = client.post(f"/platform/hospitals/{hid}/approve", headers=key)
+        assert refused.status_code == 409 and "not submitted" in refused.json()["error"]
+        mark_submitted(hid)
         # Approved but no price/location yet: not listed, and says what is missing.
         approved = client.post(f"/platform/hospitals/{hid}/approve", headers=key).json()
         assert approved["status"] == "approved" and approved["listed"] is False
@@ -165,11 +178,32 @@ class TestApprovalAndListing:
         assert client.patch("/hospital", headers=admin, json=body).status_code in (400, 422)
 
     def test_cli_approves(self, client, capsys):
-        client.post("/onboarding", json=SIGNUP)
+        hid = client.post("/onboarding", json=SIGNUP).json()["hospital"]["id"]
         from app import cli
 
+        mark_submitted(hid)
         assert cli.main(["approve", "--code", "tash"]) == 0
         assert "TASH: approved" in capsys.readouterr().out
+
+    def test_cli_approves_an_unsubmitted_application_only_with_force(self, client, capsys):
+        import json as jsonlib
+
+        from sqlalchemy import select
+
+        from app import cli
+        from app.db import session_scope
+        from app.models import AuditEvent
+
+        hid = client.post("/onboarding", json=SIGNUP).json()["hospital"]["id"]
+        with pytest.raises(SystemExit) as refused:
+            cli.main(["approve", "--code", "TASH"])
+        assert "not submitted" in str(refused.value) and "--force" in str(refused.value)
+        assert cli.main(["approve", "--code", "TASH", "--force"]) == 0
+        assert "TASH: approved" in capsys.readouterr().out
+        with session_scope() as session:
+            event = session.scalar(select(AuditEvent).where(AuditEvent.hospital_id == hid,
+                                                            AuditEvent.action == "hospital_approved"))
+            assert jsonlib.loads(event.detail)["forced"] is True
 
 
 @pytest.fixture

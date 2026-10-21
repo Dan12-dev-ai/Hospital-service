@@ -63,6 +63,9 @@ def main(argv: list[str] | None = None) -> int:
     for name, help_text in (("approve", "list a hospital in the Endod app"), ("suspend", "take a hospital off the Endod app")):
         cmd = commands.add_parser(name, help=help_text)
         cmd.add_argument("--code", required=True, help="the hospital's code, e.g. SPH")
+        if name == "approve":
+            cmd.add_argument("--force", action="store_true",
+                             help="approve even though the application is not submitted (written to the audit log)")
     commands.add_parser("hospitals", help="list hospitals and their status")
     commands.add_parser("applications", help="list onboarding applications (status, submitted, demo)")
     detail = commands.add_parser("application", help="show one application and where its documents are")
@@ -83,7 +86,15 @@ def main(argv: list[str] | None = None) -> int:
             if hospital is None:
                 raise SystemExit(f"No hospital with code {args.code}.")
             hospital_id = hospital.id
-        result = set_status(hospital_id, HospitalStatus.APPROVED if args.command == "approve" else HospitalStatus.SUSPENDED)
+        from fastapi import HTTPException
+
+        try:
+            result = set_status(hospital_id,
+                                HospitalStatus.APPROVED if args.command == "approve" else HospitalStatus.SUSPENDED,
+                                force=getattr(args, "force", False))
+        except HTTPException as exc:
+            hint = " Use --force to approve it anyway." if args.command == "approve" and exc.status_code == 409 else ""
+            raise SystemExit(f"{exc.detail}{hint}") from exc
         print(f"{result['code']}: {result['status']}" + ("" if result["listed"] else
               f" (not listed yet; missing {', '.join(result['missing_for_listing'])})"))
         return 0

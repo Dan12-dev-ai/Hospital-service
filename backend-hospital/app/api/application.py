@@ -46,12 +46,21 @@ router = APIRouter(tags=["onboarding"])
 DEMO_EVENT = "onboarding.demo_booked"
 
 
+NOT_APPLICANT = "Only the contact person who applied can change the application."
+
+
 def applicant(staff: Staff = Depends(signed_in_staff)) -> Staff:
-    """The admin filling in the application (the only account a pending hospital has)."""
+    """The contact person filling in the application: the admin who signed the
+    hospital up. Other staff of a hospital still applying see only its status
+    (GET /onboarding/status)."""
     if staff.must_change_password:
         raise HTTPException(status_code=403, detail="Change your temporary password to continue.")
     if staff.role != Role.ADMIN:
-        raise HTTPException(status_code=403, detail="Only an administrator can see the application.")
+        raise HTTPException(status_code=403, detail=NOT_APPLICANT)
+    with session_scope() as session:
+        contact = onboarding.contact_person(session, staff.hospital_id)
+        if contact is None or contact.id != staff.id:
+            raise HTTPException(status_code=403, detail=NOT_APPLICANT)
     return staff
 
 
@@ -63,6 +72,32 @@ def _hospital(session, staff: Staff, lock: bool = False) -> Hospital:
 
 
 # --- reading -------------------------------------------------------------------------------
+
+@router.get("/onboarding/status")
+def read_status(staff: Staff = Depends(signed_in_staff)) -> Dict[str, Any]:
+    """Where the hospital is in onboarding, for anyone of its staff (the
+    Under review page): read-only, without documents or contact details,
+    except for the contact person themself."""
+    with session_scope() as session:
+        hospital = _hospital(session, staff)
+        onboarding.release_stale(session)
+        app = onboarding.application_for(session, hospital)
+        contact = onboarding.contact_person(session, hospital.id)
+        is_applicant = contact is not None and contact.id == staff.id and staff.role == Role.ADMIN
+        demo = onboarding.demo_of(session, hospital.id)
+        return {
+            "name": hospital.name,
+            "status": onboarding.status_of(hospital, app),
+            "hospital_status": hospital.status,
+            "locked": staff.locked,
+            "applicant": is_applicant,
+            "must_change_password": staff.must_change_password,
+            "submitted_at": ensure_aware(app.submitted_at).isoformat() if app.submitted_at else None,
+            "rejection_reason": app.rejection_reason,
+            "demo_at": onboarding.demo_iso(demo.slot_start) if demo else None,
+            "contact_phone": contact.phone if is_applicant and contact else None,
+        }
+
 
 @router.get("/onboarding/application")
 def read_application(staff: Staff = Depends(applicant)) -> Dict[str, Any]:
@@ -140,6 +175,11 @@ def save_contact(body: ContactStep, staff: Staff = Depends(applicant)) -> Dict[s
             raise HTTPException(status_code=409, detail="The hospital has no contact person.")
         contact.full_name, contact.phone = body.full_name, body.phone
         app.contact_title = body.title
+        booking = onboarding.demo_of(session, hospital.id)
+        if booking is not None and booking.phone != body.phone:
+            if _phone_taken(session, body.phone, hospital.id):
+                raise HTTPException(status_code=409, detail=PHONE_TAKEN)
+            booking.phone = body.phone
 
     return _save_step(staff, "contact", apply)
 
@@ -284,6 +324,14 @@ def demo_slots(staff: Staff = Depends(applicant)) -> Dict[str, Any]:
 
 
 SLOT_TAKEN = "Another hospital has just booked that time. Choose another one."
+PHONE_TAKEN = ("This mobile number already has a demo booked for another facility. "
+               "One person can hold one demo at a time.")
+DOCUMENTS_FIRST = "Upload all four documents before booking a demo."
+
+
+def _phone_taken(session, phone: str, hospital_id: str) -> bool:
+    return session.scalar(select(DemoBooking.id).where(
+        DemoBooking.phone == phone, DemoBooking.hospital_id != hospital_id)) is not None
 
 
 @router.post("/onboarding/demo")
@@ -305,18 +353,26 @@ def book_demo(body: DemoChoice, staff: Staff = Depends(applicant)) -> Dict[str, 
             contact = onboarding.contact_person(session, hospital.id)
             if contact is None or not (contact.phone or "").startswith("+251"):
                 raise HTTPException(status_code=400, detail="Add the contact person's mobile number first.")
+            if len(onboarding.documents_of(session, hospital.id)) < len(DocumentKind.ALL):
+                raise HTTPException(status_code=400, detail=DOCUMENTS_FIRST)
+            # Stale bookings (anyone's) give their slot and phone back first.
+            onboarding.release_stale(session)
             booking = onboarding.demo_of(session, hospital.id)
             if booking is not None and ensure_aware(booking.slot_start) == slot_utc:
                 return onboarding.application_payload(session, hospital)
             if slot_utc in onboarding.taken_slots(session, except_hospital=hospital.id):
                 raise HTTPException(status_code=409, detail=SLOT_TAKEN)
+            if _phone_taken(session, contact.phone, hospital.id):
+                raise HTTPException(status_code=409, detail=PHONE_TAKEN)
             changed = booking is not None
             if booking is None:
-                booking = DemoBooking(id=new_id(), hospital_id=hospital.id, slot_start=slot_utc)
+                # Booked "now" on the same clock that releases it (app.onboarding.now).
+                booking = DemoBooking(id=new_id(), hospital_id=hospital.id, slot_start=slot_utc,
+                                      phone=contact.phone, created_at=onboarding.now())
                 session.add(booking)
             else:
                 booking.slot_start = slot_utc
-            # The unique slot is what settles a race: the losing insert or update fails here.
+            # The unique slot (and phone) settle a race: the losing insert or update fails here.
             session.flush()
             eventbus.emit(session, DEMO_EVENT, {
                 "hospital_id": hospital.id,
@@ -332,7 +388,11 @@ def book_demo(body: DemoChoice, staff: Staff = Depends(applicant)) -> Dict[str, 
             session.flush()
             return onboarding.application_payload(session, hospital)
     except IntegrityError as exc:
-        raise HTTPException(status_code=409, detail=SLOT_TAKEN) from exc
+        with session_scope() as session:
+            contact = onboarding.contact_person(session, staff.hospital_id)
+            phone_lost = bool(contact is not None and contact.phone
+                              and _phone_taken(session, contact.phone, staff.hospital_id))
+        raise HTTPException(status_code=409, detail=PHONE_TAKEN if phone_lost else SLOT_TAKEN) from exc
 
 
 # --- submitting ----------------------------------------------------------------------------
@@ -455,6 +515,8 @@ def reject(hospital_id: str, body: Rejection) -> Dict[str, Any]:
         app.status = ApplicationStatus.REJECTED
         app.rejection_reason = body.reason
         app.rejected_at = utcnow()
+        # The demo slot goes back to the calendar; they book again when they resubmit.
+        onboarding.release_demo(session, hospital.id)
         audit(session, hospital.id, None, "onboarding_rejected", "hospital", hospital.id, {"reason": body.reason})
         session.flush()
         return onboarding.application_payload(session, hospital)

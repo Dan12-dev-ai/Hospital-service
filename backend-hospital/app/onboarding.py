@@ -23,7 +23,7 @@ from typing import Any, Dict, Iterator, List, Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -42,6 +42,8 @@ DAY_END = time(17, 0)
 DAYS_AHEAD = 30
 #: Documents are smaller than clinical files.
 MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
+#: A booked demo is released unless the application is submitted within this.
+SUBMIT_WITHIN = timedelta(hours=24)
 
 STEPS = ("contact", "facility", "location", "documents", "demo")
 
@@ -83,6 +85,28 @@ def demo_iso(value: datetime) -> str:
     return ensure_aware(value).astimezone(DEMO_TZ).isoformat()
 
 
+def release_stale(session: Session) -> int:
+    """Release (delete) demo bookings that hold a slot for nothing: the
+    application was not submitted within SUBMIT_WITHIN of booking, or the
+    hospital was suspended before approval. Their slot and phone are free
+    again, and nothing more is sent about them. Returns how many."""
+    unsubmitted = select(OnboardingApplication.hospital_id).where(
+        OnboardingApplication.status.in_(ApplicationStatus.EDITABLE))
+    suspended = select(Hospital.id).join(OnboardingApplication, OnboardingApplication.hospital_id == Hospital.id).where(
+        Hospital.status == HospitalStatus.SUSPENDED, OnboardingApplication.status != ApplicationStatus.APPROVED)
+    result = session.execute(delete(DemoBooking).where(or_(
+        (DemoBooking.hospital_id.in_(unsubmitted)) & (DemoBooking.created_at < now() - SUBMIT_WITHIN),
+        DemoBooking.hospital_id.in_(suspended),
+    )).execution_options(synchronize_session=False))
+    return result.rowcount or 0
+
+
+def release_demo(session: Session, hospital_id: str) -> None:
+    """Release the hospital's demo now (its application was sent back or suspended)."""
+    session.execute(delete(DemoBooking).where(DemoBooking.hospital_id == hospital_id)
+                    .execution_options(synchronize_session=False))
+
+
 def taken_slots(session: Session, except_hospital: Optional[str] = None) -> set:
     """Slot starts (UTC) booked by other hospitals, from today on."""
     query = select(DemoBooking.slot_start).where(DemoBooking.slot_start >= now() - timedelta(days=1))
@@ -93,6 +117,7 @@ def taken_slots(session: Session, except_hospital: Optional[str] = None) -> set:
 
 def free_slots(session: Session, hospital_id: str) -> List[Dict[str, Any]]:
     """The calendar: each weekday with its free slots (another hospital's are hidden)."""
+    release_stale(session)
     taken = taken_slots(session, except_hospital=hospital_id)
     days: Dict[date, List[str]] = {}
     for slot in slot_grid():
@@ -111,10 +136,12 @@ def application_for(session: Session, hospital: Hospital, lock: bool = False) ->
         query = query.with_for_update()
     app = session.scalar(query)
     if app is None:
+        # A hospital that predates applications: pending ones still apply;
+        # others (approved, or approved once and suspended since) were approved.
         app = OnboardingApplication(
             hospital_id=hospital.id,
-            status=ApplicationStatus.APPROVED if hospital.status == HospitalStatus.APPROVED
-            else ApplicationStatus.DRAFT)
+            status=ApplicationStatus.DRAFT if hospital.status == HospitalStatus.PENDING
+            else ApplicationStatus.APPROVED)
         try:
             # A savepoint: two first requests at once must not fail the outer transaction.
             with session.begin_nested():
@@ -166,13 +193,20 @@ def missing(session: Session, hospital: Hospital, app: OnboardingApplication) ->
     result["documents"] = [kind for kind in DocumentKind.ALL if kind not in docs]
     if not app.license_number:
         result["documents"].append("license_number")
-    if demo_of(session, hospital.id) is None:
+    demo = demo_of(session, hospital.id)
+    # A demo whose time has passed (say, before a rejection) must be booked again.
+    if demo is None or ensure_aware(demo.slot_start) <= now():
         result["demo"].append("demo_at")
     return result
 
 
 def status_of(hospital: Hospital, app: OnboardingApplication) -> str:
-    return ApplicationStatus.APPROVED if hospital.status == HospitalStatus.APPROVED else app.status
+    """The application's status; "suspended" for an applicant Endod suspended before approving it."""
+    if app.status == ApplicationStatus.APPROVED:
+        return ApplicationStatus.APPROVED
+    if hospital.status == HospitalStatus.SUSPENDED:
+        return "suspended"
+    return app.status
 
 
 def _iso(value: Optional[datetime]) -> Optional[str]:
@@ -189,6 +223,7 @@ def document_payload(kind: str, doc: Optional[OnboardingDocument]) -> Dict[str, 
 
 def application_payload(session: Session, hospital: Hospital) -> Dict[str, Any]:
     """Everything the wizard and the Under review page show (and Endod reviews)."""
+    release_stale(session)
     app = application_for(session, hospital)
     contact = contact_person(session, hospital.id)
     docs = documents_of(session, hospital.id)
@@ -238,6 +273,8 @@ def application_payload(session: Session, hospital: Hospital) -> Dict[str, Any]:
 
 
 def require_pending(hospital: Hospital) -> None:
+    if hospital.status == HospitalStatus.SUSPENDED:
+        raise HTTPException(status_code=409, detail="Endod has suspended this application. Contact Endod.")
     if hospital.status != HospitalStatus.PENDING:
         raise HTTPException(status_code=409, detail="Your hospital is already approved; use the portal's settings.")
 
