@@ -248,8 +248,11 @@ test("records a patient shared through Endod show read-only, overall and on the 
 
   await expect(page.getByTestId("patient-name")).toContainText("Selam Shared");
   await page.getByRole("tab", { name: "Shared with us" }).click();
-  await expect(page.getByTestId("shared-record")).toContainText("Complete blood count");
-  await expect(page.getByTestId("shared-record")).toContainText("Hemoglobin");
+  // Scoped to the page shown: Next keeps the previous page (the Shared list)
+  // in the document, hidden, for fast back navigation.
+  const sharedHere = page.getByRole("main").getByTestId("shared-record");
+  await expect(sharedHere).toContainText("Complete blood count");
+  await expect(sharedHere).toContainText("Hemoglobin");
   await expect(page.getByRole("button", { name: "Retract" })).toHaveCount(0);
 });
 
