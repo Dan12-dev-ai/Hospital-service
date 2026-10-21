@@ -2,7 +2,22 @@
 
 import type { FacilityType, HospitalKind, ServiceKey } from "@/lib/api-types";
 
-export type ApplicationStatus = "draft" | "submitted" | "rejected" | "approved";
+export type ApplicationStatus = "draft" | "submitted" | "rejected" | "approved" | "suspended";
+
+/** GET /onboarding/status: for anyone of the hospital's staff. */
+export type OnboardingStatus = {
+  name: string;
+  status: ApplicationStatus;
+  hospital_status: "pending" | "approved" | "suspended";
+  locked: boolean;
+  /** The contact person who applied (the only one who can change the application). */
+  applicant: boolean;
+  must_change_password: boolean;
+  submitted_at: string | null;
+  rejection_reason: string | null;
+  demo_at: string | null;
+  contact_phone: string | null;
+};
 export type StepKey = "contact" | "facility" | "location" | "documents" | "demo" | "review";
 export type DocumentKind = "moh_license" | "trade_license" | "tin_certificate" | "owner_id";
 

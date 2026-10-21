@@ -1,6 +1,14 @@
 import { expect, test, type Page } from "@playwright/test";
 import { BACKEND_URL } from "./env";
-import { platform, seedApplicant, seedHospital, signIn, signInThroughForm, uniqueTag } from "./helpers";
+import {
+  platform,
+  seedApplicant,
+  seedApplicantStaff,
+  seedHospital,
+  signIn,
+  signInThroughForm,
+  uniqueTag,
+} from "./helpers";
 
 // Demo times are Addis Ababa time; the browser is there too.
 test.use({
@@ -166,13 +174,19 @@ test("a clinic applies step by step, resumes after a reload, and waits for Endod
   await expect(page.getByTestId("rejection-reason")).toContainText("The TIN certificate is unreadable");
   await page.getByRole("link", { name: "Fix and resubmit" }).click();
   await expect(page).toHaveURL(/\/onboarding\?fix=1$/);
-  await expect(stepOf(page)).toHaveText("Step 6 of 6");
+  // Sending it back released the demo slot: the wizard resumes at the demo.
+  await expect(stepOf(page)).toHaveText("Step 5 of 6");
   await expect(page.getByTestId("rejection-note")).toContainText("unreadable");
-  await page.getByTestId("review-summary").getByRole("button", { name: "Edit" }).nth(3).click();
+  await expect(page.getByTestId("demo-current")).toHaveCount(0);
+  await page.getByRole("button", { name: "Back" }).click();
   await expect(stepOf(page)).toHaveText("Step 4 of 6");
   await uploadDocument(page, "tin_certificate", FAKE_PDF("tin-clear.pdf"));
   await expect(page.locator('[data-kind="tin_certificate"]').getByTestId("document-status")).toContainText("tin-clear.pdf");
   await page.getByRole("button", { name: "Continue" }).click();
+  await expect(stepOf(page)).toHaveText("Step 5 of 6");
+  await page.getByTestId("demo-slot").first().click();
+  await page.getByRole("button", { name: "Book this time" }).click();
+  await expect(page.getByTestId("demo-current")).toBeVisible();
   await page.getByRole("button", { name: "Continue" }).click();
   await page.getByRole("button", { name: "Resubmit application" }).click();
   await expect(page.getByTestId("under-review")).toHaveAttribute("data-status", "submitted");
@@ -248,6 +262,49 @@ test("a hospital that is not approved sees only its application", async ({ page 
   await signIn(page, approved.accounts.admin.email, approved.password);
   await page.goto("/onboarding");
   await expect(page).toHaveURL(/\/$/);
+});
+
+test("other staff of an applying hospital change a temporary password and see its status, read-only", async ({ page }) => {
+  test.setTimeout(90_000);
+  const applying = seedApplicant("st", "submitted");
+  const tag = uniqueTag("stf");
+  for (const role of ["nurse", "admin"] as const) {
+    const staff = seedApplicantStaff(applying.hospital_id, `${role}@${tag}.example`, role);
+    await page.context().clearCookies();
+    await signInThroughForm(page, staff.email, staff.temporary_password);
+    // The temporary password first, without bouncing to the application.
+    await expect(page).toHaveURL(/\/account\/password$/);
+    await expect(page.getByTestId("must-change-password")).toBeVisible();
+    await page.getByLabel("Temporary password").fill(staff.temporary_password);
+    await page.getByLabel("New password", { exact: true }).fill("Own-password-123");
+    await page.getByLabel("Confirm new password").fill("Own-password-123");
+    await page.getByRole("button", { name: "Change password" }).click();
+    await page.getByRole("link", { name: "Continue to the portal" }).click();
+    // Then the hospital's status page: read-only, never the wizard's error.
+    await expect(page).toHaveURL(/\/under-review$/);
+    const review = page.getByTestId("under-review");
+    await expect(review).toHaveAttribute("data-applicant", "false");
+    await expect(review).toHaveAttribute("data-status", "submitted");
+    await expect(page.getByTestId("under-review-name")).toHaveText(applying.name);
+    await expect(page.getByTestId("read-only-note")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Change time" })).toHaveCount(0);
+    await page.goto("/onboarding");
+    await expect(page).toHaveURL(/\/under-review$/);
+    await page.getByRole("button", { name: "Sign out" }).click();
+    await expect(page).toHaveURL(/\/login/);
+  }
+});
+
+test("the wizard's error state can always sign out", async ({ page }) => {
+  const draft = seedApplicant("er");
+  await signIn(page, draft.email, draft.password);
+  await page.route("**/api/onboarding/application", (route) =>
+    route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "Something broke." }) })
+  );
+  await page.goto("/onboarding");
+  await expect(page.getByText("Something broke.")).toBeVisible();
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await expect(page).toHaveURL(/\/login/);
 });
 
 test("Endod's platform endpoints are not reachable through the portal", async ({ page }) => {

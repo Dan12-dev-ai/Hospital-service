@@ -32,7 +32,7 @@ const ALLOWED: RegExp[] = [
   /^shared$/,
   /^imports\/[A-Za-z0-9_-]+\/confirm$/,
   // The onboarding application (its documents go through app/api/upload and app/api/download).
-  /^onboarding\/(application|contact|facility|location|documents|demo-slots|demo|submit)$/,
+  /^onboarding\/(status|application|contact|facility|location|documents|demo-slots|demo|submit)$/,
 ];
 
 async function handle(request: NextRequest, ctx: RouteContext<"/api/[...path]">) {

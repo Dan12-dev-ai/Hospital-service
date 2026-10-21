@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Icon } from "@/components/ui/icon";
 import { hardNavigate } from "@/lib/navigation";
 import { ApiError, apiFetch } from "@/lib/api";
-import { formatDemo, type Application } from "@/lib/onboarding-types";
+import { formatDemo, type OnboardingStatus } from "@/lib/onboarding-types";
 import { signOutNow } from "@/components/session/session-context";
 import { OnboardingFrame, nextButtonClass, softButtonClass, stepHeadingClass } from "@/components/onboarding/onboarding-frame";
 import { DemoPicker } from "@/components/onboarding/demo-picker";
@@ -17,22 +17,31 @@ const NEXT_STEPS = [
   { icon: "storefront", text: "Patients then find and book you in the Endod app." },
 ];
 
+const LABELS: Record<string, { eyebrow: string; icon: string }> = {
+  draft: { eyebrow: "Application in progress", icon: "edit_document" },
+  submitted: { eyebrow: "Under review", icon: "hourglass_top" },
+  rejected: { eyebrow: "Changes needed", icon: "edit_note" },
+  suspended: { eyebrow: "Suspended", icon: "block" },
+};
+
 /**
- * What a hospital sees after submitting, and nothing else until Endod
- * approves it: the facility, the demo time (which it can change) and what
- * happens next; or, if Endod sent the application back, why, with a way to fix it.
+ * What a hospital whose application is not approved sees, and nothing else:
+ * the facility, the demo time (the contact person can change it), what
+ * happens next, or Endod's reason when it sent the application back. Other
+ * staff of the hospital see the same page, read-only.
  */
 export function UnderReview() {
-  const [application, setApplication] = useState<Application | null>(null);
+  const [status, setStatus] = useState<OnboardingStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [changing, setChanging] = useState(false);
 
   useEffect(() => {
-    apiFetch<Application>("onboarding/application").then(
+    apiFetch<OnboardingStatus>("onboarding/status").then(
       (loaded) => {
-        if (loaded.status === "approved") return hardNavigate("/");
-        if (loaded.status === "draft") return hardNavigate("/onboarding");
-        setApplication(loaded);
+        if (loaded.must_change_password) return hardNavigate("/account/password");
+        if (!loaded.locked) return hardNavigate("/");
+        if (loaded.applicant && loaded.status === "draft") return hardNavigate("/onboarding");
+        setStatus(loaded);
       },
       (err: unknown) => setError(err instanceof ApiError ? err.message : "Something went wrong.")
     );
@@ -47,7 +56,7 @@ export function UnderReview() {
     </p>
   );
 
-  if (!application) {
+  if (!status) {
     return (
       <OnboardingFrame footer={footer}>
         {error ? (
@@ -63,71 +72,92 @@ export function UnderReview() {
     );
   }
 
-  const rejected = application.status === "rejected";
+  const label = LABELS[status.status] ?? LABELS.submitted;
+  const rejected = status.status === "rejected";
+  const suspended = status.status === "suspended";
+  const canChange = status.applicant && !suspended;
   return (
     <OnboardingFrame footer={footer} wide={changing}>
-      <div data-testid="under-review" data-status={application.status}>
+      <div data-testid="under-review" data-status={status.status} data-applicant={status.applicant ? "true" : "false"}>
         <div className="mb-5 flex items-center gap-3">
           <span
-            className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl ${rejected ? "bg-amber-100 text-amber-700" : "bg-[#F2F8F7] text-[#1E5852]"}`}
+            className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl ${rejected || suspended ? "bg-amber-100 text-amber-700" : "bg-[#F2F8F7] text-[#1E5852]"}`}
           >
-            <Icon name={rejected ? "edit_note" : "hourglass_top"} className="text-[26px]" />
+            <Icon name={label.icon} className="text-[26px]" />
           </span>
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-              {rejected ? "Changes needed" : "Under review"}
-            </p>
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">{label.eyebrow}</p>
             <h1 className={stepHeadingClass} data-testid="under-review-name">
-              {application.facility.name}
+              {status.name}
             </h1>
           </div>
         </div>
 
-        {rejected ? (
-          <div data-testid="rejection-reason" className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-            <p className="font-bold">Endod sent your application back</p>
-            <p className="mt-1 text-xs">{application.rejection_reason}</p>
-            <Link href="/onboarding?fix=1" className={`${nextButtonClass} mt-3`}>
-              Fix and resubmit
-            </Link>
-          </div>
-        ) : (
-          <p className="mb-5 text-sm text-slate-600">
-            Thank you. Your application is with Endod. Until it is approved, this is the only page of the portal you can use.
+        {!status.applicant && (
+          <p data-testid="read-only-note" className="mb-5 rounded-2xl bg-[#F8FAFB] p-4 text-sm text-slate-600">
+            Your hospital is still joining Endod. The person who applied completes the application with Endod; the
+            portal opens for everyone once Endod approves it.
           </p>
         )}
 
-        <section className="mb-5 rounded-2xl border border-[#E2E8F0] bg-[#F8FAFB] p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Your demo with Endod</p>
-              <p data-testid="under-review-demo" className="mt-1 text-sm font-semibold text-[#12302C]">
-                {application.demo ? `${formatDemo(application.demo.demo_at)} (Addis Ababa time)` : "Not booked yet"}
-              </p>
-              <p className="text-[11px] text-slate-500">30 minutes. The confirmation is texted to {application.contact.phone}.</p>
-            </div>
-            {!changing && (
-              <button type="button" className={softButtonClass} onClick={() => setChanging(true)}>
-                <Icon name="event" className="text-[16px]" />
-                {application.demo ? "Change time" : "Book a time"}
-              </button>
+        {suspended ? (
+          <p className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            Endod has suspended this application. Contact Endod for details.
+          </p>
+        ) : rejected ? (
+          <div data-testid="rejection-reason" className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            <p className="font-bold">Endod sent the application back</p>
+            <p className="mt-1 text-xs">{status.rejection_reason}</p>
+            {status.applicant && (
+              <Link href="/onboarding?fix=1" className={`${nextButtonClass} mt-3`}>
+                Fix and resubmit
+              </Link>
             )}
           </div>
-          {changing && (
-            <div className="mt-4 border-t border-[#E2E8F0] pt-4">
-              <DemoPicker
-                current={application.demo?.demo_at ?? null}
-                onBooked={(updated) => {
-                  setApplication(updated);
-                  setChanging(false);
-                }}
-              />
-              <button type="button" className="mt-2 text-xs font-medium text-slate-500 hover:text-[#12302C]" onClick={() => setChanging(false)}>
-                Keep the current time
-              </button>
+        ) : (
+          status.applicant && (
+            <p className="mb-5 text-sm text-slate-600">
+              Thank you. Your application is with Endod. Until it is approved, this is the only page of the portal you
+              can use.
+            </p>
+          )
+        )}
+
+        {!suspended && (
+          <section className="mb-5 rounded-2xl border border-[#E2E8F0] bg-[#F8FAFB] p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Demo with Endod</p>
+                <p data-testid="under-review-demo" className="mt-1 text-sm font-semibold text-[#12302C]">
+                  {status.demo_at ? `${formatDemo(status.demo_at)} (Addis Ababa time)` : "Not booked yet"}
+                </p>
+                {status.contact_phone && (
+                  <p className="text-[11px] text-slate-500">30 minutes. The confirmation is texted to {status.contact_phone}.</p>
+                )}
+              </div>
+              {canChange && !changing && status.status === "submitted" && (
+                <button type="button" className={softButtonClass} onClick={() => setChanging(true)}>
+                  <Icon name="event" className="text-[16px]" />
+                  {status.demo_at ? "Change time" : "Book a time"}
+                </button>
+              )}
             </div>
-          )}
-        </section>
+            {changing && (
+              <div className="mt-4 border-t border-[#E2E8F0] pt-4">
+                <DemoPicker
+                  current={status.demo_at}
+                  onBooked={(updated) => {
+                    setStatus({ ...status, demo_at: updated.demo?.demo_at ?? null });
+                    setChanging(false);
+                  }}
+                />
+                <button type="button" className="mt-2 text-xs font-medium text-slate-500 hover:text-[#12302C]" onClick={() => setChanging(false)}>
+                  Keep the current time
+                </button>
+              </div>
+            )}
+          </section>
+        )}
 
         <section>
           <p className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">What happens next</p>

@@ -45,6 +45,11 @@ export function seedApplicant(prefix: string, stage: "draft" | "complete" | "sub
   return seed<SeededApplicant>("applicant", uniqueTag(prefix), ...flags);
 }
 
+/** Another staff member of an applying hospital, who must change a temporary password. */
+export function seedApplicantStaff(hospitalId: string, email: string, role: "admin" | "nurse") {
+  return seed<{ id: string; email: string; temporary_password: string }>("applicant-staff", hospitalId, email, role);
+}
+
 /** A booking arriving from the Endod app, as the event worker would store it. */
 export function seedBooking(
   hospitalId: string,

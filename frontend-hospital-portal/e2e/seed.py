@@ -34,6 +34,11 @@ HOSPITAL_DATABASE_URL as the server under test. Prints JSON.
         contact person, with a mobile). --complete fills in every step but
         the demo (facility, location, the four documents as small PDFs);
         --submitted also books the first free demo slot and submits.
+        Each applicant's contact has its own mobile (one demo per number).
+
+    python seed.py applicant-staff <hospital_id> <email> <role>
+        Another staff member of an applying hospital, with the temporary
+        password (they must change it at first sign-in).
 """
 
 from __future__ import annotations
@@ -202,7 +207,8 @@ def seed_applicant(tag: str, complete: bool, submitted: bool) -> dict:
         session.add(hospital)
         session.flush()
         admin = StaffUser(hospital_id=hospital.id, email=email, full_name="Abeba Applicant", role=Role.ADMIN,
-                          phone="+251911000123", password_hash=hash_password(PASSWORD), must_change_password=False)
+                          phone="+2519" + str(int(uuid.uuid4().hex[:12], 16) % 10**8).zfill(8),
+                          password_hash=hash_password(PASSWORD), must_change_password=False)
         session.add(admin)
         session.flush()
         application = OnboardingApplication(hospital_id=hospital.id, status=ApplicationStatus.DRAFT,
@@ -224,12 +230,22 @@ def seed_applicant(tag: str, complete: bool, submitted: bool) -> dict:
         if submitted:
             taken = onboarding.taken_slots(session)
             slot = next(s for s in onboarding.slot_grid() if s.astimezone(timezone.utc) not in taken)
-            session.add(DemoBooking(id=new_id(), hospital_id=hospital.id, slot_start=slot.astimezone(timezone.utc)))
+            session.add(DemoBooking(id=new_id(), hospital_id=hospital.id, slot_start=slot.astimezone(timezone.utc),
+                                    phone=admin.phone))
             application.status = ApplicationStatus.SUBMITTED
             application.submitted_at = datetime.now(timezone.utc)
             demo_at = slot.isoformat()
         return {"hospital_id": hospital.id, "name": hospital.name, "email": email, "password": PASSWORD,
                 "demo_at": demo_at}
+
+
+def seed_applicant_staff(hospital_id: str, email: str, role: str) -> dict:
+    with session_scope() as session:
+        user = StaffUser(hospital_id=hospital_id, email=email, full_name="Staff Member", role=role,
+                         password_hash=hash_password(TEMPORARY_PASSWORD), must_change_password=True)
+        session.add(user)
+        session.flush()
+        return {"id": user.id, "email": email, "temporary_password": TEMPORARY_PASSWORD}
 
 
 def main() -> None:
@@ -246,6 +262,8 @@ def main() -> None:
         print(json.dumps(queue_yesterday(args[1], args[2], args[3])))
     elif args[:1] == ["applicant"] and len(args) >= 2:
         print(json.dumps(seed_applicant(args[1], "--complete" in args[2:], "--submitted" in args[2:])))
+    elif args[:1] == ["applicant-staff"] and len(args) == 4:
+        print(json.dumps(seed_applicant_staff(args[1], args[2], args[3])))
     elif args[:1] == ["share"] and len(args) == 5:
         print(json.dumps(share(args[1], args[2], args[3], args[4])))
     else:

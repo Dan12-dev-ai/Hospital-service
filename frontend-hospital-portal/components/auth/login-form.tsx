@@ -42,8 +42,9 @@ export function LoginForm() {
       });
       const next = safeNext(new URLSearchParams(window.location.search).get("next"));
       // A hospital still applying goes back to its application.
-      if (staff.hospital?.status === "pending") return hardNavigate("/onboarding");
-      hardNavigate(staff.must_change_password ? "/account/password" : next);
+      if (staff.must_change_password) return hardNavigate("/account/password");
+      // A hospital still applying goes back to its application (or its status).
+      hardNavigate(staff.hospital?.locked ? "/onboarding" : next);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Sign-in failed.");
       setBusy(false);

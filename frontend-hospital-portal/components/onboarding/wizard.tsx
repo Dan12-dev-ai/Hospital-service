@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { hardNavigate } from "@/lib/navigation";
 import { ApiError, apiFetch } from "@/lib/api";
-import { STEPS, type Application } from "@/lib/onboarding-types";
+import { STEPS, type Application, type OnboardingStatus } from "@/lib/onboarding-types";
 import { signOutNow } from "@/components/session/session-context";
 import { OnboardingFrame } from "@/components/onboarding/onboarding-frame";
 import {
@@ -29,16 +29,24 @@ function stepIndex(application: Application): number {
 /** The application as the wizard shows it; null when the page is being left. */
 async function readState(): Promise<State | null> {
   try {
-    const application = await apiFetch<Application>("onboarding/application", { redirectOn401: false });
-    if (application.status === "approved") {
+    // Who is asking first: anyone of the hospital's staff may read this.
+    const where = await apiFetch<OnboardingStatus>("onboarding/status", { redirectOn401: false });
+    if (where.must_change_password) {
+      hardNavigate("/account/password");
+      return null;
+    }
+    if (!where.locked) {
       hardNavigate("/");
       return null;
     }
     const fixing = new URLSearchParams(window.location.search).get("fix") === "1";
-    if (application.status === "submitted" || (application.status === "rejected" && !fixing)) {
+    const editable = where.status === "draft" || (where.status === "rejected" && fixing);
+    // Other staff, and an application that is with Endod, get the read-only status page.
+    if (!where.applicant || !editable) {
       hardNavigate("/under-review");
       return null;
     }
+    const application = await apiFetch<Application>("onboarding/application", { redirectOn401: false });
     return { status: "ready", application };
   } catch (err) {
     if (err instanceof ApiError && err.status === 401) return { status: "signed-out" };
@@ -80,6 +88,13 @@ export function OnboardingWizard() {
   }
 
   const back = () => setStep((current) => Math.max(current - 1, 0));
+  const signOutFooter = (
+    <p className="mt-4 text-center text-[11px] text-slate-500">
+      <button type="button" onClick={() => void signOutNow()} className="font-semibold text-[#1E5852] hover:underline">
+        Sign out
+      </button>
+    </p>
+  );
   const footer = state.status === "ready" && (
     <p className="mt-4 text-center text-[11px] text-slate-500">
       Saved as you go: sign in again any time to continue.{" "}
@@ -100,7 +115,7 @@ export function OnboardingWizard() {
   }
   if (state.status === "error") {
     return (
-      <OnboardingFrame>
+      <OnboardingFrame footer={signOutFooter}>
         <p role="alert" className="py-6 text-center text-sm text-red-600">
           {state.message}
         </p>
