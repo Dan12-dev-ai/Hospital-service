@@ -83,3 +83,9 @@ service fee is not included).
 `{"appointment_id", "hospital_id", "by": "patient" | "endod"}`: the patient
 cancelled (and was refunded), or Endod refunded a booking the hospital had not
 confirmed or declined two hours after its time.
+
+## Patient history, follow-ups, queues and shared records
+
+Linking hospital patients to Endod accounts, clinical records, visits and
+follow-ups, queues, records shared by patients and imports add more events to
+these same streams. Their contract is in [history-events.md](history-events.md).

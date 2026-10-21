@@ -90,3 +90,44 @@ def like_pattern(term: str) -> str:
     """``%term%`` for a LIKE escaped with a backslash, so % and _ typed by a user match literally."""
     escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
+
+
+_ENDOD_ID = re.compile(r"^DE-?(\d{6})$")
+
+
+def normalize_dedan_id(value: str) -> str:
+    """An Endod ID as the platform writes it: DE and six digits (DE482731).
+
+    Also accepts the forms staff type or older records carry: de482731, DE-482731.
+    """
+    match = _ENDOD_ID.match(re.sub(r"\s+", "", value or "").upper())
+    if not match:
+        raise ValueError("not a valid Endod ID, e.g. DE482731")
+    return "DE" + match.group(1)
+
+
+_STORED_ENDOD_ID = re.compile(r"^DE\d{6}$")
+
+
+def is_dedan_id(value: Any) -> bool:
+    """True for an Endod ID exactly as stored and sent: DE and six digits."""
+    return isinstance(value, str) and bool(_STORED_ENDOD_ID.match(value))
+
+
+def checked_dedan_id(value: Optional[str]) -> Optional[str]:
+    """None, or an Endod ID as stored (DE482731); anything else raises ValueError.
+
+    Every column that holds a confirmed Endod ID goes through this (see
+    app.models), so a free-typed value is never stored, or sent to Endod.
+    """
+    if value is not None and not is_dedan_id(value):
+        raise ValueError(f"not an Endod ID in stored form (DE + 6 digits): {value!r}")
+    return value
+
+
+def _dedan(value: Optional[str]) -> Optional[str]:
+    return normalize_dedan_id(value) if value else None
+
+
+#: An optional Endod ID, stored as DE + 6 digits.
+OptionalDedanId = Annotated[Optional[str], BeforeValidator(blank_to_none), AfterValidator(_dedan)]

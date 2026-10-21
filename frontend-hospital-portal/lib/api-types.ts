@@ -71,6 +71,8 @@ export type Hospital = {
   /** Birr, as text with two decimals. */
   price_in_person: string | null;
   price_video: string | null;
+  /** People ahead in a queue when the "get ready" SMS goes out (0 = off). */
+  queue_notify_ahead: number;
 };
 
 export const MISSING_LABELS: Record<string, string> = {
@@ -145,7 +147,10 @@ export type PatientStatus = "opd" | "emergency" | "admitted" | "discharge" | "di
 export type ApiPatient = {
   id: string;
   mrn: string;
+  /** Confirmed by Endod (linked). */
   dedan_id: string | null;
+  /** Given by the patient but not confirmed: "Endod ID given, not yet linked". */
+  claimed_dedan_id: string | null;
   full_name: string;
   full_name_am: string | null;
   sex: "female" | "male";

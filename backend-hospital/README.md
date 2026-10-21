@@ -36,10 +36,16 @@ python -m pytest tests -q
 | Staff accounts | `GET /staff`, `POST /staff`, `PATCH /staff/{id}`, `POST /staff/{id}/reset-password` (admin) |
 | Patients | `GET /patients?q=&status=&department_id=&ward_id=&doctor_id=`, `GET /patients/stats`, `POST /patients`, `GET /patients/{id}`, `PATCH /patients/{id}`, `POST`/`DELETE /patients/{id}/alerts` |
 | Doctors | `GET /doctors?q=&department_id=&rank=&status=`, `GET /doctors/{id}`, `PATCH /doctors/{id}/profile` (admin), `PATCH /doctors/{id}/duty` |
+| Linking to Endod | `GET`/`POST`/`DELETE /patients/{id}/link` |
+| Records and visits | `GET`/`POST /patients/{id}/records`, `POST /patients/{id}/uploads` (one file as the body), `PATCH /records/{id}` (correction), `POST /records/{id}/retract`, `GET /records/{id}/files/{file_id}`, `GET`/`POST /patients/{id}/visits`, `PATCH /visits/{id}` (follow-up) |
+| Queues | `GET /queue?day=`, `POST /queue/check-in`, `POST /queue/{doctor_id}/call-next`, `POST /queue/entries/{id}/done|skip|cancel` |
+| Shared with us | `GET /shared?patient_id=`, `GET /shared/{share_id}/files/{file_id}` |
+| Imports | `POST /imports/preview` (the file as the body), `POST /imports/{id}/confirm`, `GET /imports/template.csv` |
+| Endod platform only (`X-Platform-Key`) | `GET /platform/records/{record_id}/files/{file_id}` |
 
 - **Patients** get a hospital number when registered (`SPH-000124`, per
-  hospital, never reused) and can carry their Endod ID (`DE-482731`), unique
-  within the hospital. Search covers name (English or Amharic), hospital
+  hospital, never reused) and can carry their Endod ID (`DE482731`), unique
+  within the hospital, stored only once Endod confirms the link. Search covers name (English or Amharic), hospital
   number, Endod ID and phone. Phones are stored as `+251XXXXXXXXX`; an age
   can stand in for an unknown date of birth. Registering the same name and
   phone twice needs `confirm_duplicate`. Reception and records staff edit
@@ -49,6 +55,12 @@ python -m pytest tests -q
   record allergy and risk alerts. Admission checks the ward's bed capacity
   and that the bed is free. Opening a patient's record is written to the
   audit log.
+- **Patient history** ([docs/history-events.md](../docs/history-events.md)):
+  linking to Endod (health card QR, or Endod ID and phone), clinical records
+  with PDF/image files (kept under `HOSPITAL_FILES_DIR`, type checked by
+  content), visits and follow-ups, per-doctor queues, records patients share
+  with the hospital, and FHIR/CSV imports ([docs/imports.md](../docs/imports.md)).
+  Records reach the patient's Endod app only once the patient is linked.
 - **Doctors** are staff with the doctor role. The directory shows licence,
   specialty, rank, extension, duty status (`on-duty`, `in-consultation`,
   `on-call`, `off-duty`) with location, and patient load against daily

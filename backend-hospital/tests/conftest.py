@@ -20,6 +20,7 @@ def db(tmp_path, monkeypatch):
     url = os.environ.get("HOSPITAL_TEST_DATABASE_URL") or f"sqlite:///{tmp_path / 'hospital.db'}"
     monkeypatch.setenv("HOSPITAL_DATABASE_URL", url)
     monkeypatch.setenv("HOSPITAL_ENVIRONMENT", "development")
+    monkeypatch.setenv("HOSPITAL_FILES_DIR", str(tmp_path / "files"))
     dbmod.reset_engine()
     dbmod.Base.metadata.drop_all(dbmod.get_engine())
     dbmod.create_all()

@@ -9,7 +9,7 @@ export type SeededHospital = {
   name: string;
   password: string;
   temporary_password: string;
-  accounts: Record<"admin" | "doctor" | "doctor2" | "nurse" | "reception" | "billing" | "newdoc", Account>;
+  accounts: Record<"admin" | "doctor" | "doctor2" | "nurse" | "reception" | "billing" | "records" | "newdoc", Account>;
 };
 export type SeededBooking = { id: string; status: string; dedan_id: string };
 
@@ -42,6 +42,40 @@ export function seedBooking(
   patientName: string
 ): SeededBooking {
   return seed<SeededBooking>("booking", hospitalId, mode, String(minutesFromNow), patientName);
+}
+
+/** Endod answering the patient's pending link request (patient.linked / patient.link_refused). */
+export function seedLinkReply(patientId: string, answer: "linked" | "refused", reason?: string) {
+  return seed<{ request_id: string; dedan_id: string }>("link-reply", patientId, answer, ...(reason ? [reason] : []));
+}
+
+/** The patient already linked to Endod. */
+export function seedLink(patientId: string, dedanId: string) {
+  return seed<{ patient_id: string; dedan_id: string }>("link", patientId, dedanId);
+}
+
+/** A walk-in checked in to the doctor's queue yesterday (hospital time), still waiting. */
+export function seedQueueYesterday(hospitalId: string, doctorEmail: string, patientName: string) {
+  return seed<{ entry_id: string; ticket: number; day: string }>("queue-yesterday", hospitalId, doctorEmail, patientName);
+}
+
+/** A patient sharing one record (with a PDF) with the hospital through Endod. */
+export function seedShare(hospitalId: string, dedanId: string, patientName: string, title: string) {
+  return seed<{ share_id: string; record_id: string; file_id: string }>("share", hospitalId, dedanId, patientName, title);
+}
+
+/** Registers a patient through the portal (the page must be signed in as a registrar). */
+export async function registerPatient(page: Page, name: string, phone = "0911 234 567") {
+  const response = await page.request.post("/api/patients", {
+    data: { full_name: name, sex: "female", age_years: 34, phone, confirm_duplicate: true },
+  });
+  expect(response.status(), await response.text()).toBe(201);
+  return (await response.json()) as { id: string; mrn: string; full_name: string };
+}
+
+/** A fresh Endod ID (DE + 6 digits). */
+export function newDedanId(): string {
+  return `DE${String(Math.floor(Math.random() * 1_000_000)).padStart(6, "0")}`;
 }
 
 /** Signs in through the portal's own API, so the page gets the session cookie. */
