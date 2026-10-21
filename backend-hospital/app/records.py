@@ -14,7 +14,7 @@ from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -34,12 +34,22 @@ def _text(value: Any) -> Any:
     return value
 
 
+def _required_text(value: Any) -> Any:
+    value = _text(value)
+    if value is None:
+        raise ValueError("this field is required")
+    return value
+
+
 def T(max_length: int):  # noqa: N802 -- a short type factory
-    return Annotated[Optional[str], BeforeValidator(_text), Field(default=None, max_length=max_length)]
+    """Optional text of at most ``max_length`` characters (null and "" are no value)."""
+    return Annotated[Optional[Annotated[str, StringConstraints(max_length=max_length)]], BeforeValidator(_text),
+                     Field(default=None)]
 
 
 def Required(max_length: int):  # noqa: N802
-    return Annotated[str, BeforeValidator(_text), Field(min_length=1, max_length=max_length)]
+    return Annotated[Annotated[str, StringConstraints(min_length=1, max_length=max_length)],
+                     BeforeValidator(_required_text)]
 
 
 class _Details(BaseModel):
@@ -103,7 +113,7 @@ class VisitNote(_Details):
     complaint: T(1000)
     findings: T(4000)
     plan: T(2000)
-    vitals: Vitals = Field(default_factory=Vitals)
+    vitals: Annotated[Vitals, BeforeValidator(lambda v: {} if v is None else v)] = Field(default_factory=Vitals)
 
 
 class Document(_Details):

@@ -26,6 +26,11 @@ x-api-env: &api-env
   # Cloudflare adds the visitor and nginx adds Cloudflare; the portal passes
   # the header on unchanged. So the visitor is two entries from the right.
   HOSPITAL_TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-2}
+  # Patient history (docs/history-events.md): record files on a volume shared
+  # by the API and the worker, and the platform API on the private bus
+  # network (for files of records patients share with the hospital).
+  HOSPITAL_FILES_DIR: /data/files
+  HOSPITAL_PLATFORM_API_URL: http://endod-platform-api:8000
 
 services:
   postgres:
@@ -47,7 +52,13 @@ services:
     build: ../backend-hospital
     restart: unless-stopped
     environment: *api-env
-    networks: [default, bus]
+    volumes:
+      - files:/data/files
+    networks:
+      default: {}
+      # The platform downloads record files from here (never through the portal).
+      bus:
+        aliases: [endod-hospital-api]
     depends_on:
       postgres:
         condition: service_healthy
@@ -57,6 +68,8 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "app.worker"]
     environment: *api-env
+    volumes:
+      - files:/data/files
     healthcheck:
       disable: true
     networks: [default, bus]
@@ -79,6 +92,7 @@ services:
 
 volumes:
   pgdata:
+  files:
 
 networks:
   bus:

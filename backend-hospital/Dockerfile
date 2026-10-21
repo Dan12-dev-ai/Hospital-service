@@ -8,7 +8,9 @@ RUN pip install -r requirements.txt
 COPY app ./app
 COPY migrations ./migrations
 COPY alembic.ini ./
-RUN useradd --create-home --uid 10002 hospital && chown -R hospital /app
+# /data/files holds record files (a volume in deploy/docker-compose.yml; a new
+# volume takes this directory's owner, so the app user can write to it).
+RUN useradd --create-home --uid 10002 hospital && mkdir -p /data/files   && chown -R hospital /app /data/files && chmod 700 /data/files
 USER hospital
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

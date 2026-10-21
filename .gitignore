@@ -8,3 +8,5 @@ __pycache__/
 *.db
 *.sqlite
 node_modules/
+# Record files kept locally (HOSPITAL_FILES_DIR)
+data/
