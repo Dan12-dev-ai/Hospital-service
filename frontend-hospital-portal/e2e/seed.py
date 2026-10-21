@@ -28,6 +28,17 @@ HOSPITAL_DATABASE_URL as the server under test. Prints JSON.
     python seed.py share <hospital_id> <dedan_id> <patient name> <record title>
         A patient sharing one record (with a PDF) with the hospital: the
         records.shared event handled as the worker would.
+
+    python seed.py applicant <tag> [--complete] [--submitted]
+        A hospital applying to join Endod (pending), with its admin (the
+        contact person, with a mobile). --complete fills in every step but
+        the demo (facility, location, the four documents as small PDFs);
+        --submitted also books the first free demo slot and submits.
+        Each applicant's contact has its own mobile (one demo per number).
+
+    python seed.py applicant-staff <hospital_id> <email> <role>
+        Another staff member of an applying hospital, with the temporary
+        password (they must change it at first sign-in).
 """
 
 from __future__ import annotations
@@ -181,6 +192,62 @@ def queue_yesterday(hospital_id: str, doctor_email: str, patient: str) -> dict:
         return {"entry_id": entry.id, "ticket": entry.ticket, "day": yesterday.isoformat()}
 
 
+def seed_applicant(tag: str, complete: bool, submitted: bool) -> dict:
+    from app import files, onboarding
+    from app.db import new_id
+    from app.models import (
+        ApplicationStatus, DemoBooking, DocumentKind, OnboardingApplication, OnboardingDocument, Role,
+    )
+
+    code = tag.upper()[:12]
+    email = f"apply@{tag}.example"
+    with session_scope() as session:
+        hospital = Hospital(code=code, name=f"{tag.title()} Applicant Clinic", kind="private", facility_type="clinic",
+                            status=HospitalStatus.PENDING, timezone="Africa/Addis_Ababa")
+        session.add(hospital)
+        session.flush()
+        admin = StaffUser(hospital_id=hospital.id, email=email, full_name="Abeba Applicant", role=Role.ADMIN,
+                          phone="+2519" + str(int(uuid.uuid4().hex[:12], 16) % 10**8).zfill(8),
+                          password_hash=hash_password(PASSWORD), must_change_password=False)
+        session.add(admin)
+        session.flush()
+        application = OnboardingApplication(hospital_id=hospital.id, status=ApplicationStatus.DRAFT,
+                                            contact_title="Clinic Manager")
+        session.add(application)
+        if complete or submitted:
+            hospital.city, hospital.phone, hospital.open_hours = "Adama", "022 111 2233", "Mon-Fri 08:00-18:00"
+            hospital.services = "general_medicine"
+            hospital.address, hospital.latitude, hospital.longitude = "Main Street", 8.54, 39.27
+            application.license_number = f"MOH/{code}/1"
+            pdf = b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n"
+            for kind in DocumentKind.ALL:
+                file_id = new_id()
+                size, sha256, content_type = files.store_bytes(pdf, hospital.id, file_id)
+                session.add(OnboardingDocument(id=file_id, hospital_id=hospital.id, kind=kind, filename=f"{kind}.pdf",
+                                               content_type=content_type, size=size, sha256=sha256,
+                                               uploaded_by=admin.id))
+        demo_at = None
+        if submitted:
+            taken = onboarding.taken_slots(session)
+            slot = next(s for s in onboarding.slot_grid() if s.astimezone(timezone.utc) not in taken)
+            session.add(DemoBooking(id=new_id(), hospital_id=hospital.id, slot_start=slot.astimezone(timezone.utc),
+                                    phone=admin.phone))
+            application.status = ApplicationStatus.SUBMITTED
+            application.submitted_at = datetime.now(timezone.utc)
+            demo_at = slot.isoformat()
+        return {"hospital_id": hospital.id, "name": hospital.name, "email": email, "password": PASSWORD,
+                "demo_at": demo_at}
+
+
+def seed_applicant_staff(hospital_id: str, email: str, role: str) -> dict:
+    with session_scope() as session:
+        user = StaffUser(hospital_id=hospital_id, email=email, full_name="Staff Member", role=role,
+                         password_hash=hash_password(TEMPORARY_PASSWORD), must_change_password=True)
+        session.add(user)
+        session.flush()
+        return {"id": user.id, "email": email, "temporary_password": TEMPORARY_PASSWORD}
+
+
 def main() -> None:
     args = sys.argv[1:]
     if args[:1] == ["hospital"] and len(args) >= 2:
@@ -193,6 +260,10 @@ def main() -> None:
         print(json.dumps(link_now(args[1], args[2])))
     elif args[:1] == ["queue-yesterday"] and len(args) == 4:
         print(json.dumps(queue_yesterday(args[1], args[2], args[3])))
+    elif args[:1] == ["applicant"] and len(args) >= 2:
+        print(json.dumps(seed_applicant(args[1], "--complete" in args[2:], "--submitted" in args[2:])))
+    elif args[:1] == ["applicant-staff"] and len(args) == 4:
+        print(json.dumps(seed_applicant_staff(args[1], args[2], args[3])))
     elif args[:1] == ["share"] and len(args) == 5:
         print(json.dumps(share(args[1], args[2], args[3], args[4])))
     else:

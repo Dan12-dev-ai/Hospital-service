@@ -40,7 +40,7 @@ def hospital_payload(h: Hospital) -> Dict[str, Any]:
         "status": h.status,
         "listed": listing.bookable(h),
         "missing_for_listing": listing.missing_for_listing(h),
-        "kind": h.kind, "city": h.city, "address": h.address, "phone": h.phone,
+        "kind": h.kind, "facility_type": h.facility_type, "city": h.city, "address": h.address, "phone": h.phone,
         "ambulance_phone": h.ambulance_phone, "emergency": h.emergency,
         "latitude": h.latitude, "longitude": h.longitude,
         "services": listing.services_of(h), "open_hours": h.open_hours,

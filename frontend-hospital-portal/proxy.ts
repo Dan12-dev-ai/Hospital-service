@@ -2,7 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 
 // Kept in sync with lib/server/backend.ts (the proxy bundle stays small).
 const SESSION_COOKIE = "hp_session";
-const PUBLIC_PAGES = new Set(["/login", "/signup"]);
+// /onboarding starts signed out (its first step creates the account).
+const PUBLIC_PAGES = new Set(["/login", "/signup", "/onboarding"]);
 
 /**
  * An optimistic check only: signed-out visitors are sent to /login before a

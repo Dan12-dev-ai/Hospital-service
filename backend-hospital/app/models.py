@@ -114,9 +114,48 @@ class HospitalStatus:
 
 
 class HospitalKind:
+    """Ownership (the column and API field are called ``kind`` for history)."""
+
     PUBLIC = "public"
     PRIVATE = "private"
     ALL = (PUBLIC, PRIVATE)
+
+
+class FacilityType:
+    HOSPITAL = "hospital"
+    CLINIC = "clinic"
+    ALL = (HOSPITAL, CLINIC)
+
+
+class ApplicationStatus:
+    """Where a pending hospital is in its onboarding application."""
+
+    #: Filling in the wizard.
+    DRAFT = "draft"
+    #: Sent to Endod; waiting for the demo and review.
+    SUBMITTED = "submitted"
+    #: Sent back by Endod with a reason; the hospital fixes it and resubmits.
+    REJECTED = "rejected"
+    APPROVED = "approved"
+    ALL = (DRAFT, SUBMITTED, REJECTED, APPROVED)
+    #: The hospital may change its application in these.
+    EDITABLE = (DRAFT, REJECTED)
+
+
+class DocumentKind:
+    """The documents every applicant must upload."""
+
+    MOH_LICENSE = "moh_license"
+    TRADE_LICENSE = "trade_license"
+    TIN_CERTIFICATE = "tin_certificate"
+    OWNER_ID = "owner_id"
+    ALL = (MOH_LICENSE, TRADE_LICENSE, TIN_CERTIFICATE, OWNER_ID)
+    LABELS = {
+        MOH_LICENSE: "Ministry of Health facility license",
+        TRADE_LICENSE: "Business / trade license",
+        TIN_CERTIFICATE: "TIN certificate",
+        OWNER_ID: "Owner or manager's ID",
+    }
 
 
 class Service:
@@ -172,6 +211,9 @@ class Hospital(Base):
                                         server_default=text("'approved'"))
     kind: Mapped[str] = mapped_column(String(8), nullable=False, default=HospitalKind.PUBLIC,
                                       server_default=text("'public'"))
+    #: A hospital or a clinic.
+    facility_type: Mapped[str] = mapped_column(String(8), nullable=False, default=FacilityType.HOSPITAL,
+                                               server_default=text("'hospital'"))
     city: Mapped[Optional[str]] = mapped_column(String(100))
     address: Mapped[Optional[str]] = mapped_column(String(200))
     #: +251XXXXXXXXX, or a short landline / hotline.
@@ -680,3 +722,70 @@ class ImportBatch(Base):
     status: Mapped[str] = mapped_column(String(10), nullable=False, default="previewed")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     imported_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+# --- Hospital onboarding: the application, its documents and the demo -------------------
+
+class OnboardingApplication(Base):
+    """A pending hospital's application to join Endod (one per hospital)."""
+
+    __tablename__ = "onboarding_applications"
+
+    hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), primary_key=True)
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default=ApplicationStatus.DRAFT)
+    #: The contact person's role or title (the person is the first admin account).
+    contact_title: Mapped[Optional[str]] = mapped_column(String(80))
+    #: The Ministry of Health facility license number.
+    license_number: Mapped[Optional[str]] = mapped_column(String(60))
+    submitted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    rejected_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    #: Endod's reason, shown to the hospital until it resubmits.
+    rejection_reason: Mapped[Optional[str]] = mapped_column(String(1000))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow,
+                                                 onupdate=utcnow)
+
+
+class OnboardingDocument(Base):
+    """One required document, kept on disk under HOSPITAL_FILES_DIR (see app.files).
+
+    Replacing a document keeps the row and points it at the new file.
+    """
+
+    __tablename__ = "onboarding_documents"
+    __table_args__ = (UniqueConstraint("hospital_id", "kind", name="uq_onboarding_document_kind"),)
+
+    #: Also the file's id on disk.
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    filename: Mapped[str] = mapped_column(String(160), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    size: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    uploaded_by: Mapped[Optional[str]] = mapped_column(ForeignKey("staff_users.id", ondelete="SET NULL"))
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class DemoBooking(Base):
+    """The 30-minute demo a pending hospital booked with Endod.
+
+    One per hospital, one hospital per slot and one per contact mobile: all
+    unique, so two hospitals racing for the same time cannot both get it. A
+    booking is released (deleted) when its application is not submitted
+    within a day of booking, or is sent back or suspended (app.onboarding).
+    """
+
+    __tablename__ = "demo_bookings"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False,
+                                             unique=True)
+    #: The start of the slot, in UTC.
+    slot_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, unique=True)
+    #: The contact person's mobile (+251...): one active demo per number,
+    #: across hospitals, so one person cannot hold many slots.
+    phone: Mapped[str] = mapped_column(String(20), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow,
+                                                 onupdate=utcnow)

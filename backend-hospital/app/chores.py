@@ -6,7 +6,7 @@ from datetime import timedelta
 
 from sqlalchemy import delete, select
 
-from app import files, queues, sharing
+from app import files, onboarding, queues, sharing
 from app.db import session_scope, utcnow
 from app.models import ImportBatch, RecordFile
 
@@ -21,6 +21,8 @@ def run() -> int:
     now = utcnow()
     with session_scope() as session:
         work = sharing.expire(session)
+        # Demo slots held by applications not submitted in time.
+        work += onboarding.release_stale(session)
         work += queues.cancel_stale(session, now)
         for row in session.scalars(select(RecordFile).where(
                 RecordFile.record_id.is_(None), RecordFile.created_at < now - KEEP_UNATTACHED_FOR)):

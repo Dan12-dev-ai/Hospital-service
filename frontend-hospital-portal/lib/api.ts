@@ -16,6 +16,8 @@ export class ApiError extends Error {
 }
 
 const TEMPORARY_PASSWORD = "Change your temporary password to continue.";
+/** The backend's answer (app/auth.py, NOT_APPROVED) while the hospital is still applying. */
+const NOT_APPROVED = "Your hospital is not approved by Endod yet. Finish your application to continue.";
 
 function messageOf(body: unknown, status: number): { message: string; code?: string } {
   if (typeof body === "object" && body !== null) {
@@ -78,6 +80,9 @@ export async function apiFetch<T>(
     if (response.status === 401 && init.redirectOn401 !== false) goToLogin();
     if (response.status === 403 && message === TEMPORARY_PASSWORD) {
       hardNavigate("/account/password");
+    }
+    if (response.status === 403 && message === NOT_APPROVED) {
+      hardNavigate("/onboarding");
     }
     throw new ApiError(message, response.status, code);
   }

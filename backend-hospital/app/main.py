@@ -10,7 +10,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
-from app.api import admin, auth, bookings, doctors, history, imports, onboarding, patients, queue, shared
+from app.api import (
+    admin, application, auth, bookings, doctors, history, imports, onboarding, patients, queue, shared,
+)
 from app.config import Settings, get_settings
 
 logger = logging.getLogger("hospital")
@@ -70,6 +72,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(doctors.router)
     app.include_router(bookings.router)
     app.include_router(onboarding.router)
+    app.include_router(application.router)
     app.include_router(history.router)
     app.include_router(history.platform_router)
     app.include_router(queue.router)

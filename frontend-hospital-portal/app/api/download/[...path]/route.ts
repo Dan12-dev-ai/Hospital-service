@@ -17,6 +17,8 @@ import {
 const ALLOWED: RegExp[] = [
   /^records\/[0-9a-f]{32}\/files\/[0-9a-f]{32}$/,
   /^shared\/[0-9a-f]{32}\/files\/[0-9a-f]{32}$/,
+  // The hospital's own onboarding documents (the backend takes the hospital from the session).
+  /^onboarding\/documents\/(moh_license|trade_license|tin_certificate|owner_id)$/,
 ];
 const TYPES = new Set(["application/pdf", "image/jpeg", "image/png", "image/webp"]);
 
