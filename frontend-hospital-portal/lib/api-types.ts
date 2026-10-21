@@ -30,11 +30,12 @@ export type Staff = {
   active: boolean;
   must_change_password: boolean;
   last_login_at: string | null;
-  hospital?: { id: string; code: string; name: string; name_am: string | null };
+  hospital?: { id: string; code: string; name: string; name_am: string | null; status: HospitalStatus };
 };
 
 export type HospitalStatus = "pending" | "approved" | "suspended";
 export type HospitalKind = "public" | "private";
+export type FacilityType = "hospital" | "clinic";
 
 export const SERVICES = [
   { key: "general_medicine", label: "General medicine" },
@@ -58,6 +59,7 @@ export type Hospital = {
   listed: boolean;
   missing_for_listing: string[];
   kind: HospitalKind;
+  facility_type: FacilityType;
   city: string | null;
   address: string | null;
   phone: string | null;

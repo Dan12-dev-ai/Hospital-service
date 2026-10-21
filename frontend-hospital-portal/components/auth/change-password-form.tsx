@@ -4,7 +4,7 @@ import { useState, type FormEvent } from "react";
 import Link from "next/link";
 import { ApiError, apiFetch, useApi } from "@/lib/api";
 import type { Staff } from "@/lib/api-types";
-import { passwordProblem } from "@/components/auth/signup-form";
+import { passwordProblem } from "@/lib/password";
 import { signOutNow } from "@/components/session/session-context";
 import {
   ErrorState,

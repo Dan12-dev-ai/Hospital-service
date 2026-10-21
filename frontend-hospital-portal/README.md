@@ -41,14 +41,20 @@ HOSPITAL_API_URL=http://127.0.0.1:8020 npm run dev   # the backend's address (de
   longer accepts gets a 401, the cookie is dropped and the page goes to `/login`.
 - Staff with a temporary password are sent to `/account/password` until they
   change it.
+- A hospital that is not approved yet sees only `/onboarding` (the wizard;
+  its first step, which creates the account, is public) and, once submitted,
+  `/under-review`. Every other page sends it there, and the backend refuses
+  the rest of the staff API. Onboarding documents use the upload route
+  (`onboarding/documents/<kind>`, 10 MB) and the download route.
 - The handlers forward the caller's `X-Forwarded-For` unchanged. Set the
   backend's `HOSPITAL_TRUSTED_PROXY_HOPS` only when a proxy in front of the
   portal appends the real client address (the sign-up rate limit uses it).
 
 ## What is real
 
-Real: sign-in, sign-out, password change, hospital sign-up (pending until
-Endod approves), hospital settings, Endod bookings and video visits, the
+Real: sign-in, sign-out, password change, the onboarding application (account,
+facility, location on a map, documents, demo booking; pending until Endod
+approves), hospital settings, Endod bookings and video visits, the
 doctors and patients directories, each patient's page (linking to Endod by
 health card QR or Endod ID and phone, clinical records with files, visits and
 follow-ups, records the patient shared), the doctors' queues, shared records

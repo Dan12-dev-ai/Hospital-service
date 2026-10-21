@@ -34,6 +34,17 @@ export function seedHospital(prefix: string, options: { unlisted?: boolean } = {
   return seed<SeededHospital>("hospital", uniqueTag(prefix), ...(options.unlisted ? ["--unlisted"] : []));
 }
 
+export type SeededApplicant = { hospital_id: string; name: string; email: string; password: string; demo_at: string | null };
+
+/**
+ * A hospital applying to join Endod (pending). `complete`: every step done
+ * but the demo; `submitted`: the demo booked and the application submitted.
+ */
+export function seedApplicant(prefix: string, stage: "draft" | "complete" | "submitted" = "draft"): SeededApplicant {
+  const flags = stage === "complete" ? ["--complete"] : stage === "submitted" ? ["--submitted"] : [];
+  return seed<SeededApplicant>("applicant", uniqueTag(prefix), ...flags);
+}
+
 /** A booking arriving from the Endod app, as the event worker would store it. */
 export function seedBooking(
   hospitalId: string,
@@ -92,10 +103,11 @@ export async function signInThroughForm(page: Page, email: string, password: str
 }
 
 /** Endod's platform API (not reachable through the portal). */
-export async function platform(request: APIRequestContext, method: "GET" | "POST", pathname: string) {
+export async function platform(request: APIRequestContext, method: "GET" | "POST", pathname: string, data?: unknown) {
   const response = await request.fetch(`${BACKEND_URL}${pathname}`, {
     method,
     headers: { "X-Platform-Key": PLATFORM_KEY },
+    ...(data === undefined ? {} : { data }),
   });
   expect(response.ok(), await response.text()).toBeTruthy();
   return response.json();

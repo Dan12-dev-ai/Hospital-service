@@ -52,6 +52,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     (async () => {
       try {
         const staff = await apiFetch<Staff>("auth/me");
+        // A hospital still applying sees only its application (the backend
+        // refuses everything else too); stay "loading" while the page changes.
+        if (staff.hospital?.status === "pending") {
+          hardNavigate("/onboarding");
+          return;
+        }
         if (staff.must_change_password) {
           hardNavigate("/account/password");
           return;
