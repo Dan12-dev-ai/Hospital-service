@@ -1,8 +1,9 @@
 """Patient registration and the patient directory.
 
 Every patient gets a hospital number (MRN) such as ``SPH-000124`` when
-registered. A patient can also carry their Endod digital health ID
-(``dedan_id``), which links the hospital record to the patient platform.
+registered. Their Endod digital health ID (``dedan_id``) is set only once
+Endod confirms the account (app/api/history.py, app/linking.py); an ID the
+patient merely gives is kept as ``claimed_dedan_id`` until then.
 """
 
 from __future__ import annotations
@@ -17,7 +18,6 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 
-from app import linking
 from app.auth import Staff, audit, current_staff, require_roles
 from app.db import ensure_aware, session_scope, utcnow
 from app.models import (
@@ -37,16 +37,15 @@ CLINICAL_EDITORS = (Role.ADMIN, Role.DOCTOR, Role.NURSE)
 
 DEMOGRAPHIC_FIELDS = {
     "full_name", "full_name_am", "sex", "date_of_birth", "age_years", "phone", "address",
-    "emergency_contact_name", "emergency_contact_phone", "payer", "payer_number", "dedan_id",
+    "emergency_contact_name", "emergency_contact_phone", "payer", "payer_number", "claimed_dedan_id",
 }
 CLINICAL_FIELDS = {"status", "department_id", "ward_id", "bed", "attending_doctor_id", "diagnosis"}
 #: Who sees the working diagnosis. Allergy and risk alerts are shown to everyone,
 #: since they are safety information (the pharmacy and the cashier need them too).
 DIAGNOSIS_READERS = (Role.ADMIN, Role.DOCTOR, Role.NURSE, Role.PHARMACIST, Role.RECORDS)
-#: An Endod ID is stored only once Endod confirms the account.
-LINK_INSTEAD = "Link the patient to Endod from their page (health card or Endod ID and phone number)."
 #: Identity fields whose old and new values go into the audit log.
-TRACKED_FIELDS = ("full_name", "full_name_am", "sex", "date_of_birth", "phone", "dedan_id", "payer", "payer_number")
+TRACKED_FIELDS = ("full_name", "full_name_am", "sex", "date_of_birth", "phone", "claimed_dedan_id", "payer",
+                  "payer_number")
 
 # --- input ----------------------------------------------------------------------
 
@@ -60,9 +59,20 @@ class _Demographics(BaseModel):
     emergency_contact_name: OptionalText = Field(default=None, max_length=120)
     emergency_contact_phone: OptionalPhone = None
     payer_number: OptionalText = Field(default=None, max_length=40)
-    #: Set only by linking (POST /patients/{id}/link): Endod confirms the
-    #: account first. Accepted here only as null, to unlink.
-    dedan_id: OptionalDedanId = None
+    #: An Endod ID the patient gave: kept as a claim ("given, not yet linked")
+    #: and never sent to Endod. The confirmed ``dedan_id`` is set only by
+    #: linking (POST /patients/{id}/link) or by checking in an Endod booking.
+    claimed_dedan_id: OptionalDedanId = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _old_dedan_field(cls, data: Any) -> Any:
+        # Older clients send the typed Endod ID as "dedan_id": it is a claim.
+        if isinstance(data, dict) and "dedan_id" in data:
+            data = dict(data)
+            old = data.pop("dedan_id")
+            data.setdefault("claimed_dedan_id", old)
+        return data
 
     @model_validator(mode="after")
     def _one_birth_field(self):
@@ -182,6 +192,7 @@ def _payloads(session, patients: List[Patient], today: date, role: str, full: bo
             "id": p.id,
             "mrn": p.mrn,
             "dedan_id": p.dedan_id,
+            "claimed_dedan_id": p.claimed_dedan_id,
             "full_name": p.full_name,
             "full_name_am": p.full_name_am,
             "sex": p.sex,
@@ -259,7 +270,10 @@ def list_patients(
                    Patient.mrn.like(like_pattern(term.upper()), escape="\\"),
                    Patient.dedan_id.like(like_pattern(term.upper()), escape="\\"),
                    # Endod IDs are stored as DE482731; staff also type DE-482731.
-                   Patient.dedan_id.like(like_pattern(re.sub(r"[\s-]", "", term.upper())), escape="\\")]
+                   Patient.dedan_id.like(like_pattern(re.sub(r"[\s-]", "", term.upper())), escape="\\"),
+                   # An ID given but not yet confirmed finds the patient too.
+                   Patient.claimed_dedan_id.like(like_pattern(term.upper()), escape="\\"),
+                   Patient.claimed_dedan_id.like(like_pattern(re.sub(r"[\s-]", "", term.upper())), escape="\\")]
         digits = phone_digits(term)
         if digits:
             matches.append(Patient.phone.like(like_pattern(digits), escape="\\"))
@@ -296,8 +310,6 @@ def patient_stats(staff: Staff = Depends(current_staff)) -> Dict[str, Any]:
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 def register_patient(body: PatientCreate, staff: Staff = Depends(require_roles(*REGISTRARS))) -> Dict[str, Any]:
-    if body.dedan_id:
-        raise HTTPException(status_code=400, detail=LINK_INSTEAD)
     _one_of("sex", body.sex, Sex.ALL)
     _one_of("payer", body.payer, Payer.ALL)
     try:
@@ -325,7 +337,8 @@ def register_patient(body: PatientCreate, staff: Staff = Depends(require_roles(*
                 dob_estimated=estimated, phone=body.phone, address=body.address,
                 emergency_contact_name=body.emergency_contact_name,
                 emergency_contact_phone=body.emergency_contact_phone, payer=body.payer,
-                payer_number=body.payer_number, status=PatientStatus.OPD, status_changed_at=utcnow(),
+                payer_number=body.payer_number, claimed_dedan_id=body.claimed_dedan_id,
+                status=PatientStatus.OPD, status_changed_at=utcnow(),
                 created_by=staff.id,
             )
             session.add(patient)
@@ -358,8 +371,6 @@ def update_patient(patient_id: str, body: PatientUpdate, staff: Staff = Depends(
             changes.pop(field)
     if not changes:
         raise HTTPException(status_code=400, detail="Nothing to change.")
-    if changes.get("dedan_id"):
-        raise HTTPException(status_code=400, detail=LINK_INSTEAD)
     if DEMOGRAPHIC_FIELDS & changes.keys() and staff.role not in DEMOGRAPHIC_EDITORS:
         raise HTTPException(status_code=403, detail="Only registration staff change patient details.")
     if CLINICAL_FIELDS & changes.keys() and staff.role not in CLINICAL_EDITORS:
@@ -406,9 +417,6 @@ def update_patient(patient_id: str, body: PatientUpdate, staff: Staff = Depends(
                 changes["bed"] = None
 
             before = {f: getattr(patient, f) for f in TRACKED_FIELDS if f in changes}
-            if "dedan_id" in changes:
-                # Unlinking: also withdraw a pending link request.
-                linking.unlink(session, patient)
             for field, value in changes.items():
                 setattr(patient, field, value)
             if new_status != old_status:

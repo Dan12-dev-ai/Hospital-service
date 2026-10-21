@@ -88,7 +88,8 @@ def _link_payload(session, patient: Patient) -> Dict[str, Any]:
         request = {"id": latest.id, "dedan_id": latest.dedan_id, "method": latest.method, "status": latest.status,
                    "reason": latest.reason, "linked_name": latest.linked_name,
                    "created_at": _iso(latest.created_at), "decided_at": _iso(latest.decided_at)}
-    return {"patient_id": patient.id, "dedan_id": patient.dedan_id, "request": request}
+    return {"patient_id": patient.id, "dedan_id": patient.dedan_id, "claimed_dedan_id": patient.claimed_dedan_id,
+            "request": request}
 
 
 @router.get("/patients/{patient_id}/link")
@@ -226,7 +227,10 @@ def _record_payload(session, r: ClinicalRecord) -> Dict[str, Any]:
         "id": r.id, "patient_id": r.patient_id, "visit_id": r.visit_id, "category": r.category, "title": r.title,
         "details": json.loads(r.details), "occurred_at": _iso(r.occurred_at), "recorded_by": r.recorded_by_name,
         "source": r.source, "version": r.version, "retracted": r.retracted, "retracted_reason": r.retracted_reason,
-        "retracted_at": _iso(r.retracted_at), "published": bool(r.published_dedan_id) and not r.retracted,
+        "retracted_at": _iso(r.retracted_at),
+        # Endod has this version (a correction made while unlinked is sent on re-linking).
+        "published": bool(r.published_dedan_id) and r.published_version == r.version and not r.retracted,
+        "published_version": r.published_version,
         "files": [_file_payload(f) for f in records.files_of(session, r.id)],
         "created_at": _iso(r.created_at), "updated_at": _iso(r.updated_at),
     }

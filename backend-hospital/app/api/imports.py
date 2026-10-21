@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import PlainTextResponse
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app import files, imports, records
 from app.auth import Staff, audit, require_roles
@@ -101,7 +102,18 @@ def _summary(item: Dict[str, Any]) -> Dict[str, Any]:
 
 @router.post("/{import_id}/confirm")
 def confirm(import_id: str, staff: Staff = Depends(importers)) -> Dict[str, Any]:
-    """Create the previewed records (each is published to Endod like any other)."""
+    """Create the previewed records (each is published to Endod like any other).
+    An item already imported (by this preview or another) is skipped."""
+    try:
+        return _confirm(import_id, staff)
+    except IntegrityError as exc:
+        # Two confirmations of the same items at the same moment: the unique
+        # import key let one through; confirming again skips what it imported.
+        raise HTTPException(status_code=409, detail="The same records were being imported at the same time. "
+                                                    "Confirm again: what is already imported is skipped.") from exc
+
+
+def _confirm(import_id: str, staff: Staff) -> Dict[str, Any]:
     with session_scope() as session:
         batch = session.scalar(select(ImportBatch).where(
             ImportBatch.id == import_id, ImportBatch.hospital_id == staff.hospital_id).with_for_update())
@@ -122,11 +134,18 @@ def confirm(import_id: str, staff: Staff = Depends(importers)) -> Dict[str, Any]
                 skipped.append({"index": item["index"], "what": item["what"],
                                 "reason": "the patient is no longer linked to Endod"})
                 continue
+            key = item.get("import_key")
+            # Checked again here, in the confirming transaction: another preview of
+            # the same file may have been confirmed since this one was made.
+            if key and imports.already_imported(session, staff.hospital_id, key):
+                skipped.append({"index": item["index"], "what": item["what"], "reason": "already imported"})
+                continue
             record = ClinicalRecord(
                 hospital_id=staff.hospital_id, patient_id=patient.id, category=item["category"], title=item["title"],
                 details=json.dumps(item["details"], ensure_ascii=False),
                 occurred_at=datetime.fromisoformat(item["occurred_at"]).astimezone(timezone.utc),
                 recorded_by=None, recorded_by_name=item["recorded_by"], source="import", version=1,
+                import_key=key,
             )
             session.add(record)
             session.flush()

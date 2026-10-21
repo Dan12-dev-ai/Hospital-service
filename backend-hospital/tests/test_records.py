@@ -373,3 +373,45 @@ class TestVisits:
             linking.link(session, row, "DE482731", records.hospital_today(session, row.hospital_id))
         [sent] = events(bus, "visit.follow_up")
         assert sent["follow_up_on"] == on and sent["dedan_id"] == "DE482731" and sent["cancelled"] is False
+
+
+class TestCorrectionsWhileUnlinked:
+    def test_a_correction_made_while_unlinked_is_sent_on_relinking(self, client, doctor, desk, linked, bus):
+        from app import records
+        from app.db import session_scope
+        from app.linking import link
+        from app.models import Patient
+
+        record = add(client, doctor, linked["id"]).json()
+        assert [e["version"] for e in events(bus, "record.published")] == [1]
+        assert client.delete(f"/patients/{linked['id']}/link", headers=desk).status_code == 200
+        fixed = client.patch(f"/records/{record['id']}", headers=doctor, json={"title": "Malaria (corrected)"})
+        assert fixed.status_code == 200 and fixed.json()["version"] == 2
+        assert fixed.json()["published"] is False  # Endod still has version 1
+        assert len(events(bus, "record.published")) == 1  # nothing sent while unlinked
+
+        with session_scope() as session:  # Endod confirms the same account again
+            link(session, session.get(Patient, linked["id"]), "DE482731", today())
+        sent = events(bus, "record.published")
+        assert [(e["version"], e["title"], e["dedan_id"]) for e in sent] == [
+            (1, "Malaria", "DE482731"), (2, "Malaria (corrected)", "DE482731")]
+        assert events(bus, "record.retracted") == []  # same account: nothing to take back
+        listed = client.get(f"/patients/{linked['id']}/records", headers=doctor).json()["items"][0]
+        assert listed["published"] is True and listed["published_version"] == 2
+
+        # Nothing more to send: Endod has the current version.
+        with session_scope() as session:
+            assert records.publish_history(session, session.get(Patient, linked["id"]), today()) == 0
+
+    def test_relinking_to_another_account_moves_the_record(self, client, doctor, desk, linked, bus):
+        from app.db import session_scope
+        from app.linking import link
+        from app.models import Patient
+
+        record = add(client, doctor, linked["id"]).json()
+        client.delete(f"/patients/{linked['id']}/link", headers=desk)
+        with session_scope() as session:
+            link(session, session.get(Patient, linked["id"]), "DE111111", today())
+        [retracted] = events(bus, "record.retracted")
+        assert retracted["record_id"] == record["id"] and retracted["dedan_id"] == "DE482731"
+        assert [e["dedan_id"] for e in events(bus, "record.published")] == ["DE482731", "DE111111"]

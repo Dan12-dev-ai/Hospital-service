@@ -12,9 +12,13 @@ from typing import Optional
 from sqlalchemy import (
     Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.db import Base, new_id, utcnow
+from app.validation import checked_dedan_id
+
+# Every column holding a confirmed Endod ID accepts only its stored form
+# (DE + 6 digits): see the ``_check_dedan`` validators below.
 
 
 class Role:
@@ -296,8 +300,13 @@ class Patient(Base):
     hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False)
     #: The hospital number, e.g. "SPH-000124". Issued once, never reused.
     mrn: Mapped[str] = mapped_column(String(24), nullable=False)
-    #: The patient's Endod (DEDAN) digital health ID, e.g. "DE-482731", when linked.
+    #: The patient's Endod (DEDAN) digital health ID, e.g. "DE482731". Set only
+    #: once Endod confirmed the account (patient.linked, or checking in an
+    #: Endod booking); see app.linking.
     dedan_id: Mapped[Optional[str]] = mapped_column(String(40))
+    #: An Endod ID the patient gave (or staff typed) but nobody confirmed:
+    #: shown as "Endod ID given, not yet linked", never sent to Endod.
+    claimed_dedan_id: Mapped[Optional[str]] = mapped_column(String(40))
     full_name: Mapped[str] = mapped_column(String(120), nullable=False)
     full_name_am: Mapped[Optional[str]] = mapped_column(String(120))
     sex: Mapped[str] = mapped_column(String(8), nullable=False)
@@ -327,6 +336,10 @@ class Patient(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow,
                                                  onupdate=utcnow)
+
+    @validates("dedan_id")
+    def _check_dedan(self, _key: str, value: Optional[str]) -> Optional[str]:
+        return checked_dedan_id(value)
 
 
 class PatientAlert(Base):
@@ -444,6 +457,10 @@ class PatientLinkRequest(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
+    @validates("dedan_id")
+    def _check_dedan(self, _key: str, value: Optional[str]) -> Optional[str]:
+        return checked_dedan_id(value)
+
 
 class RecordCategory:
     DIAGNOSIS = "diagnosis"
@@ -474,10 +491,17 @@ class Visit(Base):
     created_by: Mapped[Optional[str]] = mapped_column(ForeignKey("staff_users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
+    @validates("follow_up_sent_to")
+    def _check_dedan(self, _key: str, value: Optional[str]) -> Optional[str]:
+        return checked_dedan_id(value)
+
 
 class ClinicalRecord(Base):
     __tablename__ = "clinical_records"
-    __table_args__ = (Index("ix_records_patient", "patient_id", "occurred_at"),)
+    __table_args__ = (
+        Index("ix_records_patient", "patient_id", "occurred_at"),
+        UniqueConstraint("hospital_id", "import_key", name="uq_record_import_key"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False)
@@ -501,9 +525,19 @@ class ClinicalRecord(Base):
     retracted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     #: The Endod ID it was last published to (None: never published).
     published_dedan_id: Mapped[Optional[str]] = mapped_column(String(16))
+    #: The version last sent to Endod (None: never). A correction made while the
+    #: patient was unlinked (version > published_version) is sent on re-linking.
+    published_version: Mapped[Optional[int]] = mapped_column(Integer)
+    #: An imported record: sha256 of its source item (the FHIR resource or CSV
+    #: row), unique per hospital, so the same item is never imported twice.
+    import_key: Mapped[Optional[str]] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow,
                                                  onupdate=utcnow)
+
+    @validates("published_dedan_id")
+    def _check_dedan(self, _key: str, value: Optional[str]) -> Optional[str]:
+        return checked_dedan_id(value)
 
 
 class RecordFile(Base):
@@ -583,6 +617,10 @@ class QueueEntry(Base):
     called_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
+    @validates("dedan_id")
+    def _check_dedan(self, _key: str, value: Optional[str]) -> Optional[str]:
+        return checked_dedan_id(value)
+
 
 class RecordShare(Base):
     """Records a patient shared with this hospital through Endod (a read-only copy).
@@ -602,6 +640,10 @@ class RecordShare(Base):
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    @validates("dedan_id")
+    def _check_dedan(self, _key: str, value: Optional[str]) -> Optional[str]:
+        return checked_dedan_id(value)
 
 
 class SharedRecord(Base):

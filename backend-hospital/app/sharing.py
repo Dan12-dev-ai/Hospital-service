@@ -27,7 +27,7 @@ from app.config import get_settings
 from app.db import ensure_aware, utcnow
 from app.eventbus import PermanentEventError
 from app.models import Hospital, RecordCategory, RecordShare, SharedRecord
-from app.records import DetailsError, clean_details
+from app.records import DetailsError, clean_details, salvage_details
 from app.validation import normalize_dedan_id
 
 logger = logging.getLogger("hospital.sharing")
@@ -50,7 +50,8 @@ class _Record(BaseModel):
     origin: str = Field(min_length=1, max_length=160)
     category: str
     title: str = Field(min_length=1, max_length=200)
-    details: Dict[str, Any] = Field(default_factory=dict)
+    #: Any JSON: cleaned (or salvaged) before it is stored.
+    details: Any = None
     occurred_at: AwareDatetime
     recorded_by: Optional[str] = Field(default=None, max_length=160)
     files: List[_File] = Field(default_factory=list, max_length=files.MAX_FILES_PER_RECORD)
@@ -90,10 +91,10 @@ def on_shared(session: Session, payload: Dict[str, Any]) -> None:
         if item.category not in RecordCategory.ALL:
             raise PermanentEventError(f"unknown category {item.category!r}")
         try:
-            details = clean_details(item.category, item.details)
+            details = clean_details(item.category, item.details if isinstance(item.details, dict) else {})
         except DetailsError:
-            # Self-reported records may be sparse: keep what is there, as the patient wrote it.
-            details = {k: v for k, v in item.details.items() if isinstance(k, str)}
+            # Self-reported records may be sparse: keep what can be cleaned, never the raw details.
+            details = salvage_details(item.category, item.details)
         for f in item.files:
             if f.content_type not in files.ALLOWED:
                 raise PermanentEventError(f"file type {f.content_type!r} not allowed")

@@ -34,6 +34,10 @@ platform -> hospital `patient.link_refused`
 `{"request_id", "hospital_id", "patient_id", "dedan_id", "reason": "not_found"|"not_verified"}`
 (no data on refusal).
 
+An Endod ID the patient merely gives (typed at registration) is kept by the
+hospital as a claim, shown as "Endod ID given, not yet linked", and never
+sent. Every `dedan_id` the hospital sends is `DE` + 6 digits.
+
 The hospital stores `dedan_id` on its patient only on `patient.linked`; the
 patient gets an inbox item "<Hospital> linked your records to Endod". A
 patient arriving through an Endod booking (`appointment.requested` carries
@@ -57,7 +61,8 @@ Files: PDF, JPEG, PNG or WebP, at most 20 MB each, at most 10 per record,
 stored by the hospital service; the platform downloads its own copy.
 
 hospital -> platform `record.published` (corrections reuse `record_id` with a
-higher `version`; the platform keeps the highest version)
+higher `version`; the platform keeps the highest version; a correction made
+while the patient was unlinked is sent when they are linked again)
 `{"record_id", "version", "hospital_id", "hospital_name", "dedan_id", "visit_id": hex|null,
   "category", "title", "details", "occurred_at", "recorded_by", "source": "portal"|"import",
   "files": [{"file_id", "filename", "content_type", "size", "sha256"}]}`
@@ -98,8 +103,13 @@ hospital -> platform `queue.updated`
 
 - Sent for every change affecting an entry linked to Endod (so the app shows
   the live position), and for anyone with a phone whenever `notify` is set.
-- `"near"` is sent once per entry when `ahead` first reaches
-  `queue_notify_ahead`; `"turn"` once when the entry is called. The platform
+- `"near"` is sent once per entry when `ahead` first comes down to
+  `queue_notify_ahead` after check-in, never at check-in itself (an entry
+  checked in with that many people ahead or fewer gets only `"turn"`);
+  `"turn"` once when the entry is called.
+- A queue's waiting entries are called before the next day's (oldest day
+  first, then by ticket). An entry still `waiting` or `called` 12 hours
+  after its day ended is sent as `cancelled`. The platform
   sends exactly one SMS per notify (dedupe on entry_id + notify), to the
   account's phone if `dedan_id` is set, else to `phone`. Walk-ins without an
   account get the SMS too (no account is created).

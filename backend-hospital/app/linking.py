@@ -104,6 +104,8 @@ def link(session: Session, patient: Patient, dedan_id: str, today: date) -> None
     if other is not None and other.id != patient.id:
         raise LinkError(f"{dedan_id} is already linked to {other.full_name} ({other.mrn}).")
     patient.dedan_id = dedan_id
+    # The confirmed ID replaces whatever ID the patient had given.
+    patient.claimed_dedan_id = None
     session.flush()
     _close_pending(session, patient.id, LinkStatus.SUPERSEDED, "linked")
     records.publish_history(session, patient, today)

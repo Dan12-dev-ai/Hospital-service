@@ -238,7 +238,10 @@ class TestNotifications:
         for e in sent:
             by_entry.setdefault(e["patient_name"], []).append(e)
         notifies = {name: [e["notify"] for e in items if e["notify"]] for name, items in by_entry.items()}
-        assert notifies == {"Almaz Tefera": ["near", "turn"], "Kebede": ["near", "turn"],
+        # No "near" at check-in: Almaz (0 ahead) and Kebede (1 ahead) were already
+        # within the threshold, so only "turn"; Chaltu (2) and Desta (3) get "near"
+        # once, when the people ahead come down to 1.
+        assert notifies == {"Almaz Tefera": ["turn"], "Kebede": ["turn"],
                             "Chaltu": ["near", "turn"], "Desta": ["near"]}
         # Walk-ins (no Endod account) get only the notifications; the linked patient every change.
         assert all(e["notify"] for name, items in by_entry.items() if name != "Almaz Tefera" for e in items)
@@ -277,3 +280,87 @@ class TestNotifications:
             assert client.patch("/hospital", headers=admin, json={"queue_notify_ahead": bad}).status_code == 422
         eventbus.publish_pending(bus)
         assert len(bus.xrange("endod:hospital")) == before  # not a listing change
+
+
+class TestNear:
+    def test_never_at_check_in_and_once_when_the_count_comes_down(self, client, admin, desk, doctor, bus):
+        set_notify(client, admin, 2)
+        for name, phone in (("Abebe", "0911000001"), ("Kebede", "0911000002"), ("Chaltu", "0911000003"),
+                            ("Desta", "0911000004")):
+            walk_in(client, desk, doctor, name, phone)
+        assert [e["notify"] for e in events(bus, "queue.updated")] == []  # nothing at check-in
+        ids = {e["patient_name"]: e["id"] for e in queue_of(client, desk, doctor)["entries"]}
+        call_next = f"/queue/{doctor_id(doctor)}/call-next"
+        client.post(call_next, headers=doctor)  # Abebe: Desta now has 2 ahead
+        client.post(f"/queue/entries/{ids['Abebe']}/done", headers=doctor)
+        client.post(call_next, headers=doctor)  # Kebede: Desta 1 ahead (no second near)
+        sent = [(e["patient_name"], e["notify"]) for e in events(bus, "queue.updated") if e["notify"]]
+        assert sent == [("Abebe", "turn"), ("Desta", "near"), ("Kebede", "turn")]
+
+
+def _yesterday_queue(hospital, doctor, names):
+    """Entries checked in yesterday (hospital time), still waiting."""
+    from app import queues
+    from app.db import session_scope
+
+    with session_scope() as session:
+        queue = queues.lock_queue(session, hospital, doctor_id(doctor), today() - timedelta(days=1))
+        for name in names:
+            queues.check_in(session, queue, patient_name=name, phone="+251911000009", dedan_id=None,
+                            patient_id=None, booking_id=None, staff_id=None)
+        return queue.id
+
+
+class TestMidnight:
+    def test_call_next_takes_yesterdays_leftovers_first(self, client, desk, doctor, hospital):
+        walk_in(client, desk, doctor, "Today One")
+        _yesterday_queue(hospital, doctor, ["Late Two", "Late One"])
+        board = queue_of(client, desk, doctor)
+        assert [(e["patient_name"], e["ticket"], e["status"]) for e in board["leftovers"]] == [
+            ("Late Two", 1, "waiting"), ("Late One", 2, "waiting")]
+        assert board["leftovers"][0]["day"] == (today() - timedelta(days=1)).isoformat()
+        assert board["waiting"] == 3
+
+        call_next = f"/queue/{doctor_id(doctor)}/call-next"
+        order = []
+        for _ in range(3):
+            resp = client.post(call_next, headers=doctor)
+            assert resp.status_code == 200, resp.text
+            called = resp.json()["called"]
+            order.append(called["patient_name"])
+            assert client.post(call_next, headers=doctor).status_code == 409  # still called
+            client.post(f"/queue/entries/{called['id']}/done", headers=doctor)
+        assert order == ["Late Two", "Late One", "Today One"]
+        assert queue_of(client, desk, doctor)["leftovers"] == []
+
+    def test_the_worker_cancels_stale_entries(self, client, desk, doctor, hospital, bus):
+        from app import queues
+        from app.db import session_scope
+        from app.models import QueueEntry
+        from history_support import ZONE
+
+        patient = register(client, desk)
+        link_directly(patient["id"], "DE482731")
+        queue_id = _yesterday_queue(hospital, doctor, ["Late One"])
+        with session_scope() as session:
+            queue = queues.lock_queue(session, hospital, doctor_id(doctor), today() - timedelta(days=1))
+            queues.check_in(session, queue, patient_name="Almaz Tefera", phone=None, dedan_id="DE482731",
+                            patient_id=patient["id"], booking_id=None, staff_id=None)
+        walk_in(client, desk, doctor, "Today One")
+        events(bus)  # what was sent so far
+        bus.delete("endod:hospital")
+
+        ended = datetime.combine(today(), datetime.min.time(), ZONE)  # yesterday's day ended at midnight
+        with session_scope() as session:
+            assert queues.cancel_stale(session, (ended + timedelta(hours=11)).astimezone(timezone.utc)) == 0
+        with session_scope() as session:
+            assert queues.cancel_stale(session, (ended + timedelta(hours=12, minutes=1)).astimezone(timezone.utc)) == 2
+        with session_scope() as session:
+            from sqlalchemy import select
+            statuses = {e.patient_name: e.status for e in session.scalars(select(QueueEntry))}
+        assert statuses == {"Late One": "cancelled", "Almaz Tefera": "cancelled", "Today One": "waiting"}
+        sent = events(bus, "queue.updated")
+        assert [(e["patient_name"], e["status"], e["dedan_id"]) for e in sent] == [
+            ("Almaz Tefera", "cancelled", "DE482731")]
+        assert queue_of(client, desk, doctor)["leftovers"] == []
+        assert queue_id

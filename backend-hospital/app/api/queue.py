@@ -8,7 +8,7 @@ walk-in with a name and phone number.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -71,14 +71,21 @@ def _own_queue_only(staff: Staff, doctor_id: str) -> None:
         raise HTTPException(status_code=403, detail="A doctor runs only their own queue.")
 
 
-def _queue_payload(session, doctor: StaffUser, queue: Optional[QueueDay]) -> Dict[str, Any]:
+def _queue_payload(session, doctor: StaffUser, queue: Optional[QueueDay],
+                   earlier: Optional[QueueDay] = None) -> Dict[str, Any]:
+    """The doctor's queue for the day, with ``leftovers``: entries of the
+    previous day still open (called first; cancelled by the worker later)."""
     all_entries = queues.entries(session, queue.id) if queue else []
     open_entries = [e for e in all_entries if e.status in QueueStatus.OPEN]
+    left = [e for e in queues.entries(session, earlier.id) if e.status in QueueStatus.OPEN] if earlier else []
+    leftovers = [queues.payload(e, left) | {"day": earlier.day.isoformat()} for e in left]
+    current = [queues.payload(e, open_entries) for e in open_entries]
     return {
         "doctor": {"id": doctor.id, "full_name": doctor.full_name},
         "entries": [queues.payload(e, open_entries) for e in all_entries],
-        "waiting": sum(1 for e in open_entries if e.status == QueueStatus.WAITING),
-        "called": next((queues.payload(e, open_entries) for e in open_entries if e.status == QueueStatus.CALLED), None),
+        "leftovers": leftovers,
+        "waiting": sum(1 for e in left + open_entries if e.status == QueueStatus.WAITING),
+        "called": next((e for e in leftovers + current if e["status"] == QueueStatus.CALLED), None),
     }
 
 
@@ -97,9 +104,13 @@ def list_queues(day: Optional[date] = Query(default=None), doctor_id: Optional[s
         doctors = list(session.scalars(query.order_by(StaffUser.full_name)))
         days = {q.doctor_id: q for q in session.scalars(select(QueueDay).where(
             QueueDay.hospital_id == staff.hospital_id, QueueDay.day == day))}
+        # Today's board also shows yesterday's leftovers (they are called first).
+        earlier = {q.doctor_id: q for q in session.scalars(select(QueueDay).where(
+            QueueDay.hospital_id == staff.hospital_id, QueueDay.day == today - timedelta(days=1)))} \
+            if day == today else {}
         hospital = session.get(Hospital, staff.hospital_id)
         return {"day": day.isoformat(), "today": today.isoformat(), "notify_ahead": hospital.queue_notify_ahead,
-                "queues": [_queue_payload(session, d, days.get(d.id)) for d in doctors]}
+                "queues": [_queue_payload(session, d, days.get(d.id), earlier.get(d.id)) for d in doctors]}
 
 
 @router.post("/check-in", status_code=status.HTTP_201_CREATED)
@@ -171,16 +182,20 @@ def call_next(doctor_id: str, staff: Staff = Depends(queue_staff)) -> Dict[str, 
     _own_queue_only(staff, doctor_id)
     with session_scope() as session:
         doctor = _doctor(session, staff, doctor_id)
-        queue = queues.lock_queue(session, staff.hospital_id, doctor.id,
-                                  records.hospital_today(session, staff.hospital_id))
+        today = records.hospital_today(session, staff.hospital_id)
+        # Patients still waiting from before midnight come first. Always the
+        # earlier day's queue locked first, then today's (no lock-order deadlock).
+        earlier = queues.lock_existing(session, staff.hospital_id, doctor.id, today - timedelta(days=1))
+        queue = queues.lock_queue(session, staff.hospital_id, doctor.id, today)
         try:
-            entry = queues.call_next(session, queue)
+            entry = queues.call_next(session, queue, earlier)
         except queues.QueueError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-        queues.announce(session, queue, [entry.id])
+        queues.announce(session, earlier if earlier is not None and entry.queue_id == earlier.id else queue,
+                        [entry.id])
         audit(session, staff.hospital_id, staff.id, "queue_called", "queue_entry", entry.id, {"ticket": entry.ticket})
         session.flush()
-        return _queue_payload(session, doctor, queue)
+        return _queue_payload(session, doctor, queue, earlier)
 
 
 ACTIONS = {"done": QueueStatus.DONE, "skip": QueueStatus.SKIPPED, "cancel": QueueStatus.CANCELLED}

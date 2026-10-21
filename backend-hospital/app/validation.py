@@ -106,6 +106,25 @@ def normalize_dedan_id(value: str) -> str:
     return "DE" + match.group(1)
 
 
+_STORED_ENDOD_ID = re.compile(r"^DE\d{6}$")
+
+
+def is_dedan_id(value: Any) -> bool:
+    """True for an Endod ID exactly as stored and sent: DE and six digits."""
+    return isinstance(value, str) and bool(_STORED_ENDOD_ID.match(value))
+
+
+def checked_dedan_id(value: Optional[str]) -> Optional[str]:
+    """None, or an Endod ID as stored (DE482731); anything else raises ValueError.
+
+    Every column that holds a confirmed Endod ID goes through this (see
+    app.models), so a free-typed value is never stored, or sent to Endod.
+    """
+    if value is not None and not is_dedan_id(value):
+        raise ValueError(f"not an Endod ID in stored form (DE + 6 digits): {value!r}")
+    return value
+
+
 def _dedan(value: Optional[str]) -> Optional[str]:
     return normalize_dedan_id(value) if value else None
 

@@ -73,3 +73,15 @@ mrn,endod_id,category,title,occurred_at,recorded_by,condition,icd10_code,status,
 SPH-000124,,diagnosis,Hypertension,2025-01-05,Dr. Hana Bekele,Essential hypertension,I10,chronic,,,,,,,,,,,,,,,,,,,
 ,DE482731,lab_result,Malaria RDT,2025-01-05T10:00:00+03:00,Lab,,,,,,,,,,Malaria RDT,positive,,,high,blood,,,,,,,
 ```
+
+## Limits and repeats
+
+- A file is at most 10 MB; a bundle at most 500 entries, a CSV at most 500 rows.
+- A CSV field is at most 65,536 characters; JSON may nest at most 64 levels.
+  A file over these limits, or one that cannot be read, is refused with a
+  message (HTTP 400); nothing is saved.
+- Each item (a FHIR resource, a CSV row) is identified by a hash of its
+  content. An item already imported at this hospital is skipped ("already
+  imported"), in the preview and again when confirming, so importing the
+  same file twice, or confirming two previews of it, creates each record
+  once. A retracted record may be imported again.

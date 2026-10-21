@@ -7,15 +7,24 @@ check-ins cannot take the same ticket.
 
 After each change, every open entry whose position or status changed is
 announced with ``queue.updated``: always for an entry linked to Endod, and
-for anyone with a phone when there is something to notify ("near" once when
-the people ahead first reach the hospital's ``queue_notify_ahead``, "turn"
-once when called).
+for anyone with a phone when there is something to notify:
+
+* "near", once, when the people ahead *decrease* to the hospital's
+  ``queue_notify_ahead`` or fewer after check-in. Never at check-in itself:
+  an entry checked in with that few people ahead gets no "near", only "turn";
+* "turn", once, when the entry is called.
+
+Queues outlive midnight a little: "call next" takes waiting patients from
+the previous hospital day first (oldest day, then ticket), and the worker
+cancels entries still open :data:`STALE_AFTER` after their day ended
+(announced as ``cancelled``, so the Endod app never shows a stale "waiting").
 """
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, time, timedelta
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects import postgresql, sqlite
@@ -83,10 +92,25 @@ def check_in(session: Session, queue: QueueDay, *, patient_name: str, phone: Opt
     return entry
 
 
-def call_next(session: Session, queue: QueueDay) -> QueueEntry:
-    """Call the next waiting patient. Refused while someone is still called:
-    the doctor finishes (or skips) them first, so a second click calls nobody."""
-    current = entries(session, queue.id)
+def lock_existing(session: Session, hospital_id: str, doctor_id: str, day: date) -> Optional[QueueDay]:
+    """Like :func:`lock_queue`, but None (and nothing created) when the doctor
+    had no queue that day."""
+    found = session.execute(update(QueueDay).where(
+        QueueDay.hospital_id == hospital_id, QueueDay.doctor_id == doctor_id, QueueDay.day == day,
+    ).values(changes=QueueDay.changes + 1))
+    if not found.rowcount:
+        return None
+    return session.scalar(select(QueueDay).where(
+        QueueDay.hospital_id == hospital_id, QueueDay.doctor_id == doctor_id, QueueDay.day == day,
+    ).with_for_update().execution_options(populate_existing=True))
+
+
+def call_next(session: Session, queue: QueueDay, earlier: Optional[QueueDay] = None) -> QueueEntry:
+    """Call the next waiting patient: from ``earlier`` (the previous hospital
+    day's queue, locked first) before ``queue``, then by ticket. Refused while
+    someone is still called: the doctor finishes (or skips) them first, so a
+    second click calls nobody."""
+    current = (entries(session, earlier.id) if earlier is not None else []) + entries(session, queue.id)
     called = [e for e in current if e.status == QueueStatus.CALLED]
     if called:
         raise QueueError(f"Ticket {called[0].ticket} ({called[0].patient_name}) is still called. "
@@ -97,6 +121,42 @@ def call_next(session: Session, queue: QueueDay) -> QueueEntry:
     entry = waiting[0]
     entry.status, entry.called_at = QueueStatus.CALLED, utcnow()
     return entry
+
+
+#: An entry still waiting (or called) this long after its day ended is cancelled.
+STALE_AFTER = timedelta(hours=12)
+
+
+def day_ended(day: date, zone: ZoneInfo) -> datetime:
+    """The moment ``day`` ended where the hospital is (its next midnight)."""
+    return datetime.combine(day + timedelta(days=1), time.min, zone)
+
+
+def cancel_stale(session: Session, now: Optional[datetime] = None) -> int:
+    """Cancel entries still open :data:`STALE_AFTER` after their day ended, and
+    announce them (``cancelled``). Returns how many were cancelled."""
+    now = now or utcnow()
+    # Even at UTC+14, a day plus STALE_AFTER ends no earlier than 22:00 UTC that
+    # same date: later days cannot be stale yet (the exact check is below).
+    stale = session.execute(
+        select(QueueDay.id, QueueDay.day, Hospital.timezone).join(Hospital, Hospital.id == QueueDay.hospital_id)
+        .where(QueueDay.day <= now.date(), QueueDay.id.in_(
+            select(QueueEntry.queue_id).where(QueueEntry.status.in_(QueueStatus.OPEN))))).all()
+    cancelled = 0
+    for queue_id, day, zone in stale:
+        if now < day_ended(day, ZoneInfo(zone)) + STALE_AFTER:
+            continue
+        queue = session.get(QueueDay, queue_id)
+        queue = lock_queue(session, queue.hospital_id, queue.doctor_id, queue.day)
+        changed = []
+        for entry in entries(session, queue.id):
+            if entry.status in QueueStatus.OPEN:
+                entry.status, entry.finished_at = QueueStatus.CANCELLED, now
+                changed.append(entry.id)
+        if changed:
+            announce(session, queue, changed)
+            cancelled += len(changed)
+    return cancelled
 
 
 def finish(entry: QueueEntry, status: str) -> None:
@@ -131,7 +191,10 @@ def announce(session: Session, queue: QueueDay, changed: Optional[List[str]] = N
             notify = "turn"
             entry.turn_notified = True
         elif (entry.status == QueueStatus.WAITING and near_at > 0 and not entry.near_notified
-              and ahead <= near_at):
+              and entry.last_ahead > near_at >= ahead):
+            # Only when the people ahead come down to the threshold after
+            # check-in (last_ahead is -1 until then): someone checked in with
+            # that few ahead already knows, and gets only "turn".
             notify = "near"
             entry.near_notified = True
         moved = entry.id in changed_ids or ahead != entry.last_ahead

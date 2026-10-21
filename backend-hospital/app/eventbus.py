@@ -46,6 +46,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.db import ensure_aware, session_scope, utcnow
 from app.models import OutboxEvent, ProcessedEvent
+from app.validation import checked_dedan_id
 
 logger = logging.getLogger("hospital.events")
 
@@ -100,7 +101,12 @@ def connect() -> Optional[redis.Redis]:
 # --- publishing ------------------------------------------------------------------------
 
 def emit(session: Session, event_type: str, payload: Dict[str, Any]) -> None:
-    """Queue an event; it is sent once the caller's transaction commits."""
+    """Queue an event; it is sent once the caller's transaction commits.
+
+    An Endod ID in the payload must be in its stored form (DE + 6 digits):
+    a free-typed value is never sent (ValueError, and the change rolls back).
+    """
+    checked_dedan_id(payload.get("dedan_id"))
     session.add(OutboxEvent(type=event_type, payload=json.dumps(payload, default=str, ensure_ascii=False)))
 
 

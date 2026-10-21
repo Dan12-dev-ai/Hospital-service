@@ -63,8 +63,9 @@ class TestSharing:
         [item] = shared(client, doctor)
         assert item["share_id"] == payload["share_id"] and item["patient"]["id"] == linked["id"]
         assert [r["origin"] for r in item["records"]] == ["Black Lion Hospital", "Self-reported"]
-        # A sparse self-reported record is kept as the patient wrote it.
-        assert item["records"][1]["details"] == {"notes": "uses an inhaler"}
+        # A sparse self-reported record keeps what can be cleaned (its known fields).
+        assert item["records"][1]["details"] == {"condition": None, "code": None, "status": None,
+                                                 "notes": "uses an inhaler"}
         assert shared(client, doctor, linked["id"])[0]["share_id"] == payload["share_id"]
 
     def test_redelivery_replaces_the_copy(self, client, doctor, linked, bus, hospital):
@@ -397,3 +398,139 @@ def test_a_shared_file_name_cannot_break_the_header():
     header = files.content_disposition('lab\r\nSet-Cookie: a=b"\.pdf')
     assert "\r" not in header and "\n" not in header
     assert header.startswith('inline; filename="labSet-Cookie: a=b.pdf"; filename*=UTF-8\'\'')
+
+
+class TestSharedDetailsAreCleaned:
+    def test_null_and_non_object_items_are_dropped(self, client, doctor, linked, bus, hospital):
+        payload = share_payload(hospital)
+        payload["records"][0]["details"] = {
+            "items": [None, "Hemoglobin 9", 42, ["x"], {}, {"test": "Hemoglobin", "value": 9.1, "flag": "weird",
+                                                          "extra": {"nested": True}}],
+            "specimen": {"not": "text"}, "notes": "x" * 5000, "<script>": "dropped"}
+        payload["records"][1]["details"] = None
+        payload["records"].append({**payload["records"][1], "record_id": uuid.uuid4().hex, "category": "visit_note",
+                                   "details": {"vitals": "120/80", "complaint": True, "plan": ["rest"]}})
+        payload["records"].append({**payload["records"][1], "record_id": uuid.uuid4().hex,
+                                   "category": "prescription", "details": ["not", "an", "object"]})
+        send(bus, "records.shared", payload)
+        consume(bus)
+        assert dead_letters(bus) == []
+        details = {r["category"]: r["details"] for r in shared(client, doctor)[0]["records"]}
+        assert details["lab_result"] == {
+            "items": [{"test": "Hemoglobin", "value": "9.1", "unit": None, "reference_range": None, "flag": None}],
+            "specimen": None, "notes": "x" * 2000}
+        assert details["diagnosis"] == {"condition": None, "code": None, "status": None, "notes": None}
+        assert details["visit_note"]["vitals"] == {k: None for k in ("bp", "pulse", "temp", "weight", "height",
+                                                                     "spo2")}
+        assert details["visit_note"]["plan"] is None and details["visit_note"]["complaint"] is None
+        assert details["prescription"] == {"items": [], "notes": None}
+
+    def test_the_salvage_spec_matches_the_models(self):
+        from app import records
+
+        def fields(model):
+            out = {}
+            for name, info in model.model_fields.items():
+                if name == "items":
+                    out[name] = fields(info.annotation.__args__[0])
+                elif name == "vitals":
+                    out[name] = fields(records.Vitals)
+                else:
+                    out[name] = None
+            return out
+
+        def shape(spec):
+            return {k: shape(v) if isinstance(v, dict) else None for k, v in spec.items()}
+
+        for category, model in records.DETAILS.items():
+            assert shape(records.SALVAGE[category]) == fields(model), category
+
+
+class TestImportsAreNotDuplicated:
+    def test_confirming_the_same_file_twice_imports_once(self, client, hospital, linked, bus):
+        clerk = staff(client, hospital, "records")
+        data = bundle(linked["mrn"], *RESOURCES)
+        first = preview(client, clerk, data).json()
+        second = preview(client, clerk, data).json()  # both previewed before either is confirmed
+        assert len(first["items"]) == len(second["items"]) == 5
+        done = client.post(f"/imports/{first['import_id']}/confirm", headers=clerk).json()
+        assert done["imported"] == 5
+        again = client.post(f"/imports/{second['import_id']}/confirm", headers=clerk)
+        assert again.status_code == 200, again.text
+        assert again.json()["imported"] == 0
+        assert [s["reason"] for s in again.json()["skipped"]] == ["already imported"] * 5
+        assert len(events(bus, "record.published")) == 5
+        doctor = staff(client, hospital, "doctor")
+        assert len(client.get(f"/patients/{linked['id']}/records", headers=doctor).json()["items"]) == 5
+
+    def test_the_same_csv_confirmed_twice(self, client, admin, linked):
+        row = f"{linked['mrn']},,diagnosis,Hypertension,2025-01-05,Dr. Hana,Essential hypertension,I10,chronic"
+        data = ("mrn,endod_id,category,title,occurred_at,recorded_by,condition,icd10_code,status\n" + row
+                + "\n").encode()
+        plans = [preview(client, admin, data, "x.csv", "text/csv").json() for _ in range(2)]
+        results = [client.post(f"/imports/{p['import_id']}/confirm", headers=admin).json() for p in plans]
+        assert [r["imported"] for r in results] == [1, 0]
+
+    def test_a_retracted_import_can_be_imported_again(self, client, hospital, linked):
+        clerk = staff(client, hospital, "records")
+        doctor = staff(client, hospital, "doctor")
+        data = bundle(linked["mrn"], RESOURCES[0])
+        plan = preview(client, clerk, data).json()
+        client.post(f"/imports/{plan['import_id']}/confirm", headers=clerk)
+        [record] = client.get(f"/patients/{linked['id']}/records", headers=doctor).json()["items"]
+        assert client.post(f"/records/{record['id']}/retract", headers=doctor,
+                           json={"reason": "Wrong patient"}).status_code == 200
+        assert len(preview(client, clerk, data).json()["items"]) == 1
+
+
+DEEP = json.dumps({"resourceType": "Bundle", "entry": [
+    {"resource": {"resourceType": "Condition", "x": json.loads("[" * 80 + "]" * 80)}}]}).encode()
+
+
+class TestImportParserErrors:
+    @pytest.mark.parametrize("data,message", [
+        (b"[" * 100_000 + b"]" * 100_000, "nested too deeply"),
+        (DEEP, "nested too deeply"),
+        (b"\xff\xfe not utf-8", "not valid JSON"),
+    ], ids=["recursion", "depth", "encoding"])
+    def test_json(self, client, admin, data, message):
+        resp = preview(client, admin, data)
+        assert resp.status_code == 400, resp.text
+        assert message in resp.json()["error"]
+
+    @pytest.mark.parametrize("size", [200_000, 70_000], ids=["over-the-default-limit", "over-our-limit"])
+    def test_a_csv_field_over_the_limit(self, client, admin, linked, size):
+        body = 'mrn,category,occurred_at,notes\nSPH-000001,diagnosis,2025-01-01,"' + "x" * size + '"\n'
+        resp = preview(client, admin, body.encode(), "x.csv", "text/csv")
+        assert resp.status_code == 400, resp.text
+        assert "Line 2: a field is longer than 65536 characters." == resp.json()["error"]
+
+    def test_any_csv_error_is_a_clean_400(self, client, admin, monkeypatch):
+        import csv
+
+        from app import imports
+
+        class Broken:
+            line_num = 7
+            fieldnames = ["mrn", "category", "occurred_at"]
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __iter__(self):
+                raise csv.Error("unexpected end of data")
+
+        monkeypatch.setattr(imports.csv, "DictReader", Broken)
+        resp = preview(client, admin, b"mrn,category,occurred_at\n", "x.csv", "text/csv")
+        assert resp.status_code == 400
+        assert resp.json()["error"] == "Line 8: the CSV could not be read (unexpected end of data)."
+
+    def test_any_other_failure_is_a_clean_400(self, client, admin, monkeypatch):
+        from app import imports
+
+        def boom(planner, data):
+            raise TypeError("something unexpected")
+
+        monkeypatch.setattr(imports, "plan_fhir", boom)
+        resp = preview(client, admin, bundle("SPH-000001"))
+        assert resp.status_code == 400 and "could not be read" in resp.json()["error"]

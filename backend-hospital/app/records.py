@@ -151,6 +151,53 @@ def clean_details(category: str, details: Union[Dict[str, Any], None]) -> Dict[s
     return cleaned
 
 
+#: Each category's details for :func:`salvage_details`: a field's longest text,
+#: its allowed values, or (for ``items`` and ``vitals``) the fields of its objects.
+#: The same shape as the models above (a test keeps them in step).
+_FLAGS = ("low", "normal", "high", "critical")
+SALVAGE: Dict[str, Dict[str, Any]] = {
+    RecordCategory.DIAGNOSIS: {"condition": 200, "code": 16, "status": ("active", "resolved", "chronic"),
+                               "notes": 2000},
+    RecordCategory.PRESCRIPTION: {"items": {"drug": 120, "dose": 60, "route": 40, "frequency": 60, "duration": 60,
+                                            "quantity": 40, "notes": 300}, "notes": 2000},
+    RecordCategory.LAB_RESULT: {"items": {"test": 120, "value": 60, "unit": 30, "reference_range": 60,
+                                          "flag": _FLAGS}, "specimen": 60, "notes": 2000},
+    RecordCategory.IMAGING: {"modality": 60, "body_part": 80, "findings": 4000, "impression": 2000},
+    RecordCategory.VISIT_NOTE: {"complaint": 1000, "findings": 4000, "plan": 2000,
+                                "vitals": {"bp": 20, "pulse": 10, "temp": 10, "weight": 10, "height": 10, "spo2": 10}},
+    RecordCategory.DOCUMENT: {"description": 1000},
+}
+_MAX_ITEMS = 60
+
+
+def _salvage(spec: Dict[str, Any], data: Any) -> Dict[str, Any]:
+    data = data if isinstance(data, dict) else {}
+    out: Dict[str, Any] = {}
+    for key, rule in spec.items():
+        value = data.get(key)
+        if isinstance(rule, int):
+            value = _text(value)
+            out[key] = value[:rule] if isinstance(value, str) else None
+        elif isinstance(rule, tuple):
+            out[key] = value if value in rule else None
+        elif key == "items":
+            rows = [_salvage(rule, item) for item in value if isinstance(item, dict)] \
+                if isinstance(value, list) else []
+            out[key] = [row for row in rows if any(v is not None for v in row.values())][:_MAX_ITEMS]
+        else:
+            out[key] = _salvage(rule, value)
+    return out
+
+
+def salvage_details(category: str, details: Any) -> Dict[str, Any]:
+    """What can be kept of details that fail :func:`clean_details` (a patient's
+    sparse self-reported record): the known fields only, as text clipped to
+    their length; values outside a field's choices, and list items that are
+    not objects (null, numbers, strings) or are empty, are dropped. Never raw."""
+    spec = SALVAGE.get(category)
+    return _salvage(spec, details) if spec is not None else {}
+
+
 def hospital_today(session: Session, hospital_id: str) -> date:
     """Today's date where the hospital is (not on the server's clock)."""
     return datetime.now(ZoneInfo(session.get(Hospital, hospital_id).timezone)).date()
@@ -200,7 +247,17 @@ def publish(session: Session, record: ClinicalRecord, patient: Patient, hospital
         "files": [file_payload(f) for f in files_of(session, record.id)],
     })
     record.published_dedan_id = dedan
+    record.published_version = record.version
     return True
+
+
+def needs_publishing(record: ClinicalRecord, dedan_id: Optional[str]) -> bool:
+    """Whether Endod lacks this record's current version for the account
+    ``dedan_id``: never sent there, sent to another account, or corrected
+    since (for instance while the patient was unlinked)."""
+    if record.retracted or not dedan_id:
+        return False
+    return record.published_dedan_id != dedan_id or (record.published_version or 0) < record.version
 
 
 def retract_from_platform(session: Session, record: ClinicalRecord, dedan_id: str, reason: str) -> None:
@@ -208,12 +265,15 @@ def retract_from_platform(session: Session, record: ClinicalRecord, dedan_id: st
         "record_id": record.id, "hospital_id": record.hospital_id, "dedan_id": dedan_id, "reason": reason,
     })
     record.published_dedan_id = None
+    record.published_version = None
 
 
 def retract(session: Session, record: ClinicalRecord, reason: str) -> None:
     record.retracted = True
     record.retracted_reason = reason
     record.retracted_at = utcnow()
+    # Entered in error: the same source item may be imported again.
+    record.import_key = None
     if record.published_dedan_id:
         dedan = record.published_dedan_id
         retract_from_platform(session, record, dedan, reason)
@@ -251,14 +311,15 @@ def set_follow_up(session: Session, visit: Visit, patient: Patient, hospital: Ho
 
 
 def publish_history(session: Session, patient: Patient, today: date) -> int:
-    """A patient was just linked: send their records and upcoming follow-ups.
-    Returns how many records were sent."""
+    """A patient was just linked: send their records (each one Endod does not
+    have in its current version, including corrections made while unlinked)
+    and upcoming follow-ups. Returns how many records were sent."""
     hospital = session.get(Hospital, patient.hospital_id)
     sent = 0
     for record in session.scalars(select(ClinicalRecord).where(
             ClinicalRecord.patient_id == patient.id, ClinicalRecord.retracted.is_(False))
             .order_by(ClinicalRecord.occurred_at)):
-        if record.published_dedan_id != patient.dedan_id:
+        if needs_publishing(record, patient.dedan_id):
             sent += publish(session, record, patient, hospital)
     for visit in session.scalars(select(Visit).where(Visit.patient_id == patient.id,
                                                      Visit.follow_up_on.is_not(None),

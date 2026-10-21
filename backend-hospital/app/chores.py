@@ -6,7 +6,7 @@ from datetime import timedelta
 
 from sqlalchemy import delete, select
 
-from app import files, sharing
+from app import files, queues, sharing
 from app.db import session_scope, utcnow
 from app.models import ImportBatch, RecordFile
 
@@ -16,10 +16,12 @@ KEEP_IMPORT_PLANS_FOR = timedelta(days=30)
 
 
 def run() -> int:
-    """End expired shares, delete abandoned uploads and old import plans. Returns the work done."""
+    """End expired shares, cancel stale queue entries, delete abandoned uploads
+    and old import plans. Returns the work done."""
     now = utcnow()
     with session_scope() as session:
         work = sharing.expire(session)
+        work += queues.cancel_stale(session, now)
         for row in session.scalars(select(RecordFile).where(
                 RecordFile.record_id.is_(None), RecordFile.created_at < now - KEEP_UNATTACHED_FOR)):
             files.delete(row.hospital_id, row.id)

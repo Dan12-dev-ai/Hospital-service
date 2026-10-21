@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import binascii
 import csv
+import hashlib
 import io
 import json
 import re
@@ -33,6 +34,14 @@ from app.validation import normalize_dedan_id
 ENDOD_SYSTEM = "https://endod-health.com/id"
 MAX_IMPORT_BYTES = 10 * 1024 * 1024
 MAX_ITEMS = 500
+#: Longest CSV field accepted (the longest detail kept is 4000 characters).
+MAX_CSV_FIELD = 64 * 1024
+#: Deepest JSON nesting accepted (a FHIR bundle needs far less).
+MAX_JSON_DEPTH = 64
+
+# Python's csv module refuses fields over its limit with csv.Error; ours is
+# set explicitly (and reported as a clean "field too long").
+csv.field_size_limit(MAX_CSV_FIELD)
 
 CSV_COLUMNS = [
     "mrn", "endod_id", "category", "title", "occurred_at", "recorded_by",
@@ -52,6 +61,18 @@ class ImportFailed(ValueError):
 
 class Skip(ValueError):
     """One item cannot be imported; the message says why."""
+
+
+def import_key(source: Any) -> str:
+    """The identity of a source item (a FHIR resource or a CSV row): sha256 of
+    its canonical JSON. Stored on the record, unique per hospital."""
+    canonical = json.dumps(source, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def already_imported(session: Session, hospital_id: str, key: str) -> bool:
+    return session.scalar(select(ClinicalRecord.id).where(
+        ClinicalRecord.hospital_id == hospital_id, ClinicalRecord.import_key == key)) is not None
 
 
 class Planner:
@@ -122,7 +143,9 @@ class Planner:
         return moment.astimezone(timezone.utc)
 
     def add(self, index: int, what: str, patient: Patient, category: str, title: str, details: Dict[str, Any],
-            occurred_at: datetime, recorded_by: Optional[str], document: Optional[Tuple[bytes, str, str]] = None):
+            occurred_at: datetime, recorded_by: Optional[str], document: Optional[Tuple[bytes, str, str]] = None,
+            *, source: Any):
+        """``source`` is the item as the file gave it (its hash identifies it)."""
         title = (title or "").strip()[:200]
         if not title:
             raise Skip("no title")
@@ -130,11 +153,13 @@ class Planner:
             cleaned = clean_details(category, details)
         except DetailsError as exc:
             raise Skip(str(exc)) from exc
+        source_key = import_key(source)
         key = (patient.id, category, title.lower(), occurred_at.isoformat())
-        if key in self._seen:
+        if key in self._seen or source_key in self._seen:
             raise Skip("the same record appears twice in this file")
-        self._seen.add(key)
-        if self.session.scalar(select(ClinicalRecord.id).where(
+        self._seen.update((key, source_key))
+        if already_imported(self.session, self.hospital.id, source_key) or self.session.scalar(
+                select(ClinicalRecord.id).where(
                 ClinicalRecord.patient_id == patient.id, ClinicalRecord.category == category,
                 ClinicalRecord.title == title, ClinicalRecord.occurred_at == occurred_at,
                 ClinicalRecord.source == "import", ClinicalRecord.retracted.is_(False))):
@@ -142,7 +167,7 @@ class Planner:
         item = {
             "index": index, "what": what, "patient_id": patient.id, "patient": f"{patient.full_name} ({patient.mrn})",
             "category": category, "title": title, "details": cleaned, "occurred_at": occurred_at.isoformat(),
-            "recorded_by": (recorded_by or "").strip()[:160] or None, "file": None,
+            "recorded_by": (recorded_by or "").strip()[:160] or None, "file": None, "import_key": source_key,
         }
         if document is not None:
             data, content_type, filename = document
@@ -340,11 +365,33 @@ MAPPERS = {
 }
 
 
+def _depth(value: Any) -> int:
+    """How deeply lists and objects nest (iteratively: no recursion to overflow)."""
+    deepest, stack = 0, [(value, 1)]
+    while stack:
+        current, level = stack.pop()
+        if isinstance(current, dict):
+            children = current.values()
+        elif isinstance(current, list):
+            children = current
+        else:
+            continue
+        deepest = max(deepest, level)
+        if deepest > MAX_JSON_DEPTH:
+            break
+        stack.extend((child, level + 1) for child in children)
+    return deepest
+
+
 def plan_fhir(planner: Planner, data: bytes) -> None:
     try:
         bundle = json.loads(data.decode("utf-8-sig"))
+    except RecursionError as exc:
+        raise ImportFailed(f"The JSON is nested too deeply (at most {MAX_JSON_DEPTH} levels).") from exc
     except (UnicodeDecodeError, ValueError) as exc:
         raise ImportFailed("The file is not valid JSON.") from exc
+    if _depth(bundle) > MAX_JSON_DEPTH:
+        raise ImportFailed(f"The JSON is nested too deeply (at most {MAX_JSON_DEPTH} levels).")
     if not isinstance(bundle, dict) or bundle.get("resourceType") != "Bundle":
         raise ImportFailed("The JSON is not a FHIR Bundle (resourceType must be \"Bundle\").")
     entries = bundle.get("entry") or []
@@ -378,7 +425,7 @@ def plan_fhir(planner: Planner, data: bytes) -> None:
             mapped = mapper(r)
             category, title, details, when, who = mapped[:5]
             planner.add(index, what, patient, category, title, details, planner.when(when), who,
-                        mapped[5] if len(mapped) > 5 else None)
+                        mapped[5] if len(mapped) > 5 else None, source=r)
         except Skip as exc:
             planner.skip(index, what, str(exc))
         except (AttributeError, TypeError, KeyError, ValueError):
@@ -421,6 +468,15 @@ def plan_csv(planner: Planner, data: bytes) -> None:
     except UnicodeDecodeError as exc:
         raise ImportFailed("The CSV must be UTF-8 text.") from exc
     reader = csv.DictReader(io.StringIO(text))
+    try:
+        _plan_csv_rows(planner, reader)
+    except csv.Error as exc:
+        if "field larger than field limit" in str(exc):
+            raise ImportFailed(f"Line {reader.line_num + 1}: a field is longer than {MAX_CSV_FIELD} characters.") from exc
+        raise ImportFailed(f"Line {reader.line_num + 1}: the CSV could not be read ({exc}).") from exc
+
+
+def _plan_csv_rows(planner: Planner, reader: csv.DictReader) -> None:
     header = [h.strip().lower() for h in reader.fieldnames or []]
     if "category" not in header or "occurred_at" not in header or not ({"mrn", "endod_id"} & set(header)):
         raise ImportFailed("The CSV header must include category, occurred_at, and mrn or endod_id "
@@ -440,7 +496,7 @@ def plan_csv(planner: Planner, data: bytes) -> None:
             patient = planner.patient_by(mrn=row.get("mrn") or None, dedan_id=row.get("endod_id") or None)
             title, details = _csv_details(category, row)
             planner.add(row_number, what, patient, category, title, details, planner.when(row.get("occurred_at")),
-                        row.get("recorded_by"))
+                        row.get("recorded_by"), source=row)
         except Skip as exc:
             planner.skip(row_number, what, str(exc))
 
@@ -470,7 +526,16 @@ def plan(session: Session, hospital: Hospital, data: bytes, kind: str) -> Planne
     if len(data) > MAX_IMPORT_BYTES:
         raise ImportFailed(f"An import file can be at most {MAX_IMPORT_BYTES // (1024 * 1024)} MB.")
     planner = Planner(session, hospital)
-    (plan_fhir if kind == "fhir" else plan_csv)(planner, data)
+    try:
+        (plan_fhir if kind == "fhir" else plan_csv)(planner, data)
+    except ImportFailed:
+        raise
+    except RecursionError as exc:
+        raise ImportFailed("The file is nested too deeply to read.") from exc
+    except (csv.Error, UnicodeError, ValueError, TypeError, KeyError, AttributeError, IndexError,
+            OverflowError) as exc:
+        # Whatever else a malformed file trips over is the file's fault: a clean refusal, never a crash.
+        raise ImportFailed("The file could not be read; check it against the template or the FHIR format.") from exc
     return planner
 
 
