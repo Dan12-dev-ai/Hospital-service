@@ -147,6 +147,7 @@ def delete(hospital_id: str, file_id: str) -> None:
 
 def content_disposition(filename: str, inline: bool = True) -> str:
     """A Content-Disposition header that survives any file name (RFC 6266)."""
-    fallback = filename.encode("ascii", "ignore").decode().replace('"', "").replace("\\", "").strip() or "file"
+    # Printable ASCII only: a name from elsewhere (a shared file's) must not break the header.
+    fallback = "".join(c for c in filename if " " <= c <= "~" and c not in '"\\').strip() or "file"
     kind = "inline" if inline else "attachment"
     return f"{kind}; filename=\"{fallback}\"; filename*=UTF-8''{quote(filename, safe='')}"

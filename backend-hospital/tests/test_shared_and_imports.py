@@ -389,3 +389,11 @@ class TestCsvImport:
         assert imports.template().strip() in doc
         public = root / "frontend-hospital-portal" / "public" / "import-template.csv"
         assert public.read_text(encoding="utf-8").splitlines()[0] == imports.template().strip()
+
+
+def test_a_shared_file_name_cannot_break_the_header():
+    from app import files
+
+    header = files.content_disposition('lab\r\nSet-Cookie: a=b"\.pdf')
+    assert "\r" not in header and "\n" not in header
+    assert header.startswith('inline; filename="labSet-Cookie: a=b.pdf"; filename*=UTF-8\'\'')
