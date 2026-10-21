@@ -124,7 +124,7 @@ function Bookings({ staff, hospital }: { staff: Staff; hospital: Hospital }) {
             </span>
           </div>
           <h1 className="mb-1 font-headline-xl text-headline-xl leading-none tracking-tight text-on-surface">
-            Appointments
+            Patient Booking
             <span className="font-body-md text-headline-lg font-normal text-outline"> — {total} bookings</span>
           </h1>
           <p className="flex items-center gap-1.5 font-body-sm text-body-sm text-outline">

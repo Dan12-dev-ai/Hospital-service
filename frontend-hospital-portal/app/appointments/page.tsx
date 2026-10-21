@@ -5,7 +5,7 @@ import { BookingsDirectory } from "@/components/bookings/bookings-directory";
 import { LoadingState } from "@/components/common/states";
 
 export const metadata: Metadata = {
-  title: "Dedan Health OS • Appointments",
+  title: "Dedan Health OS • Patient Booking",
 };
 
 export default function AppointmentsPage() {

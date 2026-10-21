@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useSidebarMobile } from "@/components/dashboard/sidebar-mobile-context";
 import Link from "next/link";
 import { cn } from "cn";
 import { Icon } from "@/components/ui/icon";
@@ -11,7 +12,7 @@ import { SidebarLink } from "@/components/dashboard/sidebar-link";
 
 export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
-  const [mobileOpen, setMobileOpen] = useState(false);
+  const { mobileOpen, setMobileOpen } = useSidebarMobile();
 
   // Escape closes the mobile drawer.
   useEffect(() => {
@@ -20,7 +21,7 @@ export function Sidebar() {
     }
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [setMobileOpen]);
 
   // Lock body scroll while the mobile drawer is open.
   useEffect(() => {
@@ -35,7 +36,15 @@ export function Sidebar() {
   return (
     <>
       {/* Mobile / tablet trigger bar (hidden on xl+ where the rail lives) */}
-      <div className="sticky top-0 z-40 flex items-center justify-between gap-3 rounded-2xl border border-card-border/80 bg-white p-3 shadow-soft xl:hidden">
+      <div className="sticky top-0 z-40 flex items-center gap-3 rounded-2xl border border-card-border/80 bg-white p-3 shadow-soft xl:hidden">
+        <button
+          type="button"
+          aria-label="Open navigation menu"
+          onClick={() => setMobileOpen(true)}
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-50 text-slate-600 transition-colors hover:bg-slate-100"
+        >
+          <Icon name="menu" className="text-[22px]" />
+        </button>
         <Link href="/" className="flex min-w-0 items-center gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-tr from-pine-green to-[#34d399] text-white shadow-md shadow-emerald-900/10">
             <Icon name="local_hospital" className="text-[24px]" />
@@ -50,14 +59,6 @@ export function Sidebar() {
             </span>
           </div>
         </Link>
-        <button
-          type="button"
-          aria-label="Open navigation menu"
-          onClick={() => setMobileOpen(true)}
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-50 text-slate-600 transition-colors hover:bg-slate-100"
-        >
-          <Icon name="menu" className="text-[22px]" />
-        </button>
       </div>
 
       {/* Mobile drawer */}
