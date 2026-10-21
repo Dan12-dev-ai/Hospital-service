@@ -24,6 +24,15 @@ def register(client, headers, **overrides):
     return resp.json()
 
 
+def link_directly(patient_id, dedan_id):
+    """As if Endod had confirmed the link (patient.linked)."""
+    from app.db import session_scope
+    from app.models import Patient
+
+    with session_scope() as session:
+        session.get(Patient, patient_id).dedan_id = dedan_id
+
+
 def make_ward(client, admin, name="Ward B", capacity=2):
     return client.post("/departments", headers=admin,
                        json={"kind": "ward", "name": name, "capacity": capacity}).json()["id"]
@@ -58,11 +67,13 @@ class TestRegistration:
         assert again.status_code == 409 and first["mrn"] in again.json()["error"]
         assert register(client, desk, confirm_duplicate=True)["mrn"] == "SPH-000002"
 
-    def test_an_endod_id_links_to_one_patient(self, client, desk):
-        assert register(client, desk, dedan_id="de-482731")["dedan_id"] == "DE-482731"
-        resp = client.post("/patients", headers=desk, json={
-            **ALMAZ, "full_name": "Someone Else", "dedan_id": "DE-482731"})
-        assert resp.status_code == 409 and "Endod ID" in resp.json()["error"]
+    def test_an_endod_id_is_only_set_by_linking(self, client, desk):
+        # Endod confirms the account first (POST /patients/{id}/link, see test_history.py).
+        resp = client.post("/patients", headers=desk, json={**ALMAZ, "dedan_id": "DE482731"})
+        assert resp.status_code == 400 and "Link the patient to Endod" in resp.json()["error"]
+        patient = register(client, desk)
+        resp = client.patch(f"/patients/{patient['id']}", headers=desk, json={"dedan_id": "DE482731"})
+        assert resp.status_code == 400
 
     def test_pharmacists_cannot_register(self, client, hospital):
         make_staff(hospital, "rx@sph.example", role="pharmacist")
@@ -71,7 +82,8 @@ class TestRegistration:
 
 class TestDirectory:
     def test_search_by_name_mrn_endod_id_and_phone(self, client, desk):
-        almaz = register(client, desk, dedan_id="DE-482731")
+        almaz = register(client, desk)
+        link_directly(almaz["id"], "DE482731")
         register(client, desk, full_name="Dawit Bekele", full_name_am="ዳዊት", phone="0922 000 111", sex="male")
         for q in ("almaz", "አልማዝ", almaz["mrn"].lower(), "de-4827", "0911234567", "+251 911 234 567", "0911"):
             found = client.get("/patients", headers=desk, params={"q": q}).json()
@@ -240,11 +252,12 @@ class TestReviewFixes:
         from app.db import session_scope
         from app.models import AuditEvent
 
-        patient = register(client, desk, dedan_id="DE-482731")
+        patient = register(client, desk)
+        link_directly(patient["id"], "DE482731")
         client.patch(f"/patients/{patient['id']}", headers=desk, json={"dedan_id": None, "address": "Bole"})
         with session_scope() as session:
             detail = json.loads(session.scalar(select(AuditEvent.detail).where(AuditEvent.action == "patient_updated")))
-        assert detail["identity"] == {"dedan_id": {"from": "DE-482731", "to": None}}
+        assert detail["identity"] == {"dedan_id": {"from": "DE482731", "to": None}}
 
     def test_wildcards_in_search_are_literal(self, client, desk):
         register(client, desk)

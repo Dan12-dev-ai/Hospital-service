@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
-from app.api import admin, auth, bookings, doctors, onboarding, patients
+from app.api import admin, auth, bookings, doctors, history, imports, onboarding, patients, queue, shared
 from app.config import Settings, get_settings
 
 logger = logging.getLogger("hospital")
@@ -33,7 +33,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Sessions travel in the Authorization header, never in cookies.
         allow_credentials=False,
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type"],
+        allow_headers=["Authorization", "Content-Type", "X-Filename"],
     )
 
     # One error shape everywhere: {"error": "...", "error_code": "..."}.
@@ -70,6 +70,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(doctors.router)
     app.include_router(bookings.router)
     app.include_router(onboarding.router)
+    app.include_router(history.router)
+    app.include_router(history.platform_router)
+    app.include_router(queue.router)
+    app.include_router(shared.router)
+    app.include_router(imports.router)
     return app
 
 

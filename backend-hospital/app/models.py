@@ -188,6 +188,8 @@ class Hospital(Base):
     #: Raised on every announcement, so the platform can ignore an older one
     #: that arrives late.
     listing_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    #: Queue: how many people ahead triggers the "get ready" SMS (0 = off).
+    queue_notify_ahead: Mapped[int] = mapped_column(Integer, nullable=False, default=3, server_default=text("3"))
 
 
 class Department(Base):
@@ -403,3 +405,236 @@ class ProcessedEvent(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     type: Mapped[str] = mapped_column(String(64), nullable=False)
     processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+# --- Patient history: linking, records, visits, queues, shared records, imports ---
+# The contract with the patient platform is docs/history-events.md.
+
+class LinkStatus:
+    PENDING = "pending"
+    LINKED = "linked"
+    REFUSED = "refused"
+    #: Replaced by a newer request, or the patient was linked another way.
+    SUPERSEDED = "superseded"
+    ALL = (PENDING, LINKED, REFUSED, SUPERSEDED)
+
+
+class PatientLinkRequest(Base):
+    """A request to Endod to link a hospital patient to an Endod account.
+
+    The patient's ``dedan_id`` is set (and records published) only once the
+    platform answers ``patient.linked``.
+    """
+
+    __tablename__ = "patient_link_requests"
+    __table_args__ = (Index("ix_link_requests_patient", "patient_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False)
+    patient_id: Mapped[str] = mapped_column(ForeignKey("patients.id", ondelete="CASCADE"), nullable=False)
+    dedan_id: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: "card" (the QR's signature) or "phone".
+    method: Mapped[str] = mapped_column(String(8), nullable=False)
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default=LinkStatus.PENDING)
+    #: The platform's reason on refusal ("not_found", "not_verified"), or ours.
+    reason: Mapped[Optional[str]] = mapped_column(String(40))
+    #: The account holder's name, as Endod confirmed it.
+    linked_name: Mapped[Optional[str]] = mapped_column(String(160))
+    requested_by: Mapped[Optional[str]] = mapped_column(ForeignKey("staff_users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class RecordCategory:
+    DIAGNOSIS = "diagnosis"
+    PRESCRIPTION = "prescription"
+    LAB_RESULT = "lab_result"
+    IMAGING = "imaging"
+    VISIT_NOTE = "visit_note"
+    DOCUMENT = "document"
+    ALL = (DIAGNOSIS, PRESCRIPTION, LAB_RESULT, IMAGING, VISIT_NOTE, DOCUMENT)
+
+
+class Visit(Base):
+    """A visit groups clinical records and may carry a follow-up date."""
+
+    __tablename__ = "visits"
+    __table_args__ = (Index("ix_visits_patient", "patient_id", "started_at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False)
+    patient_id: Mapped[str] = mapped_column(ForeignKey("patients.id", ondelete="CASCADE"), nullable=False)
+    doctor_id: Mapped[Optional[str]] = mapped_column(ForeignKey("staff_users.id", ondelete="SET NULL"))
+    booking_id: Mapped[Optional[str]] = mapped_column(ForeignKey("bookings.id", ondelete="SET NULL"))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    follow_up_on: Mapped[Optional[date]] = mapped_column(Date)
+    follow_up_note: Mapped[Optional[str]] = mapped_column(String(500))
+    #: The Endod ID the current follow-up was sent to (so its cancellation reaches the same account).
+    follow_up_sent_to: Mapped[Optional[str]] = mapped_column(String(16))
+    created_by: Mapped[Optional[str]] = mapped_column(ForeignKey("staff_users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ClinicalRecord(Base):
+    __tablename__ = "clinical_records"
+    __table_args__ = (Index("ix_records_patient", "patient_id", "occurred_at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False)
+    patient_id: Mapped[str] = mapped_column(ForeignKey("patients.id", ondelete="CASCADE"), nullable=False)
+    visit_id: Mapped[Optional[str]] = mapped_column(ForeignKey("visits.id", ondelete="SET NULL"))
+    category: Mapped[str] = mapped_column(String(16), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    #: A JSON object, by category (docs/history-events.md, section 2).
+    details: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: The staff member who wrote it (none for an import).
+    recorded_by: Mapped[Optional[str]] = mapped_column(ForeignKey("staff_users.id", ondelete="SET NULL"))
+    #: The name the patient sees: the author, or the clinician named in an import.
+    recorded_by_name: Mapped[Optional[str]] = mapped_column(String(160))
+    #: "portal" or "import".
+    source: Mapped[str] = mapped_column(String(8), nullable=False, default="portal")
+    #: Raised on every correction; the platform keeps the highest.
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    retracted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    retracted_reason: Mapped[Optional[str]] = mapped_column(String(300))
+    retracted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    #: The Endod ID it was last published to (None: never published).
+    published_dedan_id: Mapped[Optional[str]] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow,
+                                                 onupdate=utcnow)
+
+
+class RecordFile(Base):
+    """A PDF or image kept on disk under HOSPITAL_FILES_DIR.
+
+    Uploaded first (no ``record_id``), then attached to a record. Its path on
+    disk is built from the hospital and file ids only, never from a name.
+    """
+
+    __tablename__ = "record_files"
+    __table_args__ = (Index("ix_record_files_record", "record_id"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False)
+    patient_id: Mapped[str] = mapped_column(ForeignKey("patients.id", ondelete="CASCADE"), nullable=False)
+    record_id: Mapped[Optional[str]] = mapped_column(ForeignKey("clinical_records.id", ondelete="CASCADE"))
+    filename: Mapped[str] = mapped_column(String(160), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    size: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    uploaded_by: Mapped[Optional[str]] = mapped_column(ForeignKey("staff_users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class QueueStatus:
+    WAITING = "waiting"
+    CALLED = "called"
+    DONE = "done"
+    SKIPPED = "skipped"
+    CANCELLED = "cancelled"
+    ALL = (WAITING, CALLED, DONE, SKIPPED, CANCELLED)
+    OPEN = (WAITING, CALLED)
+
+
+class QueueDay(Base):
+    """One doctor's queue on one day: its ticket counter, and the row every
+    change to that queue locks first (so changes happen one at a time)."""
+
+    __tablename__ = "queue_days"
+    __table_args__ = (UniqueConstraint("hospital_id", "doctor_id", "day", name="uq_queue_day"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False)
+    doctor_id: Mapped[str] = mapped_column(ForeignKey("staff_users.id", ondelete="CASCADE"), nullable=False)
+    day: Mapped[date] = mapped_column(Date, nullable=False)
+    last_ticket: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: Bumped by every change: the write that takes the row lock.
+    changes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class QueueEntry(Base):
+    __tablename__ = "queue_entries"
+    __table_args__ = (
+        UniqueConstraint("queue_id", "ticket", name="uq_queue_ticket"),
+        Index("ix_queue_entries_queue_status", "queue_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False)
+    queue_id: Mapped[str] = mapped_column(ForeignKey("queue_days.id", ondelete="CASCADE"), nullable=False)
+    ticket: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default=QueueStatus.WAITING)
+    patient_id: Mapped[Optional[str]] = mapped_column(ForeignKey("patients.id", ondelete="SET NULL"))
+    #: One entry per Endod booking.
+    booking_id: Mapped[Optional[str]] = mapped_column(ForeignKey("bookings.id", ondelete="SET NULL"), unique=True)
+    dedan_id: Mapped[Optional[str]] = mapped_column(String(16))
+    patient_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    phone: Mapped[Optional[str]] = mapped_column(String(20))
+    #: People ahead when last announced (-1: never announced).
+    last_ahead: Mapped[int] = mapped_column(Integer, nullable=False, default=-1)
+    near_notified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    turn_notified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: Raised with every queue.updated sent for this entry.
+    seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    checked_in_by: Mapped[Optional[str]] = mapped_column(ForeignKey("staff_users.id", ondelete="SET NULL"))
+    checked_in_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    called_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class RecordShare(Base):
+    """Records a patient shared with this hospital through Endod (a read-only copy).
+
+    The copy is deleted when unshared or expired; the row stays a little
+    while as a tombstone (``revoked_at``) so a late ``records.shared`` is not stored.
+    """
+
+    __tablename__ = "record_shares"
+    __table_args__ = (Index("ix_record_shares_hospital_dedan", "hospital_id", "dedan_id"),)
+
+    #: The platform's share id.
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False)
+    dedan_id: Mapped[Optional[str]] = mapped_column(String(16))
+    patient_name: Mapped[Optional[str]] = mapped_column(String(160))
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class SharedRecord(Base):
+    __tablename__ = "shared_records"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    share_id: Mapped[str] = mapped_column(ForeignKey("record_shares.id", ondelete="CASCADE"), nullable=False,
+                                          index=True)
+    record_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    origin: Mapped[str] = mapped_column(String(160), nullable=False)
+    category: Mapped[str] = mapped_column(String(16), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    details: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    recorded_by: Mapped[Optional[str]] = mapped_column(String(160))
+    #: A JSON list of {file_id, filename, content_type, size, sha256}.
+    files: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+
+
+class ImportBatch(Base):
+    """An uploaded FHIR bundle or CSV, previewed and waiting for confirmation."""
+
+    __tablename__ = "import_batches"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False)
+    created_by: Mapped[Optional[str]] = mapped_column(ForeignKey("staff_users.id", ondelete="SET NULL"))
+    #: "fhir" or "csv".
+    format: Mapped[str] = mapped_column(String(8), nullable=False)
+    filename: Mapped[Optional[str]] = mapped_column(String(160))
+    #: JSON: {"items": [...], "skipped": [...]}.
+    plan: Mapped[str] = mapped_column(Text, nullable=False)
+    #: "previewed" or "imported".
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="previewed")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    imported_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))

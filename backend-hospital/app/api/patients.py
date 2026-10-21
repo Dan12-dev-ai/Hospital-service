@@ -13,17 +13,18 @@ from typing import Any, Dict, Iterable, List, Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 
+from app import linking
 from app.auth import Staff, audit, current_staff, require_roles
 from app.db import ensure_aware, session_scope, utcnow
 from app.models import (
     AlertKind, Department, DepartmentKind, Hospital, Patient, PatientAlert, PatientStatus, Payer, Role, Sex,
     StaffUser,
 )
-from app.validation import Name, OptionalPhone, OptionalText, like_pattern, phone_digits
+from app.validation import Name, OptionalDedanId, OptionalPhone, OptionalText, like_pattern, phone_digits
 
 router = APIRouter(prefix="/patients", tags=["patients"])
 
@@ -42,11 +43,10 @@ CLINICAL_FIELDS = {"status", "department_id", "ward_id", "bed", "attending_docto
 #: Who sees the working diagnosis. Allergy and risk alerts are shown to everyone,
 #: since they are safety information (the pharmacy and the cashier need them too).
 DIAGNOSIS_READERS = (Role.ADMIN, Role.DOCTOR, Role.NURSE, Role.PHARMACIST, Role.RECORDS)
+#: An Endod ID is stored only once Endod confirms the account.
+LINK_INSTEAD = "Link the patient to Endod from their page (health card or Endod ID and phone number)."
 #: Identity fields whose old and new values go into the audit log.
 TRACKED_FIELDS = ("full_name", "full_name_am", "sex", "date_of_birth", "phone", "dedan_id", "payer", "payer_number")
-
-_DEDAN_ID = re.compile(r"^[A-Z0-9][A-Z0-9-]{3,39}$")
-
 
 # --- input ----------------------------------------------------------------------
 
@@ -60,17 +60,9 @@ class _Demographics(BaseModel):
     emergency_contact_name: OptionalText = Field(default=None, max_length=120)
     emergency_contact_phone: OptionalPhone = None
     payer_number: OptionalText = Field(default=None, max_length=40)
-    dedan_id: OptionalText = Field(default=None, max_length=40)
-
-    @field_validator("dedan_id")
-    @classmethod
-    def _dedan_id(cls, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return None
-        value = value.upper()
-        if not _DEDAN_ID.match(value):
-            raise ValueError("not a valid Endod ID, e.g. DE-482731")
-        return value
+    #: Set only by linking (POST /patients/{id}/link): Endod confirms the
+    #: account first. Accepted here only as null, to unlink.
+    dedan_id: OptionalDedanId = None
 
     @model_validator(mode="after")
     def _one_birth_field(self):
@@ -265,7 +257,9 @@ def list_patients(
         matches = [func.lower(Patient.full_name).like(like_pattern(term.lower()), escape="\\"),
                    Patient.full_name_am.like(like_pattern(term), escape="\\"),
                    Patient.mrn.like(like_pattern(term.upper()), escape="\\"),
-                   Patient.dedan_id.like(like_pattern(term.upper()), escape="\\")]
+                   Patient.dedan_id.like(like_pattern(term.upper()), escape="\\"),
+                   # Endod IDs are stored as DE482731; staff also type DE-482731.
+                   Patient.dedan_id.like(like_pattern(re.sub(r"[\s-]", "", term.upper())), escape="\\")]
         digits = phone_digits(term)
         if digits:
             matches.append(Patient.phone.like(like_pattern(digits), escape="\\"))
@@ -302,6 +296,8 @@ def patient_stats(staff: Staff = Depends(current_staff)) -> Dict[str, Any]:
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 def register_patient(body: PatientCreate, staff: Staff = Depends(require_roles(*REGISTRARS))) -> Dict[str, Any]:
+    if body.dedan_id:
+        raise HTTPException(status_code=400, detail=LINK_INSTEAD)
     _one_of("sex", body.sex, Sex.ALL)
     _one_of("payer", body.payer, Payer.ALL)
     try:
@@ -324,7 +320,7 @@ def register_patient(body: PatientCreate, staff: Staff = Depends(require_roles(*
             if born is None and body.age_years is not None:
                 born, estimated = _estimated_birth(body.age_years, today), True
             patient = Patient(
-                hospital_id=staff.hospital_id, mrn=mrn, dedan_id=body.dedan_id,
+                hospital_id=staff.hospital_id, mrn=mrn,
                 full_name=body.full_name, full_name_am=body.full_name_am, sex=body.sex, date_of_birth=born,
                 dob_estimated=estimated, phone=body.phone, address=body.address,
                 emergency_contact_name=body.emergency_contact_name,
@@ -362,6 +358,8 @@ def update_patient(patient_id: str, body: PatientUpdate, staff: Staff = Depends(
             changes.pop(field)
     if not changes:
         raise HTTPException(status_code=400, detail="Nothing to change.")
+    if changes.get("dedan_id"):
+        raise HTTPException(status_code=400, detail=LINK_INSTEAD)
     if DEMOGRAPHIC_FIELDS & changes.keys() and staff.role not in DEMOGRAPHIC_EDITORS:
         raise HTTPException(status_code=403, detail="Only registration staff change patient details.")
     if CLINICAL_FIELDS & changes.keys() and staff.role not in CLINICAL_EDITORS:
@@ -408,6 +406,9 @@ def update_patient(patient_id: str, body: PatientUpdate, staff: Staff = Depends(
                 changes["bed"] = None
 
             before = {f: getattr(patient, f) for f in TRACKED_FIELDS if f in changes}
+            if "dedan_id" in changes:
+                # Unlinking: also withdraw a pending link request.
+                linking.unlink(session, patient)
             for field, value in changes.items():
                 setattr(patient, field, value)
             if new_status != old_status:

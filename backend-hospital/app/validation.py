@@ -90,3 +90,25 @@ def like_pattern(term: str) -> str:
     """``%term%`` for a LIKE escaped with a backslash, so % and _ typed by a user match literally."""
     escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
+
+
+_ENDOD_ID = re.compile(r"^DE-?(\d{6})$")
+
+
+def normalize_dedan_id(value: str) -> str:
+    """An Endod ID as the platform writes it: DE and six digits (DE482731).
+
+    Also accepts the forms staff type or older records carry: de482731, DE-482731.
+    """
+    match = _ENDOD_ID.match(re.sub(r"\s+", "", value or "").upper())
+    if not match:
+        raise ValueError("not a valid Endod ID, e.g. DE482731")
+    return "DE" + match.group(1)
+
+
+def _dedan(value: Optional[str]) -> Optional[str]:
+    return normalize_dedan_id(value) if value else None
+
+
+#: An optional Endod ID, stored as DE + 6 digits.
+OptionalDedanId = Annotated[Optional[str], BeforeValidator(blank_to_none), AfterValidator(_dedan)]
