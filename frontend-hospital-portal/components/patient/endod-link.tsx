@@ -90,11 +90,14 @@ export function EndodLink({
       await apiFetch<LinkState>(`patients/${patientId}/link`, { method: "POST", body });
       showToast("Sent to Endod for confirmation");
       setCardUrl("");
-      setScanning(false);
       reload();
     } catch (err) {
+      // Refused (400, 409, ...): back to idle with the reason shown; scanning
+      // again is one click away.
       setError(err instanceof ApiError ? err.message : "Could not send the request.");
     } finally {
+      // Either way the scanner closes, so its camera is off.
+      setScanning(false);
       setBusy(false);
     }
   }
@@ -189,10 +192,24 @@ export function EndodLink({
               sent to Endod before the account is confirmed.
             </p>
           ) : null}
+          {state.data.claimed_dedan_id && (
+            <p data-testid="endod-claim" className="flex flex-wrap items-center gap-2 rounded-2xl bg-amber-50 px-4 py-2 text-xs text-amber-900">
+              <span>
+                <strong>Endod ID given, not yet linked:</strong> {state.data.claimed_dedan_id}. Link it below to
+                confirm it with Endod.
+              </span>
+              {canLink && (
+                <button type="button" onClick={() => { setMode("id"); setDedanId(state.data?.claimed_dedan_id ?? ""); }}
+                  className="font-semibold text-primary hover:underline">
+                  Use this ID
+                </button>
+              )}
+            </p>
+          )}
           {canLink ? (
             <div className="flex flex-col gap-3">
               <div role="tablist" className="flex gap-2">
-                <button type="button" role="tab" aria-selected={mode === "id"} onClick={() => setMode("id")}
+                <button type="button" role="tab" aria-selected={mode === "id"} onClick={() => { setMode("id"); setScanning(false); }}
                   className={mode === "id" ? primaryButtonClass : secondaryButtonClass}>
                   <Icon name="badge" className="text-[16px]" />
                   Endod ID and phone
@@ -222,9 +239,9 @@ export function EndodLink({
                   {scanning ? (
                     <QrScanner onResult={submitCard} onClose={() => setScanning(false)} />
                   ) : (
-                    <button type="button" onClick={() => { setError(null); setScanning(true); }} className={secondaryButtonClass}>
+                    <button type="button" disabled={busy} onClick={() => { setError(null); setScanning(true); }} className={secondaryButtonClass}>
                       <Icon name="photo_camera" className="text-[16px]" />
-                      Open the camera
+                      {error ? "Scan again" : "Open the camera"}
                     </button>
                   )}
                   <form

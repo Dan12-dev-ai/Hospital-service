@@ -28,17 +28,27 @@ function Pairs({ entries }: { entries: [string, Value][] }) {
   );
 }
 
-/** A record's details, whatever the category: fields, item tables and vitals. Read-only. */
-export function RecordDetails({ details }: { details: Record<string, unknown> }) {
-  const items = Array.isArray(details.items) ? (details.items as Record<string, Value>[]) : [];
-  const vitals = details.vitals && typeof details.vitals === "object" ? (details.vitals as Record<string, Value>) : null;
-  const rest = Object.entries(details).filter(([key]) => key !== "items" && key !== "vitals");
-  const columns = Array.from(new Set(items.flatMap((item) => Object.keys(item ?? {})))).filter((key) =>
-    items.some((item) => text(item?.[key]) !== null)
+/** A plain JSON object (not null, not an array). */
+function isObject(value: unknown): value is Record<string, Value> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * A record's details, whatever the category: fields, item tables and vitals.
+ * Read-only. Tolerates anything (shared records come from elsewhere): details
+ * that are not an object show nothing, and null or non-object items are skipped.
+ */
+export function RecordDetails({ details }: { details: unknown }) {
+  const fields: Record<string, Value> = isObject(details) ? details : {};
+  const items = Array.isArray(fields.items) ? fields.items.filter(isObject) : [];
+  const vitals = isObject(fields.vitals) ? fields.vitals : null;
+  const rest = Object.entries(fields).filter(([key]) => key !== "items" && key !== "vitals");
+  const columns = Array.from(new Set(items.flatMap((item) => Object.keys(item)))).filter((key) =>
+    items.some((item) => text(item[key]) !== null)
   );
   return (
     <div className="flex flex-col gap-2">
-      {items.length > 0 && (
+      {items.length > 0 && columns.length > 0 && (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[420px] text-left text-xs">
             <thead>

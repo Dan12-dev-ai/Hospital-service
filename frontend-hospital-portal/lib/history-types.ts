@@ -7,6 +7,8 @@ export type LinkRequestStatus = "pending" | "linked" | "refused" | "superseded";
 export type LinkState = {
   patient_id: string;
   dedan_id: string | null;
+  /** An Endod ID the patient gave, not confirmed (cleared once linked). */
+  claimed_dedan_id: string | null;
   request: {
     id: string;
     dedan_id: string;
@@ -55,7 +57,9 @@ export type ClinicalRecord = {
   retracted: boolean;
   retracted_reason: string | null;
   retracted_at: string | null;
+  /** Endod has this version. */
   published: boolean;
+  published_version: number | null;
   files: RecordFile[];
 };
 
@@ -92,6 +96,8 @@ export type QueueEntry = {
 export type DoctorQueue = {
   doctor: { id: string; full_name: string };
   entries: QueueEntry[];
+  /** The previous day's entries still open: called first, cancelled 12 hours after that day ended. */
+  leftovers: (QueueEntry & { day: string })[];
   waiting: number;
   called: QueueEntry | null;
 };

@@ -143,6 +143,8 @@ function QueueCard({
   const [showFinished, setShowFinished] = useState(false);
   const open = queue.entries.filter((e) => e.status === "waiting" || e.status === "called");
   const finished = queue.entries.filter((e) => e.status !== "waiting" && e.status !== "called");
+  // Yesterday's patients still open (older responses may lack the field).
+  const leftovers = queue.leftovers ?? [];
 
   return (
     <section data-testid="queue-card" className="flex flex-col gap-3 rounded-3xl border border-card-border/80 bg-white p-5 shadow-soft">
@@ -164,8 +166,23 @@ function QueueCard({
           Call next
         </button>
       </div>
+      {leftovers.length > 0 && (
+        <div data-testid="queue-leftovers" className="flex flex-col gap-2 rounded-2xl bg-amber-50/60 p-3">
+          <p className="text-[11px] font-semibold text-amber-900">
+            From yesterday: {leftovers.length} still open. They are called first,
+            and cancelled automatically at noon if still waiting.
+          </p>
+          <ul className="flex flex-col gap-2">
+            {leftovers.map((e) => (
+              <EntryRow key={e.id} entry={e} timeZone={timeZone} busy={busy} onAct={onAct} />
+            ))}
+          </ul>
+        </div>
+      )}
       {open.length === 0 ? (
-        <p className="rounded-xl bg-slate-50 px-3 py-3 text-center text-xs text-slate-500">Nobody waiting.</p>
+        <p className="rounded-xl bg-slate-50 px-3 py-3 text-center text-xs text-slate-500">
+          {leftovers.length > 0 ? "Nobody waiting from today." : "Nobody waiting."}
+        </p>
       ) : (
         <ul className="flex flex-col gap-2">
           {open.map((e) => (

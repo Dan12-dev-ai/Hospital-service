@@ -126,19 +126,23 @@ export function useApi<T>(path: string | null) {
 }
 
 /**
- * Uploads one file through the portal's upload route (multipart, with the
- * header that route requires). `path` is the backend path, e.g.
+ * Uploads one file through the portal's upload route: the file itself as the
+ * body (streamed on to the backend), its name in X-Filename, with the header
+ * that route requires. `path` is the backend path, e.g.
  * `patients/<id>/uploads` or `imports/preview`.
  */
 export async function apiUpload<T>(path: string, file: File): Promise<T> {
-  const form = new FormData();
-  form.append("file", file, file.name);
   let response: Response;
   try {
     response = await fetch(`/api/upload/${path.replace(/^\/+/, "")}`, {
       method: "POST",
-      body: form,
-      headers: { Accept: "application/json", "X-Portal-Upload": "1" },
+      body: file,
+      headers: {
+        Accept: "application/json",
+        "X-Portal-Upload": "1",
+        "Content-Type": file.type || "application/octet-stream",
+        "X-Filename": encodeURIComponent(file.name.slice(0, 200)),
+      },
       credentials: "same-origin",
       cache: "no-store",
     });

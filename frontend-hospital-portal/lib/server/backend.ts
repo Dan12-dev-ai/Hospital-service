@@ -96,9 +96,10 @@ export type BackendResult = { status: number; body: unknown };
 
 export async function callBackend(
   path: string,
-  init: { method: string; headers: Headers; body?: string | Uint8Array<ArrayBuffer> }
+  init: { method: string; headers: Headers; body?: string | Uint8Array<ArrayBuffer> | ReadableStream<Uint8Array> }
 ): Promise<BackendResult> {
   let response: Response;
+  const streamed = typeof init.body === "object" && init.body !== null && "getReader" in init.body;
   try {
     response = await fetch(backendUrl(path), {
       method: init.method,
@@ -106,7 +107,9 @@ export async function callBackend(
       body: init.body,
       cache: "no-store",
       redirect: "manual",
-    });
+      // A streamed body (an upload passed through as it arrives) must say so.
+      ...(streamed ? { duplex: "half" } : {}),
+    } as RequestInit);
   } catch {
     return {
       status: 502,
@@ -144,19 +147,19 @@ function sameOrigin(request: NextRequest): boolean {
 }
 
 /**
- * Uploads are multipart, which a cross-site HTML form can send without a
- * CORS preflight, so the JSON rule cannot protect them. They need, besides
- * the SameSite session cookie: an Origin header naming this portal, and a
- * custom header (which a form cannot set, and which makes a cross-site
- * script's request preflighted, and refused).
+ * Uploads send the file itself as the body (any type), which the JSON rule
+ * cannot protect. They need, besides the SameSite session cookie: an Origin
+ * header naming this portal, and a custom header (which an HTML form cannot
+ * set, and which makes a cross-site script's request preflighted, and
+ * refused). A multipart form is refused: only the portal's own pages upload.
  */
 export function rejectCrossSiteUpload(request: NextRequest): NextResponse | null {
   if (!sameOrigin(request) || request.headers.get(UPLOAD_HEADER) !== "1") {
     return errorResponse(403, "Cross-site request refused.", "CSRF");
   }
   const type = (request.headers.get("content-type") ?? "").toLowerCase();
-  if (!type.startsWith("multipart/form-data")) {
-    return errorResponse(415, "Send the file as multipart/form-data.", "UNSUPPORTED_MEDIA_TYPE");
+  if (type.startsWith("multipart/form-data") || type.startsWith("application/x-www-form-urlencoded")) {
+    return errorResponse(415, "Send the file itself as the request body.", "UNSUPPORTED_MEDIA_TYPE");
   }
   return null;
 }

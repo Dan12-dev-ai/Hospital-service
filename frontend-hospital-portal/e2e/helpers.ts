@@ -54,6 +54,11 @@ export function seedLink(patientId: string, dedanId: string) {
   return seed<{ patient_id: string; dedan_id: string }>("link", patientId, dedanId);
 }
 
+/** A walk-in checked in to the doctor's queue yesterday (hospital time), still waiting. */
+export function seedQueueYesterday(hospitalId: string, doctorEmail: string, patientName: string) {
+  return seed<{ entry_id: string; ticket: number; day: string }>("queue-yesterday", hospitalId, doctorEmail, patientName);
+}
+
 /** A patient sharing one record (with a PDF) with the hospital through Endod. */
 export function seedShare(hospitalId: string, dedanId: string, patientName: string, title: string) {
   return seed<{ share_id: string; record_id: string; file_id: string }>("share", hospitalId, dedanId, patientName, title);

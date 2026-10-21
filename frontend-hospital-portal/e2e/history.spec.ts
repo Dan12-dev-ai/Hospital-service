@@ -6,10 +6,12 @@ import {
   seedHospital,
   seedLink,
   seedLinkReply,
+  seedQueueYesterday,
   seedShare,
   signIn,
   type SeededHospital,
 } from "./helpers";
+import { PORTAL_PORT } from "./env";
 
 // Dates (follow-ups, "today's" queue) are the hospital's: Addis Ababa time.
 test.use({ timezoneId: "Africa/Addis_Ababa" });
@@ -277,4 +279,101 @@ test("file routes refuse cross-site uploads and paths outside their allowlist", 
   ]) {
     expect((await page.request.get(path)).status(), path).toBe(404);
   }
+});
+
+test("a doctor corrects a record: a new version, shown as corrected and sent to Endod again", async ({ page }) => {
+  await as(page, "doctor");
+  const patient = await registerPatient(page, "Hana Corrected");
+  seedLink(patient.id, newDedanId());
+  await page.goto(`/patients/${patient.id}`);
+
+  await page.getByRole("button", { name: "Add record" }).click();
+  const add = page.getByRole("dialog", { name: "Add record" });
+  await add.locator("#record-category").selectOption("diagnosis");
+  await add.locator("#record-title").fill("Typhoid");
+  await add.locator("#record-condition").fill("Typhoid fever");
+  await add.locator("#record-code").fill("A01.0");
+  await add.getByRole("button", { name: "Save record" }).click();
+  await expect(add).toHaveCount(0);
+
+  const card = page.getByTestId("record-card").filter({ hasText: "Typhoid" });
+  await expect(card).toContainText("Sent to Endod");
+  await expect(card.getByTestId("record-corrected")).toHaveCount(0);
+
+  await card.getByRole("button", { name: "Edit / correct" }).click();
+  const correct = page.getByRole("dialog", { name: "Correct record" });
+  // The form opens with the record as it is; the category cannot change.
+  await expect(correct.locator("#record-title")).toHaveValue("Typhoid");
+  await expect(correct.locator("#record-condition")).toHaveValue("Typhoid fever");
+  await expect(correct.locator("#record-category")).toBeDisabled();
+  await correct.locator("#record-title").fill("Paratyphoid");
+  await correct.locator("#record-condition").fill("Paratyphoid fever A");
+  await correct.locator("#record-code").fill("A01.1");
+  await correct.getByRole("button", { name: "Save correction" }).click();
+  await expect(correct).toHaveCount(0);
+
+  const corrected = page.getByTestId("record-card").filter({ hasText: "Paratyphoid" });
+  await expect(corrected.getByTestId("record-corrected")).toContainText("Corrected • version 2");
+  await expect(corrected).toContainText("A01.1");
+  await expect(corrected).toContainText("Sent to Endod");
+  const listed = await page.request.get(`/api/patients/${patient.id}/records`);
+  const [record] = (await listed.json()).items;
+  expect(record.version).toBe(2);
+  expect(record.published_version).toBe(2);
+});
+
+test("an Endod ID typed at registration is only a claim until Endod confirms it", async ({ page }) => {
+  await as(page, "reception");
+  const claimed = newDedanId();
+  const response = await page.request.post("/api/patients", {
+    // Older clients still send the typed ID as dedan_id: it becomes a claim.
+    data: { full_name: "Abel Claimed", sex: "male", age_years: 30, phone: "0911 234 567", dedan_id: claimed, confirm_duplicate: true },
+  });
+  expect(response.status()).toBe(201);
+  const patient = await response.json();
+  expect(patient.dedan_id).toBeNull();
+  expect(patient.claimed_dedan_id).toBe(claimed);
+
+  await page.goto(`/patients/${patient.id}`);
+  await expect(page.getByTestId("claimed-endod-id")).toContainText(`Endod ID given, not yet linked: ${claimed}`);
+  await expect(page.getByTestId("endod-link-status")).toContainText("Not linked");
+  await page.getByTestId("endod-claim").getByRole("button", { name: "Use this ID" }).click();
+  await expect(page.getByLabel("Endod ID")).toHaveValue(claimed);
+});
+
+test("uploads stream through the portal and keep their size limit", async ({ page }) => {
+  await as(page, "records");
+  const upload = "/api/upload/imports/preview";
+  const headers = { Origin: `http://localhost:${PORTAL_PORT}`, "X-Portal-Upload": "1" };
+  // A multipart form is not how the portal uploads.
+  let response = await page.request.post(upload, { headers, multipart: { file: { name: "x.csv", mimeType: "text/csv", buffer: Buffer.from("a") } } });
+  expect(response.status()).toBe(415);
+  // Over the limit: refused before anything reaches the backend.
+  response = await page.request.post(upload, {
+    headers: { ...headers, "Content-Type": "text/csv", "X-Filename": "big.csv" },
+    data: Buffer.alloc(10 * 1024 * 1024 + 1, 0x61),
+  });
+  expect(response.status()).toBe(413);
+  // Within it: streamed to the backend, which answers.
+  response = await page.request.post(upload, {
+    headers: { ...headers, "Content-Type": "text/csv", "X-Filename": "small.csv" },
+    data: Buffer.from("name,date\nAlmaz,2025-01-01\n"),
+  });
+  expect(response.status()).toBe(400);
+  expect((await response.json()).error).toContain("header");
+});
+
+test("yesterday's leftovers show on the queue page and are called first", async ({ page }) => {
+  // doctor2 has a queue of their own, so earlier tests do not get in the way.
+  const doctor = hospital.accounts.doctor2;
+  seedQueueYesterday(hospital.hospital_id, doctor.email, "Lemlem Leftover");
+  await as(page, "doctor2");
+  await page.goto("/queue");
+  const leftovers = page.getByTestId("queue-leftovers");
+  await expect(leftovers).toContainText("From yesterday: 1 still open");
+  await expect(leftovers.getByTestId("queue-entry")).toContainText("Lemlem Leftover");
+  await page.getByRole("button", { name: "Call next" }).click();
+  await expect(leftovers.getByTestId("queue-entry")).toContainText("called");
+  await leftovers.getByRole("button", { name: "Done" }).click();
+  await expect(page.getByTestId("queue-leftovers")).toHaveCount(0);
 });

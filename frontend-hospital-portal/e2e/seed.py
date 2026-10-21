@@ -22,6 +22,9 @@ HOSPITAL_DATABASE_URL as the server under test. Prints JSON.
     python seed.py link <patient_id> <dedan_id>
         The patient linked to Endod already (as after a confirmed request).
 
+    python seed.py queue-yesterday <hospital_id> <doctor email> <patient name>
+        A walk-in checked in to the doctor's queue yesterday, still waiting.
+
     python seed.py share <hospital_id> <dedan_id> <patient name> <record title>
         A patient sharing one record (with a PDF) with the hospital: the
         records.shared event handled as the worker would.
@@ -163,6 +166,21 @@ def share(hospital_id: str, dedan_id: str, patient: str, title: str) -> dict:
     return {"share_id": share_id, "record_id": record_id, "file_id": file_id}
 
 
+def queue_yesterday(hospital_id: str, doctor_email: str, patient: str) -> dict:
+    """A walk-in checked in yesterday (hospital time) and still waiting."""
+    from datetime import timedelta as days
+
+    from app import queues
+
+    with session_scope() as session:
+        doctor = session.scalar(select(StaffUser).where(StaffUser.email == doctor_email))
+        yesterday = records.hospital_today(session, hospital_id) - days(days=1)
+        queue = queues.lock_queue(session, hospital_id, doctor.id, yesterday)
+        entry = queues.check_in(session, queue, patient_name=patient, phone="+251911000009", dedan_id=None,
+                                patient_id=None, booking_id=None, staff_id=None)
+        return {"entry_id": entry.id, "ticket": entry.ticket, "day": yesterday.isoformat()}
+
+
 def main() -> None:
     args = sys.argv[1:]
     if args[:1] == ["hospital"] and len(args) >= 2:
@@ -173,6 +191,8 @@ def main() -> None:
         print(json.dumps(link_reply(args[1], args[2], args[3] if len(args) == 4 else "")))
     elif args[:1] == ["link"] and len(args) == 3:
         print(json.dumps(link_now(args[1], args[2])))
+    elif args[:1] == ["queue-yesterday"] and len(args) == 4:
+        print(json.dumps(queue_yesterday(args[1], args[2], args[3])))
     elif args[:1] == ["share"] and len(args) == 5:
         print(json.dumps(share(args[1], args[2], args[3], args[4])))
     else:

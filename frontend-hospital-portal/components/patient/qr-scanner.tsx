@@ -47,43 +47,74 @@ async function makeDecoder(): Promise<Decoder> {
 
 /**
  * Reads a QR code with the device camera (the back camera on a phone or
- * tablet) and reports the first one found. The camera stops when this closes.
+ * tablet) and reports the first one found.
+ *
+ * The camera is never left on unseen: it stops as soon as a code is read
+ * (the parent then sends it, and closes or reopens the scanner), when
+ * anything fails (the error is shown), when the page is hidden, and when
+ * this closes.
  */
 export function QrScanner({ onResult, onClose }: { onResult: (text: string) => void; onClose: () => void }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
+  const [read, setRead] = useState(false);
   const report = useRef(onResult);
+  const close = useRef(onClose);
 
   useEffect(() => {
     report.current = onResult;
-  }, [onResult]);
+    close.current = onClose;
+  }, [onResult, onClose]);
 
   useEffect(() => {
     let stream: MediaStream | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let stopped = false;
 
+    function stopCamera() {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      timer = null;
+      stream?.getTracks().forEach((track) => track.stop());
+      stream = null;
+      if (videoRef.current) videoRef.current.srcObject = null;
+    }
+
+    function fail(message: string) {
+      stopCamera();
+      setReady(false);
+      setError(message);
+    }
+
     async function start() {
       if (!navigator.mediaDevices?.getUserMedia) {
-        setError("This browser cannot use the camera here (it needs HTTPS). Type the Endod ID and phone instead.");
+        fail("This browser cannot use the camera here (it needs HTTPS). Type the Endod ID and phone instead.");
         return;
       }
+      let opened: MediaStream;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+        opened = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
       } catch {
-        setError("The camera could not be opened. Allow camera access, or type the Endod ID and phone instead.");
+        fail("The camera could not be opened. Allow camera access, or type the Endod ID and phone instead.");
         return;
       }
       if (stopped || !videoRef.current) {
         // Closed while the camera was opening: the cleanup ran before the stream existed.
-        stream.getTracks().forEach((track) => track.stop());
+        opened.getTracks().forEach((track) => track.stop());
         return;
       }
+      stream = opened;
       videoRef.current.srcObject = stream;
       await videoRef.current.play().catch(() => undefined);
-      const decode = await makeDecoder();
+      let decode: Decoder;
+      try {
+        decode = await makeDecoder();
+      } catch {
+        fail("The QR reader could not be started. Type the card's link or the Endod ID and phone instead.");
+        return;
+      }
       if (stopped) return;
       setReady(true);
       const tick = async () => {
@@ -91,22 +122,32 @@ export function QrScanner({ onResult, onClose }: { onResult: (text: string) => v
         try {
           const text = await decode(videoRef.current, canvasRef.current);
           if (text && !stopped) {
+            // Read: the camera goes off now, whatever happens to the code next.
+            stopCamera();
+            setRead(true);
             report.current(text);
             return;
           }
         } catch {
           // A frame that could not be read: try the next one.
         }
-        timer = setTimeout(tick, 200);
+        if (!stopped) timer = setTimeout(tick, 200);
       };
       void tick();
     }
 
+    function onVisibility() {
+      if (document.visibilityState === "hidden" && !stopped) {
+        stopCamera();
+        close.current();
+      }
+    }
+
+    document.addEventListener("visibilitychange", onVisibility);
     void start();
     return () => {
-      stopped = true;
-      if (timer) clearTimeout(timer);
-      stream?.getTracks().forEach((track) => track.stop());
+      document.removeEventListener("visibilitychange", onVisibility);
+      stopCamera();
     };
   }, []);
 
@@ -115,10 +156,13 @@ export function QrScanner({ onResult, onClose }: { onResult: (text: string) => v
       <div className="relative overflow-hidden rounded-2xl bg-slate-900">
         <video ref={videoRef} muted playsInline className="aspect-video w-full object-cover" />
         <canvas ref={canvasRef} className="hidden" />
-        {!ready && !error && (
+        {!ready && !error && !read && (
           <p className="absolute inset-0 flex items-center justify-center text-xs text-white/80">Opening the camera…</p>
         )}
-        {ready && (
+        {read && !error && (
+          <p className="absolute inset-0 flex items-center justify-center text-xs text-white/80">Card read. Checking it…</p>
+        )}
+        {ready && !read && !error && (
           <div className="pointer-events-none absolute inset-8 rounded-2xl border-2 border-dashed border-white/70" />
         )}
       </div>
@@ -131,7 +175,7 @@ export function QrScanner({ onResult, onClose }: { onResult: (text: string) => v
       )}
       <button type="button" onClick={onClose} className={secondaryButtonClass}>
         <Icon name="close" className="text-[16px]" />
-        Stop the camera
+        {read || error ? "Close" : "Stop the camera"}
       </button>
     </div>
   );

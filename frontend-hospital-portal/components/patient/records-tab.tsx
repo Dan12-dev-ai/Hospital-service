@@ -44,6 +44,7 @@ export function RecordsTab({ patientId, staff, hospital }: { patientId: string; 
   const visits = useApi<Visit[]>(`patients/${patientId}/visits`);
   const [adding, setAdding] = useState(false);
   const [retracting, setRetracting] = useState<ClinicalRecord | null>(null);
+  const [correcting, setCorrecting] = useState<ClinicalRecord | null>(null);
   const [filter, setFilter] = useState<RecordCategory | "all">("all");
   const categories = categoriesFor(staff.role);
 
@@ -95,12 +96,16 @@ export function RecordsTab({ patientId, staff, hospital }: { patientId: string; 
                     <span className="text-[11px] text-slate-500">
                       {CATEGORY_LABELS[r.category]} • {formatDateTime(r.occurred_at, hospital.timezone)}
                       {r.recorded_by ? ` • ${r.recorded_by}` : ""}
-                      {r.version > 1 ? ` • version ${r.version}` : ""}
                       {r.source === "import" ? " • imported" : ""}
                     </span>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  {r.version > 1 && (
+                    <span data-testid="record-corrected" className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+                      Corrected • version {r.version}
+                    </span>
+                  )}
                   {r.published && (
                     <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-800">Sent to Endod</span>
                   )}
@@ -108,9 +113,15 @@ export function RecordsTab({ patientId, staff, hospital }: { patientId: string; 
                     <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-semibold text-rose-800">Retracted</span>
                   ) : (
                     mayWrite(staff.role, r.category) && (
-                      <button type="button" onClick={() => setRetracting(r)} className={secondaryButtonClass}>
-                        Retract
-                      </button>
+                      <>
+                        <button type="button" onClick={() => setCorrecting(r)} className={secondaryButtonClass}>
+                          <Icon name="edit_note" className="text-[16px]" />
+                          Edit / correct
+                        </button>
+                        <button type="button" onClick={() => setRetracting(r)} className={secondaryButtonClass}>
+                          Retract
+                        </button>
+                      </>
                     )
                   )}
                 </div>
@@ -134,6 +145,22 @@ export function RecordsTab({ patientId, staff, hospital }: { patientId: string; 
           onSaved={(record) => {
             setAdding(false);
             showToast(record.published ? "Record saved and sent to Endod" : "Record saved");
+            records.reload();
+          }}
+        />
+      )}
+      {correcting && (
+        <RecordForm
+          patientId={patientId}
+          categories={categories}
+          visits={visits.data ?? []}
+          record={correcting}
+          onClose={() => setCorrecting(null)}
+          onSaved={(record) => {
+            setCorrecting(null);
+            showToast(record.published
+              ? `Correction saved as version ${record.version} and sent to Endod`
+              : `Correction saved as version ${record.version}`);
             records.reload();
           }}
         />

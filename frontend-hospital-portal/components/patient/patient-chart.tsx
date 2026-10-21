@@ -72,12 +72,19 @@ function Chart({ id, staff, hospital }: { id: string; staff: Staff; hospital: Ho
               <span>{p.sex === "female" ? "Female" : "Male"}{p.age_years !== null ? `, ${p.age_years} y` : ""}</span>
               <span>•</span>
               <span>{STATUS_LABELS[p.status]}</span>
-              {p.dedan_id && (
+              {p.dedan_id ? (
                 <>
                   <span>•</span>
                   <span className="font-semibold text-pine-green">Endod {p.dedan_id}</span>
                 </>
-              )}
+              ) : p.claimed_dedan_id ? (
+                <>
+                  <span>•</span>
+                  <span data-testid="claimed-endod-id" className="font-semibold text-amber-700">
+                    Endod ID given, not yet linked: {p.claimed_dedan_id}
+                  </span>
+                </>
+              ) : null}
             </p>
           </div>
         </div>

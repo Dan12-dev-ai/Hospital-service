@@ -179,12 +179,17 @@ function PatientRow({
             </div>
             <span className="flex items-center gap-1.5 text-body-sm font-body-sm text-on-surface-variant">
               <span className="font-medium text-primary">{patient.mrn}</span>
-              {patient.dedanId && (
+              {patient.dedanId ? (
                 <>
                   <span>•</span>
                   <span>{patient.dedanId}</span>
                 </>
-              )}
+              ) : patient.claimedDedanId ? (
+                <>
+                  <span>•</span>
+                  <span title="Endod ID given, not yet linked">{patient.claimedDedanId} (not linked)</span>
+                </>
+              ) : null}
               <span>•</span>
               <span>{patient.demographics}</span>
             </span>

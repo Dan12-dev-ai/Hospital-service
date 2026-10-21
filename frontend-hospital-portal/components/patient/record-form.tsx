@@ -96,28 +96,69 @@ export function buildDetails(category: RecordCategory, fields: Row, items: Row[]
   }
 }
 
-/** Adds a clinical record: the category's fields, optional visit, and files (uploaded one by one, then attached). */
+/** "2026-10-21T09:30" for a datetime-local input, from an ISO time, in the browser's time. */
+function localInput(iso: string): string {
+  const when = new Date(iso);
+  if (Number.isNaN(when.getTime())) return localNow();
+  when.setMinutes(when.getMinutes() - when.getTimezoneOffset());
+  return when.toISOString().slice(0, 16);
+}
+
+function asText(value: unknown): string {
+  return typeof value === "string" || typeof value === "number" ? String(value) : "";
+}
+
+function asRow(value: unknown): Row {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).map(([key, v]) => [key, asText(v)]));
+}
+
+/** The form's state from a saved record's details (the reverse of buildDetails). */
+export function formFromDetails(category: RecordCategory, details: unknown): { fields: Row; items: Row[]; vitals: Row } {
+  const all = asRow(details);
+  const raw = typeof details === "object" && details !== null ? (details as Record<string, unknown>) : {};
+  const items = Array.isArray(raw.items) ? raw.items.map(asRow).filter((row) => Object.keys(row).length > 0) : [];
+  return {
+    fields: category === "diagnosis" ? { ...all, status: all.status || "active" } : all,
+    items: items.length > 0 ? items : [{}],
+    vitals: asRow(raw.vitals),
+  };
+}
+
+/**
+ * Adds a clinical record: the category's fields, optional visit, and files
+ * (uploaded one by one, then attached). With ``record``, corrects that record
+ * instead: the same fields, filled in, saved as a new version (and sent to
+ * Endod again when the patient is linked).
+ */
 export function RecordForm({
   patientId,
   categories,
   visits,
+  record,
   onClose,
   onSaved,
 }: {
   patientId: string;
   categories: RecordCategory[];
   visits: Visit[];
+  /** The record to correct (its category cannot change). */
+  record?: ClinicalRecord;
   onClose: () => void;
   onSaved: (record: ClinicalRecord) => void;
 }) {
-  const [category, setCategory] = useState<RecordCategory>(categories[0]);
-  const [title, setTitle] = useState("");
-  const [occurredAt, setOccurredAt] = useState(localNow);
+  const initial = record ? formFromDetails(record.category, record.details) : null;
+  const [category, setCategory] = useState<RecordCategory>(record?.category ?? categories[0]);
+  const [title, setTitle] = useState(record?.title ?? "");
+  const [occurredAt, setOccurredAt] = useState(() => (record ? localInput(record.occurred_at) : localNow()));
   const [visitId, setVisitId] = useState("");
-  const [fields, setFields] = useState<Row>({ status: "active" });
-  const [items, setItems] = useState<Row[]>([{}]);
-  const [vitals, setVitals] = useState<Row>({});
+  const [fields, setFields] = useState<Row>(initial?.fields ?? { status: "active" });
+  const [items, setItems] = useState<Row[]>(initial?.items ?? [{}]);
+  const [vitals, setVitals] = useState<Row>(initial?.vitals ?? {});
   const [files, setFiles] = useState<File[]>([]);
+  // Files the record already has, and those the correction removes.
+  const [removed, setRemoved] = useState<string[]>([]);
+  const kept = (record?.files ?? []).filter((f) => !removed.includes(f.id));
   const [progress, setProgress] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -152,7 +193,7 @@ export function RecordForm({
       return;
     }
     const next = [...files, ...chosen];
-    if (next.length > MAX_FILES_PER_RECORD) {
+    if (next.length + kept.length > MAX_FILES_PER_RECORD) {
       setError(`A record can have at most ${MAX_FILES_PER_RECORD} files.`);
       return;
     }
@@ -162,7 +203,7 @@ export function RecordForm({
 
   async function save() {
     if (title.trim().length < 2) return setError("Give the record a title.");
-    if (category === "document" && files.length === 0) return setError("Attach the document's file.");
+    if (category === "document" && files.length === 0 && kept.length === 0) return setError("Attach the document's file.");
     const when = new Date(occurredAt);
     if (Number.isNaN(when.getTime())) return setError("Enter when it happened.");
     setBusy(true);
@@ -180,19 +221,31 @@ export function RecordForm({
         uploaded.current.set(file, stored.id);
         fileIds.push(stored.id);
       }
-      setProgress("Saving the record…");
-      const record = await apiFetch<ClinicalRecord>(`patients/${patientId}/records`, {
-        method: "POST",
-        body: {
-          category,
-          title: title.trim(),
-          details: buildDetails(category, fields, items, vitals),
-          occurred_at: when.toISOString(),
-          visit_id: visitId || null,
-          file_ids: fileIds,
-        },
-      });
-      onSaved(record);
+      setProgress(record ? "Saving the correction…" : "Saving the record…");
+      const details = buildDetails(category, fields, items, vitals);
+      const saved = record
+        ? await apiFetch<ClinicalRecord>(`records/${record.id}`, {
+            method: "PATCH",
+            body: {
+              title: title.trim(),
+              details,
+              occurred_at: when.toISOString(),
+              add_file_ids: fileIds,
+              remove_file_ids: removed,
+            },
+          })
+        : await apiFetch<ClinicalRecord>(`patients/${patientId}/records`, {
+            method: "POST",
+            body: {
+              category,
+              title: title.trim(),
+              details,
+              occurred_at: when.toISOString(),
+              visit_id: visitId || null,
+              file_ids: fileIds,
+            },
+          });
+      onSaved(saved);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not save the record.");
       setBusy(false);
@@ -285,23 +338,30 @@ export function RecordForm({
 
   return (
     <Modal
-      title="Add record"
-      icon="note_add"
+      title={record ? "Correct record" : "Add record"}
+      icon={record ? "edit_note" : "note_add"}
       onClose={onClose}
       footer={
         <>
           <button type="button" onClick={onClose} className={secondaryButtonClass}>Cancel</button>
           <button type="button" disabled={busy} onClick={save} className={primaryButtonClass}>
-            {busy ? "Saving…" : "Save record"}
+            {busy ? "Saving…" : record ? "Save correction" : "Save record"}
           </button>
         </>
       }
     >
+      {record && (
+        <p className="text-xs text-slate-600">
+          The correction is saved as version {record.version + 1}; the earlier version stays in the record&apos;s
+          history{record.published || record.published_version ? ", and Endod is sent the corrected version" : ""}.
+        </p>
+      )}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div>
           <label htmlFor="record-category" className={labelClass}>Category</label>
-          <select id="record-category" value={category} onChange={(e) => { setCategory(e.target.value as RecordCategory); setItems([{}]); }} className={inputClass}>
-            {categories.map((c) => (
+          <select id="record-category" value={category} disabled={Boolean(record)}
+            onChange={(e) => { setCategory(e.target.value as RecordCategory); setItems([{}]); }} className={inputClass}>
+            {(record ? [record.category] : categories).map((c) => (
               <option key={c} value={c}>{CATEGORY_LABELS[c]}</option>
             ))}
           </select>
@@ -314,7 +374,7 @@ export function RecordForm({
           <label htmlFor="record-title" className={labelClass}>Title</label>
           <input id="record-title" maxLength={200} value={title} onChange={(e) => setTitle(e.target.value)} className={inputClass} />
         </div>
-        {visits.length > 0 && (
+        {!record && visits.length > 0 && (
           <div className="sm:col-span-2">
             <label htmlFor="record-visit" className={labelClass}>Visit (optional)</label>
             <select id="record-visit" value={visitId} onChange={(e) => setVisitId(e.target.value)} className={inputClass}>
@@ -332,6 +392,18 @@ export function RecordForm({
           <label htmlFor="record-files" className={labelClass}>Files (PDF, JPEG, PNG or WebP; up to 10, 20 MB each)</label>
           <input id="record-files" type="file" multiple accept={ACCEPTED_FILES} onChange={(e) => { chooseFiles(e.target.files); e.target.value = ""; }}
             className="block w-full text-xs text-slate-600 file:mr-3 file:rounded-xl file:border-0 file:bg-surface-container file:px-3 file:py-2 file:text-xs file:font-semibold" />
+          {kept.length > 0 && (
+            <ul className="mt-2 flex flex-col gap-1" data-testid="kept-files">
+              {kept.map((file) => (
+                <li key={file.id} className="flex items-center justify-between rounded-xl bg-surface-container-low px-3 py-1.5 text-xs">
+                  <span className="truncate">{file.filename} <span className="text-slate-400">({formatSize(file.size)}, attached)</span></span>
+                  <button type="button" aria-label={`Remove ${file.filename}`} onClick={() => setRemoved((ids) => [...ids, file.id])} className="text-slate-400 hover:text-rose-600">
+                    <Icon name="close" className="text-[16px]" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
           {files.length > 0 && (
             <ul className="mt-2 flex flex-col gap-1" data-testid="chosen-files">
               {files.map((file, index) => (

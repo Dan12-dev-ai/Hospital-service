@@ -147,7 +147,10 @@ export type PatientStatus = "opd" | "emergency" | "admitted" | "discharge" | "di
 export type ApiPatient = {
   id: string;
   mrn: string;
+  /** Confirmed by Endod (linked). */
   dedan_id: string | null;
+  /** Given by the patient but not confirmed: "Endod ID given, not yet linked". */
+  claimed_dedan_id: string | null;
   full_name: string;
   full_name_am: string | null;
   sex: "female" | "male";
