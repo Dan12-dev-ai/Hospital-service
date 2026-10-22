@@ -2,7 +2,6 @@
 
 import { Icon } from "@/components/ui/icon";
 import { useDashboard } from "@/components/dashboard/dashboard-context";
-import { facility } from "@/lib/dashboard-data";
 
 export function ReportsHeader() {
   const { showToast } = useDashboard();
@@ -10,24 +9,9 @@ export function ReportsHeader() {
   return (
     <header className="flex flex-col justify-between gap-4 rounded-3xl bg-surface-container-lowest p-6 shadow-soft lg:flex-row lg:items-center">
       <div className="flex flex-col gap-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-label-sm font-label-sm uppercase tracking-widest text-primary">
-            Hospital Analytics
-          </span>
-          <span className="text-outline-variant">•</span>
-          <span className="text-label-sm font-label-sm uppercase tracking-wider text-outline">
-            Clinical &amp; Operational Intelligence
-          </span>
-        </div>
         <h1 className="text-headline-lg font-headline-lg font-bold tracking-tight text-on-surface">
-          Reports &amp; Analytics{" "}
-          <span className="text-headline-md font-normal text-outline">
-            — ሪፖርቶች እና ስታቲስቲክስ
-          </span>
+          Reports &amp; Analytics
         </h1>
-        <p className="text-body-sm font-body-sm text-on-surface-variant">
-          {facility.fullName} • Central Hospital Operations (ቅዱስ ጳውሎስ ሆስፒታል)
-        </p>
       </div>
 
       <div className="flex shrink-0 flex-wrap items-center gap-3">

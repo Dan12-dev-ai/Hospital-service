@@ -4,7 +4,6 @@ import { useMemo, useState } from "react";
 import { cn } from "cn";
 import { useDashboard } from "@/components/dashboard/dashboard-context";
 import { AppointmentRow } from "@/components/dashboard/appointment-row";
-import { facility } from "@/lib/dashboard-data";
 import { appointments } from "@/lib/appointments-data";
 import type { StatusFilter } from "@/lib/dashboard-types";
 
@@ -52,7 +51,7 @@ export function AppointmentsCard() {
             Today&apos;s Appointments
           </h2>
           <span className="text-[11px] text-slate-400">
-            Upcoming and ongoing appointments at {facility.name} Ward
+            Upcoming and ongoing appointments
           </span>
         </div>
         {/* Quick status tab filters */}

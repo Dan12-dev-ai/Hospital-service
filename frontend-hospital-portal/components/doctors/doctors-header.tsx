@@ -16,11 +16,6 @@ export function DoctorsHeader({
   return (
     <header className="flex flex-col justify-between gap-4 border-b border-surface-container pb-6 md:flex-row md:items-center">
       <div>
-        <div className="mb-1 flex items-center gap-2 text-label-sm font-label-sm uppercase tracking-wide text-outline">
-          <span>Clinical Staff</span>
-          <span>•</span>
-          <span className="font-semibold text-primary">Staff Directory &amp; Roster</span>
-        </div>
         <h1 className="flex items-center gap-2 text-headline-lg font-headline-lg text-on-surface">
           Physicians &amp; Specialists
           {activeCount !== null && (

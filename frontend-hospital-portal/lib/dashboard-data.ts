@@ -15,7 +15,7 @@ export const navItems: NavItem[] = [
   { label: "Patients", icon: "person", href: "/patients" },
   { label: "Doctors", icon: "stethoscope", href: "/doctors" },
   {
-    label: "Appointments",
+    label: "Patient Booking",
     icon: "calendar_month",
     href: "/appointments",
     // The backend's booking viewers.
@@ -32,6 +32,17 @@ export const navItems: NavItem[] = [
   },
   { label: "Import", icon: "upload_file", href: "/import", roles: ["admin", "records"] },
   { label: "Billing", icon: "receipt_long", href: "/billing" },
+  {
+    label: "Follow-up",
+    icon: "event_repeat",
+    href: "/followup",
+  },
+  {
+    label: "Medical Records",
+    icon: "medical_services",
+    href: "/medical-records",
+    roles: ["doctor", "admin", "nurse", "records"],
+  },
   { label: "Pharmacy", icon: "medication", href: "/pharmacy" },
   { label: "Reports", icon: "description", href: "/reports" },
   { label: "Settings", icon: "settings", href: "/settings", roles: ["admin"] },

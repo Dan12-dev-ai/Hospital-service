@@ -10,7 +10,7 @@ import { ErrorState, LoadingState, RoleGate } from "@/components/common/states";
 import { useDashboard } from "@/components/dashboard/dashboard-context";
 import { useSignedIn } from "@/components/session/session-context";
 import { ApiError, apiFetch, useApi } from "@/lib/api";
-import type { ApiPatient, Department, Hospital, PatientList, PatientStats, PatientStatus, Staff } from "@/lib/api-types";
+import type { ApiPatient, Department, PatientList, PatientStats, PatientStatus, Staff } from "@/lib/api-types";
 import { CLINICAL_EDITORS, PATIENT_REGISTRARS, STATUS_LABELS, toPatientView, type PatientTabKey } from "@/lib/patient-types";
 
 const PAGE_SIZES = [15, 25, 50];
@@ -26,10 +26,10 @@ export function PatientsDirectory() {
 function PatientsLoaded() {
   const signedIn = useSignedIn();
   if (!signedIn) return null;
-  return <Patients staff={signedIn.staff} hospital={signedIn.hospital} />;
+  return <Patients staff={signedIn.staff} />;
 }
 
-function Patients({ staff, hospital }: { staff: Staff; hospital: Hospital }) {
+function Patients({ staff }: { staff: Staff }) {
   const { showToast } = useDashboard();
   const searchRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
@@ -93,7 +93,6 @@ function Patients({ staff, hospital }: { staff: Staff; hospital: Hospital }) {
   return (
     <div className="flex w-full flex-col gap-5">
       <PatientsHeader
-        hospitalName={hospital.name}
         canRegister={PATIENT_REGISTRARS.includes(staff.role)}
         onRegister={() => setModalOpen(true)}
       />
