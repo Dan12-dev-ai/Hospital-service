@@ -9,15 +9,6 @@ export function ReportsHeader() {
   return (
     <header className="flex flex-col justify-between gap-4 rounded-3xl bg-surface-container-lowest p-6 shadow-soft lg:flex-row lg:items-center">
       <div className="flex flex-col gap-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-label-sm font-label-sm uppercase tracking-widest text-primary">
-            Hospital Analytics
-          </span>
-          <span className="text-outline-variant">•</span>
-          <span className="text-label-sm font-label-sm uppercase tracking-wider text-outline">
-            Clinical &amp; Operational Intelligence
-          </span>
-        </div>
         <h1 className="text-headline-lg font-headline-lg font-bold tracking-tight text-on-surface">
           Reports &amp; Analytics{" "}
           <span className="text-headline-md font-normal text-outline">
