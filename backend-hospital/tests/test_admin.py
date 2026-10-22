@@ -167,3 +167,44 @@ def test_migration_matches_the_models(tmp_path, monkeypatch):
         diff = compare_metadata(MigrationContext.configure(connection), Base.metadata)
     dbmod.reset_engine()
     assert diff == []
+
+
+def test_migration_turns_typed_endod_ids_into_claims(tmp_path, monkeypatch):
+    """Before 0004 staff typed Endod IDs freely: they become unconfirmed claims."""
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import text
+
+    from app import db as dbmod
+    from app.db import get_engine
+
+    monkeypatch.setenv("HOSPITAL_DATABASE_URL", f"sqlite:///{tmp_path / 'typed.db'}")
+    dbmod.reset_engine()
+    root = Path(__file__).resolve().parents[1]
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "migrations"))
+    command.upgrade(config, "0003")
+    with get_engine().begin() as connection:
+        connection.execute(text("INSERT INTO hospitals (id, code, name, timezone, created_at) "
+                                "VALUES ('h1', 'SPH', 'St. Paul', 'Africa/Addis_Ababa', '2026-01-01 00:00:00')"))
+        for pid, mrn, typed in (("p1", "SPH-000001", "DE-482731"), ("p2", "SPH-000002", "some typo"),
+                                ("p3", "SPH-000003", None)):
+            connection.execute(text(
+                "INSERT INTO patients (id, hospital_id, mrn, dedan_id, full_name, sex, dob_estimated, payer, status, "
+                "created_at, updated_at) VALUES (:id, 'h1', :mrn, :typed, 'Almaz', 'female', 0, 'cash', 'opd', "
+                "'2026-01-01 00:00:00', '2026-01-01 00:00:00')"), {"id": pid, "mrn": mrn, "typed": typed})
+        connection.execute(text("INSERT INTO patient_alerts (id, patient_id, kind, label, created_at) "
+                                "VALUES ('a1', 'p1', 'allergy', 'Penicillin', '2026-01-01 00:00:00')"))
+    command.upgrade(config, "head")
+    with get_engine().connect() as connection:
+        rows = connection.execute(text("SELECT id, dedan_id, claimed_dedan_id FROM patients ORDER BY id")).all()
+        alerts = connection.execute(text("SELECT count(*) FROM patient_alerts")).scalar()
+    assert [tuple(r) for r in rows] == [("p1", None, "DE-482731"), ("p2", None, "some typo"), ("p3", None, None)]
+    assert alerts == 1  # nothing referencing patients was touched
+    command.downgrade(config, "0003")
+    with get_engine().connect() as connection:
+        rows = connection.execute(text("SELECT id, dedan_id FROM patients ORDER BY id")).all()
+    dbmod.reset_engine()
+    assert [tuple(r) for r in rows] == [("p1", "DE-482731"), ("p2", "some typo"), ("p3", None)]

@@ -65,6 +65,29 @@ Cancelled by the hospital (`"by": "hospital"`). The platform refunds the patient
 ### `appointment.completed`
 The visit took place. The platform records it and the hospital's payout is due.
 
+### `onboarding.demo_booked`
+A hospital applying to join Endod booked its 30-minute demo with Endod, or
+moved it to another time (`changed: true`). The hospital service has no SMS:
+the platform texts the confirmation to the contact person's mobile. Sent on
+every booking and every change (a "change" to the same time sends nothing),
+until the hospital is approved.
+
+```json
+{"hospital_id": "…", "booking_id": "9f0c…(32 hex)", "contact_name": "Selam Bekele",
+ "phone": "+251911234567", "demo_at": "2026-10-26T10:00:00+03:00",
+ "hospital_name": "Bethel Teaching Hospital", "changed": false}
+```
+
+* `booking_id` stays the same when the time changes (one demo per hospital).
+* A booking is released, silently, when its application is not submitted
+  within 24 hours of booking, or Endod sends the application back or
+  suspends it. Nothing is sent for a release; a later booking has a new
+  `booking_id` and `changed: false`.
+* One demo at a time per contact mobile, across hospitals.
+* `phone` is an Ethiopian mobile in E.164 (`+2519…` or `+2517…`).
+* `demo_at` is the start, in Addis Ababa time with its offset; demos are on
+  weekdays between 09:00 and 17:00 Addis Ababa time.
+
 ## Patient platform → hospital service (`endod:patient`)
 
 ### `appointment.requested`
@@ -83,3 +106,9 @@ service fee is not included).
 `{"appointment_id", "hospital_id", "by": "patient" | "endod"}`: the patient
 cancelled (and was refunded), or Endod refunded a booking the hospital had not
 confirmed or declined two hours after its time.
+
+## Patient history, follow-ups, queues and shared records
+
+Linking hospital patients to Endod accounts, clinical records, visits and
+follow-ups, queues, records shared by patients and imports add more events to
+these same streams. Their contract is in [history-events.md](history-events.md).

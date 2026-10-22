@@ -39,7 +39,7 @@ export function RegisterPatientModal({
     phone: "",
     payer: "cash" as Payer,
     payer_number: "",
-    dedan_id: "",
+    claimed_dedan_id: "",
   });
   const [error, setError] = useState<string | null>(null);
   const [duplicate, setDuplicate] = useState(false);
@@ -69,7 +69,8 @@ export function RegisterPatientModal({
           phone: form.phone.trim() || null,
           payer: form.payer,
           payer_number: form.payer_number.trim() || null,
-          dedan_id: form.dedan_id.trim() || null,
+          // Only a claim: Endod confirms the account when the patient is linked from their page.
+          claimed_dedan_id: form.claimed_dedan_id.trim() || null,
           confirm_duplicate: confirmDuplicate,
         },
       });
@@ -149,8 +150,8 @@ export function RegisterPatientModal({
             <input id="patient-phone" type="tel" placeholder="0911 234 567" value={form.phone} onChange={(e) => set("phone", e.target.value)} className={inputClass} />
           </div>
           <div>
-            <label htmlFor="patient-dedan" className={labelClass}>Endod ID (optional)</label>
-            <input id="patient-dedan" placeholder="DE-482731" value={form.dedan_id} onChange={(e) => set("dedan_id", e.target.value)} className={inputClass} />
+            <label htmlFor="patient-dedan" className={labelClass}>Endod ID given (optional, linked later)</label>
+            <input id="patient-dedan" placeholder="DE482731" value={form.claimed_dedan_id} onChange={(e) => set("claimed_dedan_id", e.target.value)} className={inputClass} />
           </div>
         </div>
         <div className="grid grid-cols-2 gap-3">

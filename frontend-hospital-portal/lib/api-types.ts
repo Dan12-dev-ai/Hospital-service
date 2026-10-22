@@ -30,11 +30,15 @@ export type Staff = {
   active: boolean;
   must_change_password: boolean;
   last_login_at: string | null;
-  hospital?: { id: string; code: string; name: string; name_am: string | null };
+  hospital?: { id: string; code: string; name: string; name_am: string | null; status: HospitalStatus;
+    /** The onboarding application is not approved: only it (or its status) is open. */
+    locked: boolean;
+  };
 };
 
 export type HospitalStatus = "pending" | "approved" | "suspended";
 export type HospitalKind = "public" | "private";
+export type FacilityType = "hospital" | "clinic";
 
 export const SERVICES = [
   { key: "general_medicine", label: "General medicine" },
@@ -58,6 +62,7 @@ export type Hospital = {
   listed: boolean;
   missing_for_listing: string[];
   kind: HospitalKind;
+  facility_type: FacilityType;
   city: string | null;
   address: string | null;
   phone: string | null;
@@ -71,6 +76,8 @@ export type Hospital = {
   /** Birr, as text with two decimals. */
   price_in_person: string | null;
   price_video: string | null;
+  /** People ahead in a queue when the "get ready" SMS goes out (0 = off). */
+  queue_notify_ahead: number;
 };
 
 export const MISSING_LABELS: Record<string, string> = {
@@ -145,7 +152,10 @@ export type PatientStatus = "opd" | "emergency" | "admitted" | "discharge" | "di
 export type ApiPatient = {
   id: string;
   mrn: string;
+  /** Confirmed by Endod (linked). */
   dedan_id: string | null;
+  /** Given by the patient but not confirmed: "Endod ID given, not yet linked". */
+  claimed_dedan_id: string | null;
   full_name: string;
   full_name_am: string | null;
   sex: "female" | "male";

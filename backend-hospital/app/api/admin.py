@@ -40,7 +40,7 @@ def hospital_payload(h: Hospital) -> Dict[str, Any]:
         "status": h.status,
         "listed": listing.bookable(h),
         "missing_for_listing": listing.missing_for_listing(h),
-        "kind": h.kind, "city": h.city, "address": h.address, "phone": h.phone,
+        "kind": h.kind, "facility_type": h.facility_type, "city": h.city, "address": h.address, "phone": h.phone,
         "ambulance_phone": h.ambulance_phone, "emergency": h.emergency,
         "latitude": h.latitude, "longitude": h.longitude,
         "services": listing.services_of(h), "open_hours": h.open_hours,
@@ -48,6 +48,7 @@ def hospital_payload(h: Hospital) -> Dict[str, Any]:
         # Birr, as text with two decimals (exact; never a float).
         "price_in_person": _birr(h.price_in_person),
         "price_video": _birr(h.price_video),
+        "queue_notify_ahead": h.queue_notify_ahead,
     }
 
 
@@ -72,6 +73,8 @@ class HospitalUpdate(BaseModel):
     #: Birr, up to two decimals.
     price_in_person: Price = Field(default=None, ge=0, le=1_000_000, decimal_places=2)
     price_video: Price = Field(default=None, ge=0, le=1_000_000, decimal_places=2)
+    #: Queue: people ahead that trigger the "get ready" SMS (0 = off).
+    queue_notify_ahead: Optional[int] = Field(default=None, ge=0, le=20)
 
     @field_validator("services")
     @classmethod
@@ -98,7 +101,7 @@ def update_hospital(body: HospitalUpdate, staff: Staff = Depends(admin_only)) ->
             ZoneInfo(changes["timezone"] or "")
         except (ZoneInfoNotFoundError, ValueError) as exc:
             raise HTTPException(status_code=400, detail="Unknown timezone.") from exc
-    for field in ("name", "kind", "emergency", "video_enabled"):
+    for field in ("name", "kind", "emergency", "video_enabled", "queue_notify_ahead"):
         if field in changes and changes[field] is None:
             changes.pop(field)
     if changes.get("kind") is not None and changes["kind"] not in HospitalKind.ALL:
@@ -117,8 +120,8 @@ def update_hospital(body: HospitalUpdate, staff: Staff = Depends(admin_only)) ->
         if hospital.video_enabled and hospital.price_video is None:
             raise HTTPException(status_code=400, detail="Set a video visit price before turning video visits on.")
         audit(session, staff.hospital_id, staff.id, "hospital_updated", detail={"fields": sorted(changes)})
-        # Patients see the change through the Endod app.
-        if hospital.status == HospitalStatus.APPROVED:
+        # Patients see the change through the Endod app (the queue setting is not in the listing).
+        if hospital.status == HospitalStatus.APPROVED and set(changes) - {"queue_notify_ahead"}:
             listing.announce(session, hospital)
         return hospital_payload(hospital)
 

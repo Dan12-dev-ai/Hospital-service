@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { Icon } from "@/components/ui/icon";
 import { EmptyState } from "@/components/common/states";
 import type { PatientStatus } from "@/lib/api-types";
@@ -171,17 +172,24 @@ function PatientRow({
           </div>
           <div className="flex min-w-0 flex-col">
             <div className="flex items-center gap-1.5">
-              <span className="truncate text-label-lg font-label-lg text-on-surface">{patient.name}</span>
+              <Link href={`/patients/${patient.id}`} className="truncate text-label-lg font-label-lg text-on-surface hover:text-primary hover:underline">
+                {patient.name}
+              </Link>
               {patient.nameAm && <span className="text-body-sm font-body-sm text-outline">({patient.nameAm})</span>}
             </div>
             <span className="flex items-center gap-1.5 text-body-sm font-body-sm text-on-surface-variant">
               <span className="font-medium text-primary">{patient.mrn}</span>
-              {patient.dedanId && (
+              {patient.dedanId ? (
                 <>
                   <span>•</span>
                   <span>{patient.dedanId}</span>
                 </>
-              )}
+              ) : patient.claimedDedanId ? (
+                <>
+                  <span>•</span>
+                  <span title="Endod ID given, not yet linked">{patient.claimedDedanId} (not linked)</span>
+                </>
+              ) : null}
               <span>•</span>
               <span>{patient.demographics}</span>
             </span>

@@ -41,7 +41,10 @@ export function LoginForm() {
         redirectOn401: false,
       });
       const next = safeNext(new URLSearchParams(window.location.search).get("next"));
-      hardNavigate(staff.must_change_password ? "/account/password" : next);
+      // A hospital still applying goes back to its application.
+      if (staff.must_change_password) return hardNavigate("/account/password");
+      // A hospital still applying goes back to its application (or its status).
+      hardNavigate(staff.hospital?.locked ? "/onboarding" : next);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Sign-in failed.");
       setBusy(false);
@@ -84,8 +87,8 @@ export function LoginForm() {
       </button>
       <p className="text-center text-xs text-slate-500">
         New to Endod?{" "}
-        <Link href="/signup" className="font-semibold text-pine-green hover:underline">
-          Sign up your hospital
+        <Link href="/onboarding" className="font-semibold text-pine-green hover:underline">
+          Apply to join Endod
         </Link>
       </p>
     </form>

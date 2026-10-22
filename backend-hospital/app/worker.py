@@ -14,7 +14,7 @@ import time
 
 import redis
 
-from app import bookings, eventbus
+from app import bookings, chores, eventbus, linking, sharing
 
 logger = logging.getLogger("hospital.worker")
 _running = True
@@ -31,16 +31,23 @@ HOUSEKEEPING_EVERY = 3600
 _last = {"expire": 0.0, "housekeeping": 0.0}
 
 
+def handlers() -> dict:
+    """Every event this service handles from the patient platform."""
+    return {**bookings.HANDLERS, **linking.HANDLERS, **sharing.HANDLERS}
+
+
 def run_once(client: redis.Redis, now: float | None = None) -> int:
     """One round: send what is queued, handle what arrived, and now and then
-    decline unapproved video visits and clean up. Returns the work done."""
+    decline unapproved video visits, end expired shares and clean up.
+    Returns the work done."""
     now = time.monotonic() if now is None else now
     work = 0
     if now - _last["expire"] >= EXPIRE_EVERY:
         work += bookings.expire_unapproved()
+        work += chores.run()
         _last["expire"] = now
     work += eventbus.publish_pending(client)
-    work += eventbus.consume_once(client, bookings.HANDLERS, block_ms=1000)
+    work += eventbus.consume_once(client, handlers(), block_ms=1000)
     if now - _last["housekeeping"] >= HOUSEKEEPING_EVERY:
         eventbus.housekeeping(client)
         _last["housekeeping"] = now

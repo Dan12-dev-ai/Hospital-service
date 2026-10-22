@@ -1,8 +1,9 @@
 """Patient registration and the patient directory.
 
 Every patient gets a hospital number (MRN) such as ``SPH-000124`` when
-registered. A patient can also carry their Endod digital health ID
-(``dedan_id``), which links the hospital record to the patient platform.
+registered. Their Endod digital health ID (``dedan_id``) is set only once
+Endod confirms the account (app/api/history.py, app/linking.py); an ID the
+patient merely gives is kept as ``claimed_dedan_id`` until then.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from typing import Any, Dict, Iterable, List, Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 
@@ -23,7 +24,7 @@ from app.models import (
     AlertKind, Department, DepartmentKind, Hospital, Patient, PatientAlert, PatientStatus, Payer, Role, Sex,
     StaffUser,
 )
-from app.validation import Name, OptionalPhone, OptionalText, like_pattern, phone_digits
+from app.validation import Name, OptionalDedanId, OptionalPhone, OptionalText, like_pattern, phone_digits
 
 router = APIRouter(prefix="/patients", tags=["patients"])
 
@@ -36,17 +37,15 @@ CLINICAL_EDITORS = (Role.ADMIN, Role.DOCTOR, Role.NURSE)
 
 DEMOGRAPHIC_FIELDS = {
     "full_name", "full_name_am", "sex", "date_of_birth", "age_years", "phone", "address",
-    "emergency_contact_name", "emergency_contact_phone", "payer", "payer_number", "dedan_id",
+    "emergency_contact_name", "emergency_contact_phone", "payer", "payer_number", "claimed_dedan_id",
 }
 CLINICAL_FIELDS = {"status", "department_id", "ward_id", "bed", "attending_doctor_id", "diagnosis"}
 #: Who sees the working diagnosis. Allergy and risk alerts are shown to everyone,
 #: since they are safety information (the pharmacy and the cashier need them too).
 DIAGNOSIS_READERS = (Role.ADMIN, Role.DOCTOR, Role.NURSE, Role.PHARMACIST, Role.RECORDS)
 #: Identity fields whose old and new values go into the audit log.
-TRACKED_FIELDS = ("full_name", "full_name_am", "sex", "date_of_birth", "phone", "dedan_id", "payer", "payer_number")
-
-_DEDAN_ID = re.compile(r"^[A-Z0-9][A-Z0-9-]{3,39}$")
-
+TRACKED_FIELDS = ("full_name", "full_name_am", "sex", "date_of_birth", "phone", "claimed_dedan_id", "payer",
+                  "payer_number")
 
 # --- input ----------------------------------------------------------------------
 
@@ -60,17 +59,20 @@ class _Demographics(BaseModel):
     emergency_contact_name: OptionalText = Field(default=None, max_length=120)
     emergency_contact_phone: OptionalPhone = None
     payer_number: OptionalText = Field(default=None, max_length=40)
-    dedan_id: OptionalText = Field(default=None, max_length=40)
+    #: An Endod ID the patient gave: kept as a claim ("given, not yet linked")
+    #: and never sent to Endod. The confirmed ``dedan_id`` is set only by
+    #: linking (POST /patients/{id}/link) or by checking in an Endod booking.
+    claimed_dedan_id: OptionalDedanId = None
 
-    @field_validator("dedan_id")
+    @model_validator(mode="before")
     @classmethod
-    def _dedan_id(cls, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return None
-        value = value.upper()
-        if not _DEDAN_ID.match(value):
-            raise ValueError("not a valid Endod ID, e.g. DE-482731")
-        return value
+    def _old_dedan_field(cls, data: Any) -> Any:
+        # Older clients send the typed Endod ID as "dedan_id": it is a claim.
+        if isinstance(data, dict) and "dedan_id" in data:
+            data = dict(data)
+            old = data.pop("dedan_id")
+            data.setdefault("claimed_dedan_id", old)
+        return data
 
     @model_validator(mode="after")
     def _one_birth_field(self):
@@ -190,6 +192,7 @@ def _payloads(session, patients: List[Patient], today: date, role: str, full: bo
             "id": p.id,
             "mrn": p.mrn,
             "dedan_id": p.dedan_id,
+            "claimed_dedan_id": p.claimed_dedan_id,
             "full_name": p.full_name,
             "full_name_am": p.full_name_am,
             "sex": p.sex,
@@ -265,7 +268,12 @@ def list_patients(
         matches = [func.lower(Patient.full_name).like(like_pattern(term.lower()), escape="\\"),
                    Patient.full_name_am.like(like_pattern(term), escape="\\"),
                    Patient.mrn.like(like_pattern(term.upper()), escape="\\"),
-                   Patient.dedan_id.like(like_pattern(term.upper()), escape="\\")]
+                   Patient.dedan_id.like(like_pattern(term.upper()), escape="\\"),
+                   # Endod IDs are stored as DE482731; staff also type DE-482731.
+                   Patient.dedan_id.like(like_pattern(re.sub(r"[\s-]", "", term.upper())), escape="\\"),
+                   # An ID given but not yet confirmed finds the patient too.
+                   Patient.claimed_dedan_id.like(like_pattern(term.upper()), escape="\\"),
+                   Patient.claimed_dedan_id.like(like_pattern(re.sub(r"[\s-]", "", term.upper())), escape="\\")]
         digits = phone_digits(term)
         if digits:
             matches.append(Patient.phone.like(like_pattern(digits), escape="\\"))
@@ -324,12 +332,13 @@ def register_patient(body: PatientCreate, staff: Staff = Depends(require_roles(*
             if born is None and body.age_years is not None:
                 born, estimated = _estimated_birth(body.age_years, today), True
             patient = Patient(
-                hospital_id=staff.hospital_id, mrn=mrn, dedan_id=body.dedan_id,
+                hospital_id=staff.hospital_id, mrn=mrn,
                 full_name=body.full_name, full_name_am=body.full_name_am, sex=body.sex, date_of_birth=born,
                 dob_estimated=estimated, phone=body.phone, address=body.address,
                 emergency_contact_name=body.emergency_contact_name,
                 emergency_contact_phone=body.emergency_contact_phone, payer=body.payer,
-                payer_number=body.payer_number, status=PatientStatus.OPD, status_changed_at=utcnow(),
+                payer_number=body.payer_number, claimed_dedan_id=body.claimed_dedan_id,
+                status=PatientStatus.OPD, status_changed_at=utcnow(),
                 created_by=staff.id,
             )
             session.add(patient)

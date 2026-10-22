@@ -26,6 +26,7 @@ type Form = {
   video_enabled: boolean;
   price_in_person: string;
   price_video: string;
+  queue_notify_ahead: string;
 };
 
 function toForm(h: Hospital): Form {
@@ -45,6 +46,7 @@ function toForm(h: Hospital): Form {
     video_enabled: h.video_enabled,
     price_in_person: h.price_in_person ?? "",
     price_video: h.price_video ?? "",
+    queue_notify_ahead: String(h.queue_notify_ahead ?? 3),
   };
 }
 
@@ -83,6 +85,10 @@ export function buildPayload(form: Form): { payload: Payload } | { problem: stri
   if (form.video_enabled && prices.price_video === null) {
     return { problem: "Set a video visit price before turning video visits on." };
   }
+  const ahead = form.queue_notify_ahead.trim();
+  if (!/^\d{1,2}$/.test(ahead) || Number(ahead) > 20) {
+    return { problem: "The queue SMS setting is a number of people from 0 (off) to 20." };
+  }
   return {
     payload: {
       name: form.name.trim(),
@@ -101,6 +107,7 @@ export function buildPayload(form: Form): { payload: Payload } | { problem: stri
       // Birr as text: the API takes decimals and stores santim, so no float rounding.
       price_in_person: prices.price_in_person,
       price_video: prices.price_video,
+      queue_notify_ahead: Number(ahead),
     },
   };
 }
@@ -301,6 +308,16 @@ function SettingsForm({ hospital }: { hospital: Hospital }) {
         <div className="sm:col-span-2">
           <Toggle id="h-video" label="Offer video visits" checked={form.video_enabled} onChange={(value) => set("video_enabled", value)} />
         </div>
+      </Section>
+
+      <Section title="Queue" icon="format_list_numbered">
+        <p className="text-xs text-slate-500 sm:col-span-2">
+          Patients waiting in a doctor&apos;s queue get a &ldquo;get ready&rdquo; SMS when this many people are ahead of
+          them, and another when they are called. 0 turns the &ldquo;get ready&rdquo; SMS off.
+        </p>
+        <Field label="People ahead for the get-ready SMS" htmlFor="h-queue-ahead">
+          <input id="h-queue-ahead" type="number" min={0} max={20} inputMode="numeric" value={form.queue_notify_ahead} onChange={(e) => set("queue_notify_ahead", e.target.value)} className={inputClass} />
+        </Field>
       </Section>
     </form>
   );

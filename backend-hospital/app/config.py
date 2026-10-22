@@ -57,6 +57,13 @@ class Settings(BaseSettings):
     #: the entry this many hops from the right; 0 trusts no header at all.
     TRUSTED_PROXY_HOPS: int = 0
 
+    # --- Patient history (docs/history-events.md) ---
+    #: Where uploaded record files are kept (a volume shared by the API and worker).
+    FILES_DIR: str = "/data/files"
+    #: The Endod platform API on the private bus network, for files of records
+    #: patients share with this hospital (called with PLATFORM_ADMIN_KEY).
+    PLATFORM_API_URL: Optional[str] = None
+
     @field_validator("ENVIRONMENT", mode="before")
     @classmethod
     def _lower(cls, value):

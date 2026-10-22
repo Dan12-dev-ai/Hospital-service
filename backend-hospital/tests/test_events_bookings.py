@@ -59,6 +59,15 @@ def listed_hospital(client, admin, video=True):
     return resp.json()
 
 
+def mark_submitted(hospital_id):
+    """The hospital's application as submitted (the wizard is tested in test_onboarding.py)."""
+    from app.db import session_scope
+    from app.models import OnboardingApplication
+
+    with session_scope() as session:
+        session.get(OnboardingApplication, hospital_id).status = "submitted"
+
+
 SIGNUP = {"hospital_name": "Tikur Anbessa Specialized Hospital", "kind": "public", "city": "Addis Ababa",
           "phone": "011 551 7611", "admin_name": "Hiwot Admin", "admin_email": "admin@tash.example",
           "password": "Strong-pass-123"}
@@ -73,8 +82,12 @@ class TestOnboarding:
         assert body["hospital"]["status"] == "pending" and body["hospital"]["code"] == "TASH"
         assert body["hospital"]["listed"] is False
         headers = {"Authorization": f"Bearer {body['access_token']}"}
-        # The portal works while pending.
-        assert client.get("/hospital", headers=headers).json()["status"] == "pending"
+        # While pending, only the application is open; the rest of the portal is not.
+        refused = client.get("/hospital", headers=headers)
+        assert refused.status_code == 403 and "not approved" in refused.json()["error"]
+        application = client.get("/onboarding/application", headers=headers).json()
+        assert application["status"] == "draft" and application["facility"]["city"] == "Addis Ababa"
+        assert client.get("/auth/me", headers=headers).json()["hospital"]["status"] == "pending"
 
     @pytest.mark.parametrize("change,status", [
         ({"password": "short"}, 400), ({"kind": "military"}, 400), ({"admin_email": "nope"}, 422),
@@ -114,6 +127,10 @@ class TestApprovalAndListing:
         pending = client.get("/platform/hospitals?status=pending", headers=key).json()
         assert [h["id"] for h in pending] == [hid]
 
+        # Only a submitted application can be approved.
+        refused = client.post(f"/platform/hospitals/{hid}/approve", headers=key)
+        assert refused.status_code == 409 and "not submitted" in refused.json()["error"]
+        mark_submitted(hid)
         # Approved but no price/location yet: not listed, and says what is missing.
         approved = client.post(f"/platform/hospitals/{hid}/approve", headers=key).json()
         assert approved["status"] == "approved" and approved["listed"] is False
@@ -137,7 +154,14 @@ class TestApprovalAndListing:
 
     def test_pending_hospitals_are_never_announced(self, client, bus):
         signed = client.post("/onboarding", json=SIGNUP).json()
-        listed_hospital(client, {"Authorization": f"Bearer {signed['access_token']}"})
+        headers = {"Authorization": f"Bearer {signed['access_token']}"}
+        # Settings are closed while pending; the application's steps announce nothing.
+        assert client.patch("/hospital", headers=headers, json={"city": "Adama"}).status_code == 403
+        assert client.patch("/onboarding/location", headers=headers, json={
+            "address": "Bole Road", "latitude": 9.03, "longitude": 38.74}).status_code == 200
+        assert client.patch("/onboarding/facility", headers=headers, json={
+            "facility_type": "hospital", "ownership": "public", "name": "Tikur Anbessa", "city": "Addis Ababa",
+            "phone": "011 551 7611", "services": ["general_medicine"], "open_hours": "24/7"}).status_code == 200
         run_worker(bus)
         assert stream(bus) == []
 
@@ -154,11 +178,32 @@ class TestApprovalAndListing:
         assert client.patch("/hospital", headers=admin, json=body).status_code in (400, 422)
 
     def test_cli_approves(self, client, capsys):
-        client.post("/onboarding", json=SIGNUP)
+        hid = client.post("/onboarding", json=SIGNUP).json()["hospital"]["id"]
         from app import cli
 
+        mark_submitted(hid)
         assert cli.main(["approve", "--code", "tash"]) == 0
         assert "TASH: approved" in capsys.readouterr().out
+
+    def test_cli_approves_an_unsubmitted_application_only_with_force(self, client, capsys):
+        import json as jsonlib
+
+        from sqlalchemy import select
+
+        from app import cli
+        from app.db import session_scope
+        from app.models import AuditEvent
+
+        hid = client.post("/onboarding", json=SIGNUP).json()["hospital"]["id"]
+        with pytest.raises(SystemExit) as refused:
+            cli.main(["approve", "--code", "TASH"])
+        assert "not submitted" in str(refused.value) and "--force" in str(refused.value)
+        assert cli.main(["approve", "--code", "TASH", "--force"]) == 0
+        assert "TASH: approved" in capsys.readouterr().out
+        with session_scope() as session:
+            event = session.scalar(select(AuditEvent).where(AuditEvent.hospital_id == hid,
+                                                            AuditEvent.action == "hospital_approved"))
+            assert jsonlib.loads(event.detail)["forced"] is True
 
 
 @pytest.fixture

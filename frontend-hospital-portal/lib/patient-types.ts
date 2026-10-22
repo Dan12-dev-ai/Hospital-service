@@ -39,6 +39,8 @@ export type Patient = {
   id: string;
   mrn: string;
   dedanId: string | null;
+  /** An Endod ID given but not confirmed (not linked). */
+  claimedDedanId: string | null;
   name: string;
   nameAm: string | null;
   demographics: string;
@@ -60,6 +62,7 @@ export function toPatientView(p: ApiPatient): Patient {
     id: p.id,
     mrn: p.mrn,
     dedanId: p.dedan_id,
+    claimedDedanId: p.dedan_id ? null : p.claimed_dedan_id,
     name: p.full_name,
     nameAm: p.full_name_am,
     demographics: `${p.age_years ?? "?"}y ${p.sex === "female" ? "F" : "M"}`,

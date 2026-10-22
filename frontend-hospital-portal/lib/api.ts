@@ -16,6 +16,8 @@ export class ApiError extends Error {
 }
 
 const TEMPORARY_PASSWORD = "Change your temporary password to continue.";
+/** The backend's answer (app/auth.py, NOT_APPROVED) while the hospital is still applying. */
+const NOT_APPROVED = "Your hospital is not approved by Endod yet. Finish your application to continue.";
 
 function messageOf(body: unknown, status: number): { message: string; code?: string } {
   if (typeof body === "object" && body !== null) {
@@ -79,6 +81,9 @@ export async function apiFetch<T>(
     if (response.status === 403 && message === TEMPORARY_PASSWORD) {
       hardNavigate("/account/password");
     }
+    if (response.status === 403 && message === NOT_APPROVED) {
+      hardNavigate("/onboarding");
+    }
     throw new ApiError(message, response.status, code);
   }
   return parsed as T;
@@ -123,4 +128,47 @@ export function useApi<T>(path: string | null) {
     loading: key !== null && current === null,
     reload,
   };
+}
+
+/**
+ * Uploads one file through the portal's upload route: the file itself as the
+ * body (streamed on to the backend), its name in X-Filename, with the header
+ * that route requires. `path` is the backend path, e.g.
+ * `patients/<id>/uploads` or `imports/preview`.
+ */
+export async function apiUpload<T>(path: string, file: File): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(`/api/upload/${path.replace(/^\/+/, "")}`, {
+      method: "POST",
+      body: file,
+      headers: {
+        Accept: "application/json",
+        "X-Portal-Upload": "1",
+        "Content-Type": file.type || "application/octet-stream",
+        "X-Filename": encodeURIComponent(file.name.slice(0, 200)),
+      },
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+  } catch {
+    throw new ApiError("Cannot reach the portal. Check your connection.", 0);
+  }
+  let parsed: unknown = null;
+  try {
+    parsed = await response.json();
+  } catch {
+    parsed = null;
+  }
+  if (!response.ok) {
+    const { message, code } = messageOf(parsed, response.status);
+    if (response.status === 401) goToLogin();
+    throw new ApiError(message, response.status, code);
+  }
+  return parsed as T;
+}
+
+/** Where the browser opens (or, with `download`, saves) a record file. */
+export function fileUrl(path: string, download = false): string {
+  return `/api/download/${path.replace(/^\/+/, "")}${download ? "?download=1" : ""}`;
 }

@@ -4,6 +4,10 @@
         --admin-email admin@example.com --admin-name "Admin User"
 
 creates a hospital and its first admin, and prints a one-time password.
+
+    python -m app.cli applications              # hospitals applying to join Endod
+    python -m app.cli application --code TASH   # one application, with its documents' paths
+    python -m app.cli approve --code TASH
 """
 
 from __future__ import annotations
@@ -59,8 +63,19 @@ def main(argv: list[str] | None = None) -> int:
     for name, help_text in (("approve", "list a hospital in the Endod app"), ("suspend", "take a hospital off the Endod app")):
         cmd = commands.add_parser(name, help=help_text)
         cmd.add_argument("--code", required=True, help="the hospital's code, e.g. SPH")
+        if name == "approve":
+            cmd.add_argument("--force", action="store_true",
+                             help="approve even though the application is not submitted (written to the audit log)")
     commands.add_parser("hospitals", help="list hospitals and their status")
+    commands.add_parser("applications", help="list onboarding applications (status, submitted, demo)")
+    detail = commands.add_parser("application", help="show one application and where its documents are")
+    detail.add_argument("--code", required=True, help="the hospital's code, e.g. TASH")
     args = parser.parse_args(argv)
+
+    if args.command == "applications":
+        return list_applications()
+    if args.command == "application":
+        return show_application(args.code)
 
     if args.command in ("approve", "suspend"):
         from app.api.onboarding import set_status
@@ -71,7 +86,15 @@ def main(argv: list[str] | None = None) -> int:
             if hospital is None:
                 raise SystemExit(f"No hospital with code {args.code}.")
             hospital_id = hospital.id
-        result = set_status(hospital_id, HospitalStatus.APPROVED if args.command == "approve" else HospitalStatus.SUSPENDED)
+        from fastapi import HTTPException
+
+        try:
+            result = set_status(hospital_id,
+                                HospitalStatus.APPROVED if args.command == "approve" else HospitalStatus.SUSPENDED,
+                                force=getattr(args, "force", False))
+        except HTTPException as exc:
+            hint = " Use --force to approve it anyway." if args.command == "approve" and exc.status_code == 409 else ""
+            raise SystemExit(f"{exc.detail}{hint}") from exc
         print(f"{result['code']}: {result['status']}" + ("" if result["listed"] else
               f" (not listed yet; missing {', '.join(result['missing_for_listing'])})"))
         return 0
@@ -86,6 +109,65 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Hospital {args.code.strip().upper()} created. "
               f"Admin {args.admin_email.strip().lower()} one-time password: {password}")
         print("The admin must change it at first sign-in.", file=sys.stderr)
+    return 0
+
+
+def list_applications() -> int:
+    from app.api.application import list_applications as applications
+
+    rows = applications(status_filter=None)
+    if not rows:
+        print("No applications.")
+    for row in rows:
+        demo = _addis(row["demo_at"]) if row["demo_at"] else "no demo booked"
+        submitted = _addis(row["submitted_at"]) if row["submitted_at"] else "-"
+        print(f"{row['code']:8} {row['status']:10} submitted {submitted:22} demo {demo:22} {row['name']}")
+    return 0
+
+
+def _addis(iso: str) -> str:
+    from datetime import datetime
+
+    from app.onboarding import DEMO_TZ
+
+    return datetime.fromisoformat(iso).astimezone(DEMO_TZ).strftime("%a %d %b %Y %H:%M")
+
+
+def show_application(code: str) -> int:
+    from app import files
+    from app.onboarding import application_payload
+
+    with session_scope() as session:
+        hospital = session.scalar(select(Hospital).where(Hospital.code == code.strip().upper()))
+        if hospital is None:
+            raise SystemExit(f"No hospital with code {code}.")
+        app = application_payload(session, hospital)
+        facility, location, contact = app["facility"], app["location"], app["contact"]
+        print(f"{hospital.name} ({hospital.code}), id {hospital.id}")
+        print(f"  status:      {app['status']} (hospital {app['hospital_status']})")
+        print(f"  submitted:   {_addis(app['submitted_at']) if app['submitted_at'] else '-'}")
+        if app["rejection_reason"]:
+            print(f"  sent back:   {app['rejection_reason']}")
+        print(f"  facility:    {facility['facility_type']}, {facility['ownership']}; {facility['city'] or '-'}; "
+              f"phone {facility['phone'] or '-'}; hours {facility['open_hours'] or '-'}")
+        print(f"  services:    {', '.join(facility['services']) or '-'}")
+        print(f"  location:    {location['address'] or '-'} ({location['latitude']}, {location['longitude']})")
+        print(f"  contact:     {contact['full_name']}, {contact['title'] or '-'}, {contact['phone'] or '-'}, "
+              f"{contact['email']}")
+        demo = app["demo"]
+        print(f"  demo:        {_addis(demo['demo_at']) + ' Addis Ababa time' if demo else 'not booked'}")
+        print(f"  license no.: {app['documents']['license_number'] or '-'}")
+        from app.models import OnboardingDocument
+
+        rows = {d.kind: d for d in session.scalars(
+            select(OnboardingDocument).where(OnboardingDocument.hospital_id == hospital.id))}
+        for item in app["documents"]["items"]:
+            doc = rows.get(item["kind"])
+            where = (f"{files.path_for(hospital.id, doc.id)}  ({doc.filename}, {doc.content_type}, "
+                     f"{doc.size} bytes, sha256 {doc.sha256})") if doc else "MISSING"
+            print(f"  {item['label']}: {where}")
+        if app["next_step"] != "review":
+            print(f"  still missing: {', '.join(f'{k}: {v}' for k, v in app['missing'].items() if v)}")
     return 0
 
 

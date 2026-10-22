@@ -24,6 +24,15 @@ def register(client, headers, **overrides):
     return resp.json()
 
 
+def link_directly(patient_id, dedan_id):
+    """As if Endod had confirmed the link (patient.linked)."""
+    from app.db import session_scope
+    from app.models import Patient
+
+    with session_scope() as session:
+        session.get(Patient, patient_id).dedan_id = dedan_id
+
+
 def make_ward(client, admin, name="Ward B", capacity=2):
     return client.post("/departments", headers=admin,
                        json={"kind": "ward", "name": name, "capacity": capacity}).json()["id"]
@@ -58,11 +67,54 @@ class TestRegistration:
         assert again.status_code == 409 and first["mrn"] in again.json()["error"]
         assert register(client, desk, confirm_duplicate=True)["mrn"] == "SPH-000002"
 
-    def test_an_endod_id_links_to_one_patient(self, client, desk):
-        assert register(client, desk, dedan_id="de-482731")["dedan_id"] == "DE-482731"
-        resp = client.post("/patients", headers=desk, json={
-            **ALMAZ, "full_name": "Someone Else", "dedan_id": "DE-482731"})
-        assert resp.status_code == 409 and "Endod ID" in resp.json()["error"]
+    def test_a_typed_endod_id_is_only_a_claim(self, client, desk):
+        # Endod confirms the account first (POST /patients/{id}/link, see test_linking.py);
+        # an ID typed at registration (older clients send it as dedan_id) is kept as a claim.
+        patient = register(client, desk, dedan_id="de-482731")
+        assert patient["dedan_id"] is None and patient["claimed_dedan_id"] == "DE482731"
+        other = register(client, desk, full_name="Dawit Bekele", claimed_dedan_id="DE 111 111".replace(" ", ""))
+        assert other["dedan_id"] is None and other["claimed_dedan_id"] == "DE111111"
+
+        resp = client.patch(f"/patients/{other['id']}", headers=desk, json={"dedan_id": "DE-222222"})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["dedan_id"] is None and resp.json()["claimed_dedan_id"] == "DE222222"
+        # Found by the ID given, and shown as given (not linked).
+        found = client.get("/patients", headers=desk, params={"q": "DE-222222"}).json()["items"]
+        assert [(p["id"], p["dedan_id"], p["claimed_dedan_id"]) for p in found] == [(other["id"], None, "DE222222")]
+
+    def test_null_clears_the_claim_and_never_unlinks(self, client, desk):
+        patient = register(client, desk, claimed_dedan_id="DE111111")
+        link_directly(patient["id"], "DE482731")
+        resp = client.patch(f"/patients/{patient['id']}", headers=desk, json={"dedan_id": None})
+        assert resp.status_code == 200
+        assert resp.json()["dedan_id"] == "DE482731" and resp.json()["claimed_dedan_id"] is None
+
+    @pytest.mark.parametrize("bad", ["not an id!", "DE-4827311", "482731"])
+    def test_a_claim_must_look_like_an_endod_id(self, client, desk, bad):
+        for field in ("dedan_id", "claimed_dedan_id"):
+            assert client.post("/patients", headers=desk, json={**ALMAZ, field: bad}).status_code == 422
+        patient = register(client, desk)
+        assert client.patch(f"/patients/{patient['id']}", headers=desk, json={"dedan_id": bad}).status_code == 422
+
+    def test_only_stored_form_endod_ids_reach_the_database_or_the_bus(self, client, desk):
+        from app import eventbus
+        from app.db import session_scope
+        from app.models import ClinicalRecord, Patient, QueueEntry, RecordShare, Visit
+
+        patient = register(client, desk)
+        with session_scope() as session:
+            row = session.get(Patient, patient["id"])
+            for bad in ("DE-482731", "de482731", "DE4827310", "x" * 40):
+                with pytest.raises(ValueError):
+                    row.dedan_id = bad
+                for model, column in ((ClinicalRecord, "published_dedan_id"), (Visit, "follow_up_sent_to"),
+                                      (QueueEntry, "dedan_id"), (RecordShare, "dedan_id")):
+                    with pytest.raises(ValueError):
+                        setattr(model(), column, bad)
+                with pytest.raises(ValueError):
+                    eventbus.emit(session, "record.published", {"dedan_id": bad})
+            row.dedan_id = "DE482731"
+            row.dedan_id = None
 
     def test_pharmacists_cannot_register(self, client, hospital):
         make_staff(hospital, "rx@sph.example", role="pharmacist")
@@ -71,7 +123,8 @@ class TestRegistration:
 
 class TestDirectory:
     def test_search_by_name_mrn_endod_id_and_phone(self, client, desk):
-        almaz = register(client, desk, dedan_id="DE-482731")
+        almaz = register(client, desk)
+        link_directly(almaz["id"], "DE482731")
         register(client, desk, full_name="Dawit Bekele", full_name_am="ዳዊት", phone="0922 000 111", sex="male")
         for q in ("almaz", "አልማዝ", almaz["mrn"].lower(), "de-4827", "0911234567", "+251 911 234 567", "0911"):
             found = client.get("/patients", headers=desk, params={"q": q}).json()
@@ -240,11 +293,11 @@ class TestReviewFixes:
         from app.db import session_scope
         from app.models import AuditEvent
 
-        patient = register(client, desk, dedan_id="DE-482731")
-        client.patch(f"/patients/{patient['id']}", headers=desk, json={"dedan_id": None, "address": "Bole"})
+        patient = register(client, desk, claimed_dedan_id="DE482731")
+        client.patch(f"/patients/{patient['id']}", headers=desk, json={"claimed_dedan_id": None, "address": "Bole"})
         with session_scope() as session:
             detail = json.loads(session.scalar(select(AuditEvent.detail).where(AuditEvent.action == "patient_updated")))
-        assert detail["identity"] == {"dedan_id": {"from": "DE-482731", "to": None}}
+        assert detail["identity"] == {"claimed_dedan_id": {"from": "DE482731", "to": None}}
 
     def test_wildcards_in_search_are_literal(self, client, desk):
         register(client, desk)

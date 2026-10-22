@@ -20,9 +20,14 @@ export const backendDir = path.join(__dirname, "..", "..", "backend-hospital");
 // earlier runs' files); test workers inherit it, so they use the same one.
 if (!process.env.E2E_DB) {
   for (const name of fs.readdirSync(os.tmpdir())) {
-    if (name.startsWith("hospital-e2e-")) fs.rmSync(path.join(os.tmpdir(), name), { force: true });
+    if (name.startsWith("hospital-e2e-")) {
+      fs.rmSync(path.join(os.tmpdir(), name), { force: true, recursive: true });
+    }
   }
-  process.env.E2E_DB = path.join(os.tmpdir(), `hospital-e2e-${Date.now()}.db`).replace(/\\/g, "/");
+  const stamp = Date.now();
+  process.env.E2E_DB = path.join(os.tmpdir(), `hospital-e2e-${stamp}.db`).replace(/\\/g, "/");
+  // Record files (the backend creates the directory on the first upload).
+  process.env.E2E_FILES = path.join(os.tmpdir(), `hospital-e2e-files-${stamp}`);
 }
 export const E2E_DATABASE_URL = `sqlite:///${process.env.E2E_DB}`;
 
@@ -35,5 +40,6 @@ export const backendEnv: Record<string, string> = {
   HOSPITAL_JITSI_DOMAIN: JITSI_DOMAIN,
   HOSPITAL_JITSI_APP_SECRET: "e2e-jitsi-secret",
   HOSPITAL_CORS_ORIGINS: `http://localhost:${PORTAL_PORT}`,
+  HOSPITAL_FILES_DIR: process.env.E2E_FILES ?? path.join(os.tmpdir(), "hospital-e2e-files"),
 };
 
