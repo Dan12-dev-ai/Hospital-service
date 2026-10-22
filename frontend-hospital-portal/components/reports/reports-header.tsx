@@ -10,10 +10,7 @@ export function ReportsHeader() {
     <header className="flex flex-col justify-between gap-4 rounded-3xl bg-surface-container-lowest p-6 shadow-soft lg:flex-row lg:items-center">
       <div className="flex flex-col gap-1">
         <h1 className="text-headline-lg font-headline-lg font-bold tracking-tight text-on-surface">
-          Reports &amp; Analytics{" "}
-          <span className="text-headline-md font-normal text-outline">
-            — ሪፖርቶች እና ስታቲስቲክስ
-          </span>
+          Reports &amp; Analytics
         </h1>
         <p className="text-body-sm font-body-sm text-on-surface-variant">
           Central Hospital Operations (ቅዱስ ጳውሎስ ሆስፒታል)
