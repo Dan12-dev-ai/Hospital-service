@@ -221,10 +221,10 @@ function SidebarBody({
           </div>
           {!collapsed && (
             <div className="flex min-w-0 flex-col">
-              <span className="truncate text-[11px] font-semibold text-slate-800">
+              <span data-testid="signed-in-name" className="truncate text-[11px] font-semibold text-slate-800">
                 {staff?.full_name ?? ""}
               </span>
-              <span className="truncate text-[10px] text-slate-400">
+              <span data-testid="signed-in-email" className="truncate text-[10px] text-slate-400">
                 {staff?.email ?? ""}
               </span>
             </div>

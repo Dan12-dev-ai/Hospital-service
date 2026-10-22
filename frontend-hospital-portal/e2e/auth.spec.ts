@@ -33,7 +33,7 @@ test("sign in, then sign out from the top bar", async ({ page, context }) => {
   // Back where the visitor was going.
   await expect(page).toHaveURL(/\/patients$/);
   await expect(page.getByTestId("signed-in-name")).toHaveText(hospital.accounts.admin.name);
-  await expect(page.getByTestId("signed-in-role")).toHaveText("Administrator");
+  await expect(page.getByTestId("signed-in-email")).toHaveText(hospital.accounts.admin.email);
 
   // The backend's token is in an httpOnly cookie the page cannot read.
   const cookie = (await context.cookies()).find((c) => c.name === "hp_session");

@@ -90,7 +90,7 @@ test("the backend's validation errors are shown", async ({ page }) => {
 test("only admins see hospital settings", async ({ page }) => {
   await signIn(page, hospital.accounts.nurse.email, hospital.password);
   await page.goto("/");
-  await expect(page.getByTestId("signed-in-role")).toHaveText("Nurse");
+  await expect(page.getByTestId("signed-in-email")).toHaveText(hospital.accounts.nurse.email);
   await expect(page.getByRole("link", { name: "Settings" })).toHaveCount(0);
   await page.goto("/settings");
   await expect(page.getByTestId("no-access")).toBeVisible();

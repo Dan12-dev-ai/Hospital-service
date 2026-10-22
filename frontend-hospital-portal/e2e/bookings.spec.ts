@@ -22,7 +22,7 @@ window.JitsiMeetExternalAPI = function (domain, options) {
 async function openBookings(page: Page, email: string) {
   await signIn(page, email, hospital.password);
   await page.goto("/appointments");
-  await expect(page.getByRole("heading", { name: /Appointments/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Patient Booking/ })).toBeVisible();
 }
 
 test("a doctor approves a video visit and joins it", async ({ page }) => {
@@ -158,10 +158,10 @@ test("only the visit's doctor joins the video room", async ({ page }) => {
 test("staff without access to bookings do not see them", async ({ page }) => {
   await signIn(page, hospital.accounts.billing.email, hospital.password);
   await page.goto("/");
-  await expect(page.getByTestId("signed-in-role")).toHaveText("Billing");
+  await expect(page.getByTestId("signed-in-email")).toHaveText(hospital.accounts.billing.email);
   const nav = page.getByRole("navigation");
   await expect(nav.getByRole("link", { name: "Patients" })).toBeVisible();
-  await expect(nav.getByRole("link", { name: "Appointments" })).toHaveCount(0);
+  await expect(nav.getByRole("link", { name: "Patient Booking" })).toHaveCount(0);
   await expect(nav.getByRole("link", { name: "Settings" })).toHaveCount(0);
   await page.goto("/appointments");
   await expect(page.getByTestId("no-access")).toBeVisible();
