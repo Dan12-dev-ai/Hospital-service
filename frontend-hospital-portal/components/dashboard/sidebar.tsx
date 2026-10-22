@@ -8,6 +8,7 @@ import { Icon } from "@/components/ui/icon";
 import { useSession } from "@/components/session/session-context";
 import { navItems } from "@/lib/dashboard-data";
 import { initialsOf } from "@/lib/format";
+import Image from "next/image";
 import { SidebarLink } from "@/components/dashboard/sidebar-link";
 
 export function Sidebar() {
@@ -46,13 +47,17 @@ export function Sidebar() {
           <Icon name="menu" className="text-[22px]" />
         </button>
         <Link href="/" className="flex min-w-0 items-center gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-tr from-pine-green to-[#34d399] text-white shadow-md shadow-emerald-900/10">
-            <Icon name="local_hospital" className="text-[24px]" />
-          </div>
+          <Image
+            src="/endod_logo.jpeg"
+            alt="Endod Health logo"
+            width={40}
+            height={40}
+            className="h-10 w-10 shrink-0 rounded-2xl object-cover shadow-md"
+          />
           <div className="flex min-w-0 flex-col text-left">
             <span className="flex items-center gap-1 text-lg font-bold leading-tight tracking-tight text-slate-800">
-              Dedan{" "}
-              <span className="text-sm font-semibold text-pine-green">OS</span>
+              Endod{" "}
+              <span className="text-sm font-semibold text-pine-green">Health</span>
             </span>
             <span className="text-[11px] font-medium uppercase tracking-wider text-slate-400">
               Health Portal
@@ -124,15 +129,19 @@ function SidebarBody({
         {/* Logo Branding + collapse / close controls */}
         <div className="mb-4 flex items-center justify-between gap-2 px-1">
           <Link href="/" className="flex min-w-0 items-center gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-tr from-pine-green to-[#34d399] text-white shadow-md shadow-emerald-900/10">
-            <Icon name="local_hospital" className="text-[24px]" />
-          </div>
+          <Image
+            src="/endod_logo.jpeg"
+            alt="Endod Health logo"
+            width={40}
+            height={40}
+            className="h-10 w-10 shrink-0 rounded-2xl object-cover shadow-md"
+          />
           {!collapsed && (
             <div className="flex min-w-0 flex-col">
               <span className="flex items-center gap-1 text-base font-bold leading-tight tracking-tight text-slate-800">
-                Dedan{" "}
+                Endod{" "}
                 <span className="text-xs font-semibold text-pine-green">
-                  OS
+                  Health
                 </span>
               </span>
               <span className="text-[10px] font-medium uppercase tracking-wider text-slate-400">

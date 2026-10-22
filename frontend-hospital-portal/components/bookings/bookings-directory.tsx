@@ -117,12 +117,6 @@ function Bookings({ staff, hospital }: { staff: Staff; hospital: Hospital }) {
       {/* Command bar */}
       <div className="mb-space-xl flex flex-col justify-between gap-space-md md:flex-row md:items-end">
         <div className="flex min-w-0 flex-col">
-          <div className="mb-1 flex items-center gap-space-xs">
-            <span className="h-1.5 w-1.5 rounded-full bg-primary-container" />
-            <span className="font-label-sm text-label-sm uppercase tracking-wider text-outline">
-              Endod bookings • Paid through the Endod app
-            </span>
-          </div>
           <h1 className="mb-1 font-headline-xl text-headline-xl leading-none tracking-tight text-on-surface">
             Patient Booking
             <span className="font-body-md text-headline-lg font-normal text-outline"> — {total} bookings</span>

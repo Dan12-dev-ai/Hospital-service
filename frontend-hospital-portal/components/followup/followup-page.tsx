@@ -6,7 +6,7 @@ import { useDashboard } from "@/components/dashboard/dashboard-context";
 import { ErrorState, LoadingState, RoleGate, FormError, inputClass, labelClass, primaryButtonClass } from "@/components/common/states";
 import { useSignedIn } from "@/components/session/session-context";
 import { useApi } from "@/lib/api";
-import type { Booking, BookingList, Hospital, Staff } from "@/lib/api-types";
+import type { BookingList } from "@/lib/api-types";
 
 type FollowUp = {
   id: string;
@@ -27,10 +27,10 @@ export function FollowUpPage() {
 function FollowUpLoaded() {
   const signedIn = useSignedIn();
   if (!signedIn) return null;
-  return <FollowUp staff={signedIn.staff} hospital={signedIn.hospital} />;
+  return <FollowUp />;
 }
 
-function FollowUp({ hospital }: { staff: Staff; hospital: Hospital }) {
+function FollowUp() {
   const { showToast } = useDashboard();
   const list = useApi<BookingList>("bookings?status=confirmed");
   const [selectedId, setSelectedId] = useState<string | null>(null);

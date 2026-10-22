@@ -2,7 +2,6 @@
 
 import { Icon } from "@/components/ui/icon";
 import { useDashboard } from "@/components/dashboard/dashboard-context";
-import { facility } from "@/lib/dashboard-data";
 
 export function ReportsHeader() {
   const { showToast } = useDashboard();
@@ -26,7 +25,7 @@ export function ReportsHeader() {
           </span>
         </h1>
         <p className="text-body-sm font-body-sm text-on-surface-variant">
-          {facility.fullName} • Central Hospital Operations (ቅዱስ ጳውሎስ ሆስፒታል)
+          Central Hospital Operations (ቅዱስ ጳውሎስ ሆስፒታል)
         </p>
       </div>
 

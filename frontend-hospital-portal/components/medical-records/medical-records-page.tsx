@@ -6,7 +6,7 @@ import { useDashboard } from "@/components/dashboard/dashboard-context";
 import { ErrorState, LoadingState, RoleGate, FormError, inputClass, labelClass, primaryButtonClass } from "@/components/common/states";
 import { useSignedIn } from "@/components/session/session-context";
 import { useApi } from "@/lib/api";
-import type { Booking, BookingList, Hospital, Staff } from "@/lib/api-types";
+import type { BookingList } from "@/lib/api-types";
 
 type MedicalRecord = {
   id: string;
@@ -28,10 +28,10 @@ export function MedicalRecordsPage() {
 function MedicalRecordsLoaded() {
   const signedIn = useSignedIn();
   if (!signedIn) return null;
-  return <MedicalRecords staff={signedIn.staff} hospital={signedIn.hospital} />;
+  return <MedicalRecords />;
 }
 
-function MedicalRecords({ hospital }: { staff: Staff; hospital: Hospital }) {
+function MedicalRecords() {
   const { showToast } = useDashboard();
   const list = useApi<BookingList>("bookings?status=confirmed");
   const [selectedId, setSelectedId] = useState<string | null>(null);

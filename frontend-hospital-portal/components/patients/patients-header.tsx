@@ -3,11 +3,9 @@
 import { Icon } from "@/components/ui/icon";
 
 export function PatientsHeader({
-  hospitalName,
   canRegister,
   onRegister,
 }: {
-  hospitalName: string;
   canRegister: boolean;
   onRegister: () => void;
 }) {
@@ -21,7 +19,7 @@ export function PatientsHeader({
           </span>
         </div>
         <p className="mt-0.5 truncate text-body-md font-body-md text-on-surface-variant">
-          Patient directory, admissions &amp; active clinical census • {hospitalName}
+          Patient directory, admissions &amp; active clinical census
         </p>
       </div>
 

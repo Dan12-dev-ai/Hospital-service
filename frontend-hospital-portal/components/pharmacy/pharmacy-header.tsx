@@ -2,7 +2,6 @@
 
 import { Icon } from "@/components/ui/icon";
 import { useDashboard } from "@/components/dashboard/dashboard-context";
-import { facility } from "@/lib/dashboard-data";
 
 export function PharmacyHeader() {
   const { showToast } = useDashboard();
@@ -10,16 +9,6 @@ export function PharmacyHeader() {
   return (
     <header className="flex flex-col justify-between gap-4 rounded-3xl bg-surface-container-lowest p-6 shadow-soft lg:flex-row lg:items-center">
       <div className="flex flex-col gap-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="rounded-md bg-primary-fixed/40 px-2 py-0.5 text-label-sm font-label-sm font-bold uppercase tracking-wider text-primary">
-            Central Pharmacy &amp; Dispensary • Outpatient &amp; Inpatient Rx
-          </span>
-          <span className="text-outline-variant">•</span>
-          <span className="flex items-center gap-1 text-label-sm font-label-sm text-outline">
-            <Icon name="local_pharmacy" className="text-[14px]" />
-            ቅዱስ ጳውሎስ ሚሌኒየም ሜዲካል ኮሌጅ
-          </span>
-        </div>
         <h1 className="text-headline-lg font-headline-lg font-bold tracking-tight text-on-surface">
           Pharmacy Directory{" "}
           <span className="text-headline-md font-normal text-outline">
@@ -28,7 +17,7 @@ export function PharmacyHeader() {
         </h1>
         <p className="flex items-center gap-1.5 text-body-sm font-body-sm text-on-surface-variant">
           <Icon name="location_on" className="text-[16px] text-primary" />
-          {facility.fullName} • Central Outpatient Pharmacy &amp; Satellite
+          Central Outpatient Pharmacy &amp; Satellite
           Inpatient Dispensary
         </p>
       </div>

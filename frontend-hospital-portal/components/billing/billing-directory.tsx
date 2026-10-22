@@ -3,11 +3,10 @@
 import { useMemo, useState } from "react";
 import { BillingHeader } from "@/components/billing/billing-header";
 import { BillingKpis } from "@/components/billing/billing-kpis";
-import { ExpressBanner } from "@/components/billing/express-banner";
 import { BillingToolbar } from "@/components/billing/billing-toolbar";
 import { BillingTable } from "@/components/billing/billing-table";
 import { IssueCardModal } from "@/components/billing/issue-card-modal";
-import { billingRecords, cardsIssuedToday } from "@/lib/billing-data";
+import { billingRecords } from "@/lib/billing-data";
 import type { BillingTabKey } from "@/lib/billing-types";
 
 export function BillingDirectory() {
@@ -50,11 +49,9 @@ export function BillingDirectory() {
   return (
     <div className="flex w-full flex-col gap-5">
       <BillingHeader
-        cardsToday={cardsIssuedToday}
         onIssueCard={() => setModalOpen(true)}
       />
       <BillingKpis />
-      <ExpressBanner onOpen={() => setModalOpen(true)} />
       <BillingToolbar
         filterQuery={filterQuery}
         onFilterQueryChange={setFilterQuery}
