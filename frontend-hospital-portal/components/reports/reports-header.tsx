@@ -12,9 +12,6 @@ export function ReportsHeader() {
         <h1 className="text-headline-lg font-headline-lg font-bold tracking-tight text-on-surface">
           Reports &amp; Analytics
         </h1>
-        <p className="text-body-sm font-body-sm text-on-surface-variant">
-          Central Hospital Operations (ቅዱስ ጳውሎስ ሆስፒታል)
-        </p>
       </div>
 
       <div className="flex shrink-0 flex-wrap items-center gap-3">
