@@ -6,7 +6,6 @@ import { KpiGrid } from "@/components/dashboard/kpi-grid";
 import { RevenueChart } from "@/components/dashboard/revenue-chart";
 import { PatientOverviewChart } from "@/components/dashboard/patient-overview-chart";
 import { AppointmentsCard } from "@/components/dashboard/appointments-card";
-import { AlertsCard } from "@/components/dashboard/alerts-card";
 import { MiniCalendar } from "@/components/dashboard/mini-calendar";
 import { AgendaTimeline } from "@/components/dashboard/agenda-timeline";
 import { SampleBadge } from "@/components/common/states";
@@ -44,9 +43,6 @@ export default function DashboardPage() {
           </div>
           <Sample>
             <AppointmentsCard />
-          </Sample>
-          <Sample>
-            <AlertsCard />
           </Sample>
         </div>
 
