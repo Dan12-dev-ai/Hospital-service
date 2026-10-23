@@ -1,8 +1,9 @@
 """prescription dispenses: medicine given at pharmacies through Endod
 
-One new table, ``prescription_dispenses`` (docs/pharmacy.md, section 4).
-Nothing existing is altered: no batch, so on SQLite no table that others
-reference (``hospitals``, ``clinical_records``) is ever rebuilt.
+One new table, ``prescription_dispenses`` (docs/pharmacy.md, section 4), and
+one new column, ``clinical_records.previous_dedan_id`` (the account a record
+was last taken off). ADD COLUMN only, no batch: on SQLite no table that
+others reference (``hospitals``, ``clinical_records``) is ever rebuilt.
 
 Revision ID: 0006
 Revises: 0005
@@ -19,6 +20,7 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.add_column('clinical_records', sa.Column('previous_dedan_id', sa.String(length=16), nullable=True))
     op.create_table('prescription_dispenses',
     sa.Column('id', sa.String(length=64), nullable=False),
     sa.Column('hospital_id', sa.String(length=32), nullable=False),
@@ -42,3 +44,4 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index('ix_prescription_dispenses_record', table_name='prescription_dispenses')
     op.drop_table('prescription_dispenses')
+    op.drop_column('clinical_records', 'previous_dedan_id')  # in place, as in 0005

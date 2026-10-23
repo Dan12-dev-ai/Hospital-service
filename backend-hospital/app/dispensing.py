@@ -101,7 +101,9 @@ def on_dispensed(session: Session, payload: Dict[str, Any]) -> None:
         raise PermanentEventError("the record belongs to another hospital")
     if record.category != RecordCategory.PRESCRIPTION:
         raise PermanentEventError(f"the record is a {record.category}, not a prescription")
-    if record.published_dedan_id != dedan_id:
+    # The account it is on, or the one it was last taken off (re-linked or
+    # unlinked): a dispense made there just before the retraction still counts.
+    if dedan_id not in {record.published_dedan_id, record.previous_dedan_id} - {None}:
         raise PermanentEventError("the record was not sent to this Endod account")
     session.add(PrescriptionDispense(
         id=event.dispense_id, hospital_id=event.hospital_id, record_id=record.id, dedan_id=dedan_id,

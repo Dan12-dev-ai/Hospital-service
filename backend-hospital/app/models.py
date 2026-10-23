@@ -567,6 +567,10 @@ class ClinicalRecord(Base):
     retracted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     #: The Endod ID it was last published to (None: never published).
     published_dedan_id: Mapped[Optional[str]] = mapped_column(String(16))
+    #: The Endod ID it was last taken off (record.retracted sent there), never
+    #: cleared: a dispense the platform made just before the retraction still
+    #: counts (docs/pharmacy.md, section 4).
+    previous_dedan_id: Mapped[Optional[str]] = mapped_column(String(16))
     #: The version last sent to Endod (None: never). A correction made while the
     #: patient was unlinked (version > published_version) is sent on re-linking.
     published_version: Mapped[Optional[int]] = mapped_column(Integer)
@@ -577,7 +581,7 @@ class ClinicalRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow,
                                                  onupdate=utcnow)
 
-    @validates("published_dedan_id")
+    @validates("published_dedan_id", "previous_dedan_id")
     def _check_dedan(self, _key: str, value: Optional[str]) -> Optional[str]:
         return checked_dedan_id(value)
 

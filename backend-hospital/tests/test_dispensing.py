@@ -136,6 +136,44 @@ class TestHandler:
         consume(bus)
         assert len(dead_letters(bus)) == 1
 
+    def test_a_dispense_in_flight_when_the_record_was_retracted_from_the_account_is_kept(
+            self, client, doctor, patient, prescription, bus, hospital):
+        """Published, then taken off the account (re-link): a dispense Endod made
+        just before it handled record.retracted is still stored."""
+        from app import records
+        from app.db import session_scope
+        from app.models import ClinicalRecord
+
+        with session_scope() as session:
+            records.retract_from_platform(session, session.get(ClinicalRecord, prescription["id"]), DEDAN,
+                                          "The hospital linked this record to a different Endod account.")
+        kept = dispensed(prescription["id"], hospital)
+        send(bus, "prescription.dispensed", kept)
+        send(bus, "prescription.dispensed", dispensed(prescription["id"], hospital, dedan_id="DE111111"))
+        consume(bus)
+        [entry] = dead_letters(bus)
+        assert "not sent to this Endod account" in entry[1]["error"]
+        [record] = records_of(client, doctor, patient["id"])
+        assert [d["dispense_id"] for d in record["dispensing"]["dispenses"]] == [kept["dispense_id"]]
+
+    def test_after_a_re_link_to_another_account_both_accounts_count(self, client, doctor, patient, prescription,
+                                                                     bus, hospital):
+        """Re-linked and published to the new account in one step: the old
+        account's in-flight dispense and the new account's both count."""
+        new = "DE555555"
+        link_directly(patient["id"], new)
+        resp = client.patch(f"/records/{prescription['id']}", headers=doctor, json={"title": "Malaria treatment, v2"})
+        assert resp.status_code == 200, resp.text
+        old_one = dispensed(prescription["id"], hospital)
+        new_one = dispensed(prescription["id"], hospital, dedan_id=new)
+        for payload in (old_one, new_one, dispensed(prescription["id"], hospital, dedan_id="DE111111")):
+            send(bus, "prescription.dispensed", payload)
+        consume(bus)
+        assert len(dead_letters(bus)) == 1
+        [record] = records_of(client, doctor, patient["id"])
+        assert {d["dispense_id"] for d in record["dispensing"]["dispenses"]} == {old_one["dispense_id"],
+                                                                                 new_one["dispense_id"]}
+
     def test_an_unknown_record_is_retried_then_dead_lettered(self, prescription, bus, hospital, monkeypatch):
         from app import eventbus
 
@@ -206,7 +244,7 @@ def test_quantity_total_is_the_leading_number():
 
 
 def test_migration_0006_adds_the_table_and_keeps_everything_else(tmp_path, monkeypatch):
-    """A new table only: hospitals, patients and records are untouched, up and down (SQLite)."""
+    """A new table and an added column only: existing rows are kept, up and down (SQLite)."""
     from pathlib import Path
 
     from alembic import command
@@ -241,6 +279,7 @@ def test_migration_0006_adds_the_table_and_keeps_everything_else(tmp_path, monke
         assert connection.execute(text("SELECT count(*) FROM hospitals")).scalar() == 1
         assert connection.execute(text("SELECT count(*) FROM patients")).scalar() == 1
         assert connection.execute(text("SELECT count(*) FROM clinical_records")).scalar() == 1
+        assert connection.execute(text("SELECT previous_dedan_id FROM clinical_records")).scalar() is None
         connection.execute(text(
             "INSERT INTO prescription_dispenses (id, hospital_id, record_id, dedan_id, pharmacy_name, dispensed_at, "
             "status, items, received_at) VALUES ('d1', 'h1', :id, 'DE482731', 'Kenema', '2026-10-23 11:10:00', "
@@ -250,5 +289,7 @@ def test_migration_0006_adds_the_table_and_keeps_everything_else(tmp_path, monke
         assert connection.execute(text("SELECT count(*) FROM patients")).scalar() == 1
         assert connection.execute(text("SELECT count(*) FROM clinical_records")).scalar() == 1
         tables = inspect(connection).get_table_names()
+        record_columns = {c["name"] for c in inspect(connection).get_columns("clinical_records")}
     dbmod.reset_engine()
     assert "prescription_dispenses" not in tables
+    assert "previous_dedan_id" not in record_columns
