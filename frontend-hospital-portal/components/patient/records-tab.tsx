@@ -15,6 +15,7 @@ import {
   secondaryButtonClass,
 } from "@/components/common/states";
 import { useDashboard } from "@/components/dashboard/dashboard-context";
+import { DispensingPanel } from "@/components/patient/dispensing";
 import { FileLinks, RecordDetails } from "@/components/patient/record-details";
 import { RecordForm } from "@/components/patient/record-form";
 import { ApiError, apiFetch, useApi } from "@/lib/api";
@@ -131,6 +132,9 @@ export function RecordsTab({ patientId, staff, hospital }: { patientId: string; 
               )}
               <RecordDetails details={r.details} />
               <FileLinks files={r.files} base={`records/${r.id}/files`} />
+              {r.category === "prescription" && r.dispensing && (
+                <DispensingPanel dispensing={r.dispensing} timeZone={hospital.timezone} />
+              )}
             </li>
           ))}
         </ul>
