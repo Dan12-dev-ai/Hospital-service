@@ -107,8 +107,9 @@ class TestRegistration:
             for bad in ("DE-482731", "de482731", "DE4827310", "x" * 40):
                 with pytest.raises(ValueError):
                     row.dedan_id = bad
-                for model, column in ((ClinicalRecord, "published_dedan_id"), (Visit, "follow_up_sent_to"),
-                                      (QueueEntry, "dedan_id"), (RecordShare, "dedan_id")):
+                for model, column in ((ClinicalRecord, "published_dedan_id"), (ClinicalRecord, "previous_dedan_id"),
+                                      (Visit, "follow_up_sent_to"), (QueueEntry, "dedan_id"),
+                                      (RecordShare, "dedan_id")):
                     with pytest.raises(ValueError):
                         setattr(model(), column, bad)
                 with pytest.raises(ValueError):

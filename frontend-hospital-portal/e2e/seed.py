@@ -29,6 +29,12 @@ HOSPITAL_DATABASE_URL as the server under test. Prints JSON.
         A patient sharing one record (with a PDF) with the hospital: the
         records.shared event handled as the worker would.
 
+    python seed.py dispense <record_id> <pharmacy name> <at> <open|completed> <items JSON>
+        A pharmacy giving medicine from a prescription record through Endod:
+        the prescription.dispensed event handled as the worker would. ``at``
+        is ISO-8601 with its offset; the items are the event's
+        [{"item_index", "amount", "complete", "given_total", "status"}].
+
     python seed.py applicant <tag> [--complete] [--submitted]
         A hospital applying to join Endod (pending), with its admin (the
         contact person, with a mobile). --complete fills in every step but
@@ -53,10 +59,11 @@ sys.path.insert(0, os.getcwd())
 
 from sqlalchemy import select  # noqa: E402
 
-from app import bookings, linking, records, sharing  # noqa: E402
+from app import bookings, dispensing, linking, records, sharing  # noqa: E402
 from app.db import session_scope  # noqa: E402
 from app.models import (  # noqa: E402
-    Booking, Hospital, HospitalStatus, LinkStatus, Patient, PatientLinkRequest, ProcessedEvent, StaffUser,
+    Booking, ClinicalRecord, Hospital, HospitalStatus, LinkStatus, Patient, PatientLinkRequest, ProcessedEvent,
+    StaffUser,
 )
 from app.security import hash_password  # noqa: E402
 
@@ -177,6 +184,20 @@ def share(hospital_id: str, dedan_id: str, patient: str, title: str) -> dict:
     return {"share_id": share_id, "record_id": record_id, "file_id": file_id}
 
 
+def dispense(record_id: str, pharmacy: str, at: str, status: str, items: str) -> dict:
+    with session_scope() as session:
+        record = session.get(ClinicalRecord, record_id)
+        if record is None:
+            raise SystemExit("unknown record")
+        hospital_id, dedan_id = record.hospital_id, record.published_dedan_id
+    dispense_id = uuid.uuid4().hex
+    handle("prescription.dispensed", dispensing.on_dispensed, {
+        "record_id": record_id, "hospital_id": hospital_id, "dedan_id": dedan_id, "dispense_id": dispense_id,
+        "at": at, "pharmacy_name": pharmacy, "status": status, "items": json.loads(items),
+    })
+    return {"dispense_id": dispense_id}
+
+
 def queue_yesterday(hospital_id: str, doctor_email: str, patient: str) -> dict:
     """A walk-in checked in yesterday (hospital time) and still waiting."""
     from datetime import timedelta as days
@@ -264,6 +285,8 @@ def main() -> None:
         print(json.dumps(seed_applicant(args[1], "--complete" in args[2:], "--submitted" in args[2:])))
     elif args[:1] == ["applicant-staff"] and len(args) == 4:
         print(json.dumps(seed_applicant_staff(args[1], args[2], args[3])))
+    elif args[:1] == ["dispense"] and len(args) == 6:
+        print(json.dumps(dispense(args[1], args[2], args[3], args[4], args[5])))
     elif args[:1] == ["share"] and len(args) == 5:
         print(json.dumps(share(args[1], args[2], args[3], args[4])))
     else:

@@ -80,6 +80,25 @@ export function seedShare(hospitalId: string, dedanId: string, patientName: stri
   return seed<{ share_id: string; record_id: string; file_id: string }>("share", hospitalId, dedanId, patientName, title);
 }
 
+export type SeededDispenseItem = {
+  item_index: number;
+  amount: number | null;
+  complete: boolean;
+  given_total: number | null;
+  status: "not_given" | "partly_given" | "given";
+};
+
+/** A pharmacy giving medicine from a prescription record through Endod (prescription.dispensed). */
+export function seedDispense(
+  recordId: string,
+  pharmacy: string,
+  at: string,
+  status: "open" | "completed",
+  items: SeededDispenseItem[]
+) {
+  return seed<{ dispense_id: string }>("dispense", recordId, pharmacy, at, status, JSON.stringify(items));
+}
+
 /** Registers a patient through the portal (the page must be signed in as a registrar). */
 export async function registerPatient(page: Page, name: string, phone = "0911 234 567") {
   const response = await page.request.post("/api/patients", {

@@ -7,7 +7,9 @@ Role rules (backend-hospital/app/api/patients.py has the shared ones):
 * doctors and nurses write every kind of record and open visits; only a
   doctor sets a follow-up;
 * records staff and admins file documents and lab results (with files);
-* clinical details are read by DIAGNOSIS_READERS only (not reception or billing).
+* clinical details are read by DIAGNOSIS_READERS only (not reception or billing);
+* what pharmacies gave from a prescription (docs/pharmacy.md) is shown to
+  the record readers and pharmacists (DISPENSE_READERS).
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from fastapi.responses import FileResponse
 from pydantic import AwareDatetime, BaseModel, Field
 from sqlalchemy import func, select
 
-from app import files, linking, records
+from app import dispensing, files, linking, records
 from app.api.onboarding import platform_admin
 from app.api.patients import DEMOGRAPHIC_EDITORS, DIAGNOSIS_READERS
 from app.auth import Staff, audit, current_staff, require_roles
@@ -46,6 +48,8 @@ DOCUMENT_FILERS = (Role.ADMIN, Role.RECORDS)
 DOCUMENT_CATEGORIES = (RecordCategory.DOCUMENT, RecordCategory.LAB_RESULT)
 #: Who reads clinical records and their files: the same people as the working diagnosis.
 RECORD_READERS = DIAGNOSIS_READERS
+#: Who sees what pharmacies gave from a prescription: the record readers, and pharmacists.
+DISPENSE_READERS = tuple(dict.fromkeys(RECORD_READERS + (Role.PHARMACIST,)))
 #: Who sets a follow-up.
 FOLLOW_UP_SETTERS = (Role.DOCTOR,)
 #: Files one person may have uploaded and not yet attached.
@@ -222,7 +226,12 @@ def _when(value: Optional[datetime]) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-def _record_payload(session, r: ClinicalRecord) -> Dict[str, Any]:
+def _record_payload(session, r: ClinicalRecord, role: str,
+                    dispenses: Optional[Dict[str, list]] = None) -> Dict[str, Any]:
+    dispensing_info = None
+    if r.category == RecordCategory.PRESCRIPTION and role in DISPENSE_READERS:
+        found = dispensing.dispenses_of(session, [r.id]) if dispenses is None else dispenses
+        dispensing_info = dispensing.dispensing_payload(r, found.get(r.id, []))
     return {
         "id": r.id, "patient_id": r.patient_id, "visit_id": r.visit_id, "category": r.category, "title": r.title,
         "details": json.loads(r.details), "occurred_at": _iso(r.occurred_at), "recorded_by": r.recorded_by_name,
@@ -233,6 +242,8 @@ def _record_payload(session, r: ClinicalRecord) -> Dict[str, Any]:
         "published_version": r.published_version,
         "files": [_file_payload(f) for f in records.files_of(session, r.id)],
         "created_at": _iso(r.created_at), "updated_at": _iso(r.updated_at),
+        # Prescriptions only: what pharmacies gave through Endod (null otherwise).
+        "dispensing": dispensing_info,
     }
 
 
@@ -264,10 +275,13 @@ def _clean(category: str, details: Dict[str, Any]) -> Dict[str, Any]:
 def list_records(patient_id: str, staff: Staff = Depends(readers)) -> Dict[str, Any]:
     with session_scope() as session:
         patient = _patient(session, staff, patient_id)
-        rows = session.scalars(select(ClinicalRecord).where(ClinicalRecord.patient_id == patient.id)
-                               .order_by(ClinicalRecord.occurred_at.desc(), ClinicalRecord.created_at.desc()))
+        rows = list(session.scalars(select(ClinicalRecord).where(ClinicalRecord.patient_id == patient.id)
+                                    .order_by(ClinicalRecord.occurred_at.desc(), ClinicalRecord.created_at.desc())))
+        dispenses = dispensing.dispenses_of(
+            session, [r.id for r in rows if r.category == RecordCategory.PRESCRIPTION])
         audit(session, staff.hospital_id, staff.id, "patient_records_viewed", "patient", patient.id)
-        return {"items": [_record_payload(session, r) for r in rows], "linked": bool(patient.dedan_id)}
+        return {"items": [_record_payload(session, r, staff.role, dispenses) for r in rows],
+                "linked": bool(patient.dedan_id)}
 
 
 @router.post("/patients/{patient_id}/records", status_code=status.HTTP_201_CREATED)
@@ -299,7 +313,7 @@ def create_record(patient_id: str, body: RecordCreate, staff: Staff = Depends(cu
         audit(session, staff.hospital_id, staff.id, "record_added", "patient", patient.id,
               {"record_id": record.id, "category": record.category})
         session.flush()
-        return _record_payload(session, record)
+        return _record_payload(session, record, staff.role)
 
 
 def _record_for_update(session, staff: Staff, record_id: str) -> ClinicalRecord:
@@ -344,7 +358,7 @@ def correct_record(record_id: str, body: RecordCorrection, staff: Staff = Depend
         audit(session, staff.hospital_id, staff.id, "record_corrected", "patient", patient.id,
               {"record_id": record.id, "version": record.version, "fields": sorted(changes)})
         session.flush()
-        return _record_payload(session, record)
+        return _record_payload(session, record, staff.role)
 
 
 @router.post("/records/{record_id}/retract")
@@ -358,7 +372,7 @@ def retract_record(record_id: str, body: Retraction, staff: Staff = Depends(curr
         audit(session, staff.hospital_id, staff.id, "record_retracted", "patient", record.patient_id,
               {"record_id": record.id, "reason": body.reason})
         session.flush()
-        return _record_payload(session, record)
+        return _record_payload(session, record, staff.role)
 
 
 @router.get("/records/{record_id}/files/{file_id}")
