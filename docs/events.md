@@ -112,3 +112,9 @@ confirmed or declined two hours after its time.
 Linking hospital patients to Endod accounts, clinical records, visits and
 follow-ups, queues, records shared by patients and imports add more events to
 these same streams. Their contract is in [history-events.md](history-events.md).
+
+## Prescriptions dispensed at pharmacies
+
+`prescription.dispensed` (`endod:patient`): a pharmacy gave medicine from one
+of this hospital's prescription records, through Endod. The contract (section
+4 is this service's part) is in [pharmacy.md](pharmacy.md).

@@ -789,3 +789,31 @@ class DemoBooking(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow,
                                                  onupdate=utcnow)
+
+
+# --- Prescriptions dispensed at pharmacies (docs/pharmacy.md, section 4) ---
+
+class PrescriptionDispense(Base):
+    """Medicine given at a pharmacy from one of this hospital's prescription
+    records, as Endod reported it (``prescription.dispensed``)."""
+
+    __tablename__ = "prescription_dispenses"
+    __table_args__ = (Index("ix_prescription_dispenses_record", "record_id", "dispensed_at"),)
+
+    #: The platform's dispense_id: a dispense is stored once, however often it arrives.
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False)
+    record_id: Mapped[str] = mapped_column(ForeignKey("clinical_records.id", ondelete="CASCADE"), nullable=False)
+    dedan_id: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: As the pharmacist typed it (not verified).
+    pharmacy_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    dispensed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: The prescription's status after this dispense: "open" or "completed".
+    status: Mapped[str] = mapped_column(String(12), nullable=False)
+    #: A JSON list of {item_index, amount, complete, given_total, status}.
+    items: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    @validates("dedan_id")
+    def _check_dedan(self, _key: str, value: Optional[str]) -> Optional[str]:
+        return checked_dedan_id(value)

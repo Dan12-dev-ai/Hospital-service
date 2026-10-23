@@ -14,7 +14,7 @@ import time
 
 import redis
 
-from app import bookings, chores, eventbus, linking, sharing
+from app import bookings, chores, dispensing, eventbus, linking, sharing
 
 logger = logging.getLogger("hospital.worker")
 _running = True
@@ -33,7 +33,7 @@ _last = {"expire": 0.0, "housekeeping": 0.0}
 
 def handlers() -> dict:
     """Every event this service handles from the patient platform."""
-    return {**bookings.HANDLERS, **linking.HANDLERS, **sharing.HANDLERS}
+    return {**bookings.HANDLERS, **linking.HANDLERS, **sharing.HANDLERS, **dispensing.HANDLERS}
 
 
 def run_once(client: redis.Redis, now: float | None = None) -> int:
