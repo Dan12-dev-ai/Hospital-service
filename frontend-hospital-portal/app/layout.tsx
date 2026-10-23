@@ -1,10 +1,27 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { ServiceWorkerRegistrar } from "@/components/pwa/service-worker-registrar";
+import { InstallPwaButton } from "@/components/pwa/install-button";
+import { FontLoader } from "@/components/pwa/font-loader";
 
 export const metadata: Metadata = {
   title: "Dedan Health OS • Hospital Portal",
   description:
     "The Endod hospital portal: Endod bookings and video visits, patients, doctors and hospital settings.",
+  manifest: "/manifest.json",
+  themeColor: "#0f172a",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "Hospital Portal",
+  },
+  icons: {
+    icon: [
+      { url: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icons/icon-512.png", sizes: "512x512", type: "image/png" },
+    ],
+    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
+  },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
@@ -17,21 +34,10 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           href="https://fonts.gstatic.com"
           crossOrigin="anonymous"
         />
-{/* eslint-disable-next-line @next/next/no-page-custom-font */}
-        <link
-          rel="stylesheet"
-          href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
-        />
-        {/* Material Symbols icon font — loaded in the root layout so it
-            applies to every route (the no-page-custom-font rule targets the
-            pages router; app/router root layouts are global). */}
-        {/* eslint-disable-next-line @next/next/no-page-custom-font */}
-        <link
-          rel="stylesheet"
-          href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap"
-        />
       </head>
       <body className="min-h-screen bg-app-bg font-sans text-body-text antialiased">
+        <FontLoader />
+        <ServiceWorkerRegistrar />
         {children}
       </body>
     </html>

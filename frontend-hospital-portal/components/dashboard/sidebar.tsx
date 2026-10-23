@@ -6,6 +6,7 @@ import Link from "next/link";
 import { cn } from "cn";
 import { Icon } from "@/components/ui/icon";
 import { useSession } from "@/components/session/session-context";
+import { ROLE_LABELS } from "@/lib/api-types";
 import { navItems } from "@/lib/dashboard-data";
 import { initialsOf } from "@/lib/format";
 import Image from "next/image";
@@ -221,11 +222,25 @@ function SidebarBody({
           </div>
           {!collapsed && (
             <div className="flex min-w-0 flex-col">
+<<<<<<< Updated upstream
               <span data-testid="signed-in-name" className="truncate text-[11px] font-semibold text-slate-800">
                 {staff?.full_name ?? ""}
               </span>
               <span data-testid="signed-in-email" className="truncate text-[10px] text-slate-400">
                 {staff?.email ?? ""}
+=======
+              <span
+                data-testid="signed-in-name"
+                className="truncate text-[11px] font-semibold text-slate-800"
+              >
+                {staff?.full_name ?? ""}
+              </span>
+              <span
+                data-testid="signed-in-role"
+                className="truncate text-[10px] text-slate-400"
+              >
+                {staff ? ROLE_LABELS[staff.role] : ""}
+>>>>>>> Stashed changes
               </span>
             </div>
           )}

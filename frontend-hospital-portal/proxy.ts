@@ -29,5 +29,5 @@ export function proxy(request: NextRequest) {
 
 export const config = {
   // Pages only: not the BFF (it answers 401 itself), Next's assets or public files.
-  matcher: ["/((?!api/|_next/static|_next/image|favicon\\.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)"],
+  matcher: ["/((?!api/|_next/static|_next/image|favicon\.ico|sw\.js|service-worker\.js|manifest\.json|manifest\.webmanifest|.*\.(?:svg|png|jpg|jpeg|gif|webp|ico|json|js)$).*)"],
 };

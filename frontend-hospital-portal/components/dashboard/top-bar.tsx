@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Icon } from "@/components/ui/icon";
 import { useDashboard } from "@/components/dashboard/dashboard-context";
 import { useSession } from "@/components/session/session-context";
+import { InstallPwaButton } from "@/components/pwa/install-button";
 
 /** The signed-in staff member, with change-password and sign-out. */
 function ProfileChip() {
@@ -69,6 +70,8 @@ export function TopBar() {
           <Icon name="translate" className="text-[16px] text-pine-green" />
           <span className="text-[11px] font-semibold">EN | አማርኛ</span>
         </button>
+
+        <InstallPwaButton />
 
         <ProfileChip />
       </div>
