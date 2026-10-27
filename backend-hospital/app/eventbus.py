@@ -121,7 +121,8 @@ def _publisher_lock(session: Session) -> bool:
 def publish_pending(client: redis.Redis, batch: int = 100) -> int:
     """Send unsent events in order. Returns how many were sent."""
     min_replicas = get_settings().REDIS_MIN_REPLICAS
-    with session_scope() as session:
+    # The outbox holds every hospital's events: only the platform role reads it.
+    with platform_session() as session:
         if not _publisher_lock(session):
             return 0  # another worker is publishing
         rows = list(session.scalars(
@@ -159,7 +160,7 @@ def housekeeping(client: redis.Redis) -> None:
     cutoff_ms = int((time.time() - KEEP_STREAM_FOR.total_seconds()) * 1000)
     client.xtrim(STREAM_OUT, minid=f"{cutoff_ms}-0", approximate=True)
     cutoff = utcnow() - KEEP_RECORDS_FOR
-    with session_scope() as session:
+    with platform_session() as session:
         session.execute(delete(OutboxEvent).where(OutboxEvent.published_at.is_not(None),
                                                   OutboxEvent.published_at < cutoff))
         session.execute(delete(ProcessedEvent).where(ProcessedEvent.processed_at < cutoff))

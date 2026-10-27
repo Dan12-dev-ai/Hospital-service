@@ -11,7 +11,9 @@ Roles (created and granted by migration 0007 and migrations/env.py):
 * ``hospital`` owns the tables and runs the migrations (a superuser in the
   Compose deployment).
 * ``hospital_app``: what the API and worker log in as. Not a superuser, no
-  BYPASSRLS, owns nothing, no DDL; ``audit_events`` is SELECT and INSERT only.
+  BYPASSRLS, owns nothing, no DDL; ``audit_events`` is SELECT and INSERT
+  only, and ``outbox_events`` INSERT only (the worker reads it as the
+  platform role).
 * ``hospital_platform``: NOLOGIN, for work done for Endod across hospitals
   (``/platform`` routes, events from the bus, the worker's chores, the CLI).
   ``hospital_app`` is a member WITHOUT INHERIT: it has none of its rights
@@ -23,12 +25,13 @@ Policies (ENABLE and FORCE on every table that belongs to a hospital):
 
 * ``tenant_isolation`` on tables with ``hospital_id`` (and ``hospitals`` by
   ``id``): the row's hospital is ``current_setting('app.hospital_id')``.
-* The three child tables without ``hospital_id`` (patient alerts, staff
-  sessions, shared records) go through their parent row (``EXISTS`` on the
+* The two child tables without ``hospital_id`` (staff sessions, shared
+  records) go through their parent row (``EXISTS`` on the
   parent, itself under its policy): a child is visible or writable exactly
   when its parent is, with no new column or backfill.
 * ``platform_access`` (``hospital_platform`` only): every row.
-* ``outbox_events`` and ``processed_events`` belong to no hospital.
+* ``outbox_events`` and ``processed_events`` belong to no hospital (no
+  policy; the outbox is kept from the app by its table rights).
 
 Composite foreign keys ``(hospital_id, x) -> parent (hospital_id, id)`` sit
 beside the plain ones: foreign keys ignore row security, so without them a
@@ -38,7 +41,7 @@ A few things must look past one hospital without a platform transaction:
 signing in (the account's hospital is not known yet), a new hospital's code,
 and other hospitals' demo bookings. Each is a SECURITY DEFINER function owned
 by ``hospital_platform`` that returns only what is needed (a hospital id for
-an active account or a live session, a yes or no, slot times) or does one
+an account or a live session, a yes or no, slot times) or does one
 fixed thing (release stale demo bookings).
 
 Limits: this guards against mistakes in the app's own queries. SQL injected
@@ -52,7 +55,11 @@ directly) call :func:`install`. tests/test_rls.py checks the two agree.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import re
+import secrets
 from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy import text
@@ -82,11 +89,11 @@ TENANT_TABLES: List[Tuple[str, str]] = [
     ("onboarding_documents", "hospital_id"),
     ("demo_bookings", "hospital_id"),
     ("prescription_dispenses", "hospital_id"),
+    ("patient_alerts", "hospital_id"),
 ]
 
 #: Child tables without a hospital column: table -> (parent, foreign key column).
 CHILD_TABLES: Dict[str, Tuple[str, str]] = {
-    "patient_alerts": ("patients", "patient_id"),
     "staff_sessions": ("staff_users", "user_id"),
     "shared_records": ("record_shares", "share_id"),
 }
@@ -94,7 +101,13 @@ CHILD_TABLES: Dict[str, Tuple[str, str]] = {
 #: Tables that belong to no hospital.
 SHARED_TABLES = ("outbox_events", "processed_events")
 
-#: The app may only read and append to these.
+#: Table rights other than full read and write, per role. The audit log is
+#: append-only for both; the event outbox (patient names, phones, clinical
+#: payloads of every hospital, with no hospital column) is write-only for the
+#: app, which only emits events inside its transactions: reading, marking
+#: sent and cleaning up are the worker's, as hospital_platform.
+APP_RIGHTS = {"audit_events": "SELECT, INSERT", "outbox_events": "INSERT"}
+PLATFORM_RIGHTS = {"audit_events": "SELECT, INSERT"}
 APPEND_ONLY = ("audit_events",)
 
 #: References between two rows of one hospital: (child, column, parent, on delete).
@@ -128,6 +141,8 @@ SAME_HOSPITAL_REFERENCES: List[Tuple[str, str, str, str]] = [
     ("import_batches", "created_by", "staff_users", "SET NULL"),
     ("onboarding_documents", "uploaded_by", "staff_users", "SET NULL"),
     ("prescription_dispenses", "record_id", "clinical_records", "CASCADE"),
+    ("patient_alerts", "patient_id", "patients", "CASCADE"),
+    ("patient_alerts", "created_by", "staff_users", "SET NULL"),
 ]
 
 TENANT_POLICY = "tenant_isolation"
@@ -203,10 +218,11 @@ _DEFINER = "SECURITY DEFINER SET search_path = public, pg_temp"
 
 #: (signature, body) of each SECURITY DEFINER function.
 FUNCTIONS: List[Tuple[str, str]] = [
-    # Sign-in: the hospital of an active account with this exact email.
+    # Sign-in: the hospital of the account with this exact email (also a
+    # deactivated one, so its failed attempts count toward the lockout).
     ("hospital_of_staff_email(p_email text)",
      f"""RETURNS text LANGUAGE sql STABLE {_DEFINER} AS $$
-        SELECT hospital_id::text FROM staff_users WHERE email = p_email AND active $$"""),
+        SELECT hospital_id::text FROM staff_users WHERE email = p_email $$"""),
     # Every request: the hospital of a live session (not revoked, not expired, active account).
     ("hospital_of_session_token(p_token_hash text)",
      f"""RETURNS text LANGUAGE sql STABLE {_DEFINER} AS $$
@@ -279,10 +295,35 @@ def drop_statements() -> List[str]:
     return statements
 
 
+def cross_hospital_queries() -> List[Tuple[str, str, str]]:
+    """(child, column, query): the child rows that refer to another hospital's
+    row, which the composite keys would refuse. Run before adding them."""
+    queries = []
+    for child, column, parent, _d in SAME_HOSPITAL_REFERENCES:
+        key = "user_id" if child == "doctor_profiles" else "id"
+        queries.append((child, column, f"SELECT c.{key} FROM {child} c JOIN {parent} p ON p.id = c.{column} "
+                                       f"WHERE p.hospital_id <> c.hospital_id ORDER BY c.{key} LIMIT 20"))
+    return queries
+
+
+def check_same_hospital(connection) -> None:
+    """Fail, naming table, column and row ids, if existing rows refer to
+    another hospital's rows (the composite keys could not be added)."""
+    problems = []
+    for child, column, query in cross_hospital_queries():
+        ids = [row[0] for row in connection.execute(text(query))]
+        if ids:
+            problems.append(f"{child}.{column}: {', '.join(ids)}")
+    if problems:
+        raise RuntimeError("Rows refer to another hospital's rows; fix them before this migration: "
+                           + "; ".join(problems))
+
+
 def install(connection) -> None:
     """Install the role, keys, policies and functions (PostgreSQL only; idempotent)."""
     if connection.dialect.name != "postgresql":
         return
+    check_same_hospital(connection)
     for statement in install_statements():
         connection.execute(text(statement))
 
@@ -302,6 +343,25 @@ def role_exists(connection, role: str) -> bool:
     return bool(connection.execute(text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": role}).scalar())
 
 
+def scram_verifier(password: str) -> str:
+    """The SCRAM-SHA-256 verifier PostgreSQL stores for ``password``.
+
+    ``CREATE/ALTER ROLE ... PASSWORD`` is given this instead of the password,
+    so the password itself never reaches the server (nor its statement log).
+    PostgreSQL normalises non-ASCII passwords (SASLprep) before hashing; this
+    does not, so the password must be ASCII (the deploy uses hex)."""
+    if not password.isascii():
+        raise RuntimeError("HOSPITAL_APP_DB_PASSWORD must be ASCII (e.g. openssl rand -hex 32).")
+    iterations = 4096
+    salt = secrets.token_bytes(16)
+    salted = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations)
+    client_key = hmac.new(salted, b"Client Key", hashlib.sha256).digest()
+    stored_key = hashlib.sha256(client_key).digest()
+    server_key = hmac.new(salted, b"Server Key", hashlib.sha256).digest()
+    b64 = lambda raw: base64.b64encode(raw).decode()  # noqa: E731
+    return f"SCRAM-SHA-256${iterations}:{b64(salt)}${b64(stored_key)}:{b64(server_key)}"
+
+
 def ensure_app_role(connection, role: str, password: Optional[str]) -> None:
     """Create the app role if it is missing (idempotent; also on an existing
     database), and keep its attributes as they must be: it logs in, and is
@@ -312,14 +372,14 @@ def ensure_app_role(connection, role: str, password: Optional[str]) -> None:
     exists = role_exists(connection, role)
     if not exists and not password:
         return
+    # Setting NOSUPERUSER and NOBYPASSRLS takes a superuser: the migration
+    # owner is one in the Compose deployment (POSTGRES_USER).
     attributes = "LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION"
     if password:
-        statement = connection.execute(text("SELECT format('PASSWORD %L', CAST(:p AS text))"),
-                                       {"p": password}).scalar()
-        attributes += f" {statement}"
+        # Only the SCRAM verifier is sent, never the password (see scram_verifier).
+        attributes += f" PASSWORD '{scram_verifier(password)}'"
     verb = "ALTER" if exists else "CREATE"
-    # Straight to the driver without parameters: a password may contain what
-    # would otherwise be read as a placeholder (":name", "%s").
+    # Straight to the driver without parameters (the verifier holds "$", "+", "/").
     cursor = connection.connection.cursor()
     try:
         cursor.execute(f'{verb} ROLE "{role}" {attributes}')
@@ -327,12 +387,12 @@ def ensure_app_role(connection, role: str, password: Optional[str]) -> None:
         cursor.close()
 
 
-def _grant_tables(connection, role: str, tables) -> None:
+def _grant_tables(connection, role: str, tables, rights: Dict[str, str]) -> None:
     for table in sorted(tables):
         if connection.execute(text("SELECT to_regclass(:t)"), {"t": f"public.{table}"}).scalar() is None:
             continue  # not there (yet, or any more after a downgrade)
         connection.execute(text(f'REVOKE ALL ON TABLE "{table}" FROM "{role}"'))
-        privileges = "SELECT, INSERT" if table in APPEND_ONLY else "SELECT, INSERT, UPDATE, DELETE"
+        privileges = rights.get(table, "SELECT, INSERT, UPDATE, DELETE")
         connection.execute(text(f'GRANT {privileges} ON TABLE "{table}" TO "{role}"'))
 
 
@@ -348,14 +408,14 @@ def grant_app_role(connection, role: str, tables) -> None:
     database = connection.execute(text("SELECT current_database()")).scalar()
     connection.execute(text(f'GRANT CONNECT ON DATABASE "{database}" TO "{role}"'))
     connection.execute(text(f'GRANT USAGE ON SCHEMA public TO "{role}"'))
-    _grant_tables(connection, role, tables)
+    _grant_tables(connection, role, tables, APP_RIGHTS)
     if connection.execute(text("SELECT to_regclass('public.alembic_version')")).scalar() is not None:
         connection.execute(text(f'REVOKE ALL ON TABLE alembic_version FROM "{role}"'))
         connection.execute(text(f'GRANT SELECT ON TABLE alembic_version TO "{role}"'))
     if not role_exists(connection, PLATFORM_ROLE):
         return  # before migration 0007
     connection.execute(text(f"GRANT USAGE ON SCHEMA public TO {PLATFORM_ROLE}"))
-    _grant_tables(connection, PLATFORM_ROLE, tables)
+    _grant_tables(connection, PLATFORM_ROLE, tables, PLATFORM_RIGHTS)
     connection.execute(text(f'GRANT {PLATFORM_ROLE} TO "{role}" WITH INHERIT FALSE, SET TRUE'))
     for name in function_names():
         if connection.execute(text("SELECT to_regprocedure(:f)"), {"f": name}).scalar() is not None:
@@ -397,10 +457,10 @@ def _postgres(session: Session) -> bool:
 
 
 def hospital_of_email(session: Session, email: str) -> Optional[str]:
-    """The hospital of the active staff account with this exact (stored) email, if any."""
+    """The hospital of the staff account with this exact (stored) email, if any."""
     if _postgres(session):
         return session.scalar(text("SELECT hospital_of_staff_email(:email)"), {"email": email})
-    return session.scalar(text("SELECT hospital_id FROM staff_users WHERE email = :email AND active"),
+    return session.scalar(text("SELECT hospital_id FROM staff_users WHERE email = :email"),
                           {"email": email})
 
 

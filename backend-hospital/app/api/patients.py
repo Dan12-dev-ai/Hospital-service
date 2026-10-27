@@ -464,7 +464,8 @@ def add_alert(patient_id: str, body: AlertCreate,
     _one_of("kind", body.kind, AlertKind.ALL)
     with session_scope(staff.hospital_id) as session:
         patient = _patient_for_update(session, staff.hospital_id, patient_id)
-        alert = PatientAlert(patient_id=patient.id, kind=body.kind, label=body.label, created_by=staff.id)
+        alert = PatientAlert(hospital_id=patient.hospital_id, patient_id=patient.id, kind=body.kind,
+                             label=body.label, created_by=staff.id)
         session.add(alert)
         session.flush()
         audit(session, staff.hospital_id, staff.id, "patient_alert_added", "patient", patient.id,
