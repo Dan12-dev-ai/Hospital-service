@@ -12,8 +12,9 @@ from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy import select, update
 from sqlalchemy.orm import object_session
 
+from app import rls
 from app.config import get_settings
-from app.db import ensure_aware, session_scope, utcnow
+from app.db import ensure_aware, session_scope, set_tenant, utcnow
 from app.models import (
     ApplicationStatus, AuditEvent, Hospital, HospitalStatus, OnboardingApplication, StaffSession, StaffUser,
 )
@@ -118,8 +119,16 @@ def _record_failure(session, user: StaffUser, now, settings) -> bool:
 
 def _locked_user(session, email: str) -> Optional[StaffUser]:
     """The account row, locked for this transaction so parallel attempts
-    cannot lose failure counts (no-op on SQLite, which serialises writers)."""
-    return session.scalar(select(StaffUser).where(StaffUser.email == email.strip().lower()).with_for_update())
+    cannot lose failure counts (no-op on SQLite, which serialises writers).
+
+    The hospital is not known yet: the narrow sign-in lookup (app.rls) gives
+    the account's hospital, which becomes the transaction's tenant first."""
+    email = email.strip().lower()
+    hospital_id = rls.hospital_of_email(session, email)
+    if hospital_id is None:
+        return None
+    set_tenant(session, hospital_id)
+    return session.scalar(select(StaffUser).where(StaffUser.email == email).with_for_update())
 
 
 def login(email: str, password: str, user_agent: Optional[str] = None) -> Dict[str, Any]:
@@ -180,13 +189,20 @@ def _bearer(authorization: Optional[str]) -> Optional[str]:
 
 def resolve_session(token: str) -> Staff:
     now = utcnow()
+    digest = token_hash(token)
     with session_scope() as session:
+        # The token names the hospital (narrow lookup, app.rls); the session
+        # is then read under that hospital's policies like any other query.
+        hospital_id = rls.hospital_of_token(session, digest)
+        if hospital_id is None:
+            raise AuthError("Authentication required.")
+        set_tenant(session, hospital_id)
         row = session.execute(
             select(StaffSession, StaffUser, Hospital.status, OnboardingApplication.status)
             .join(StaffUser, StaffUser.id == StaffSession.user_id)
             .join(Hospital, Hospital.id == StaffUser.hospital_id)
             .outerjoin(OnboardingApplication, OnboardingApplication.hospital_id == Hospital.id)
-            .where(StaffSession.token_hash == token_hash(token))
+            .where(StaffSession.token_hash == digest)
         ).first()
         if row is None:
             raise AuthError("Authentication required.")
@@ -240,7 +256,7 @@ def require_roles(*roles: str) -> Callable[..., Staff]:
 
 
 def logout(staff: Staff) -> None:
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         session.execute(
             update(StaffSession).where(StaffSession.id == staff.session_id, StaffSession.revoked_at.is_(None))
             .values(revoked_at=utcnow())
@@ -256,7 +272,7 @@ def change_password(staff: Staff, current: str, new: str) -> None:
     settings = get_settings()
     now = utcnow()
     failure: Optional[AuthError] = None
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         user = session.scalar(select(StaffUser).where(StaffUser.id == staff.id).with_for_update())
         if user is None:
             raise AuthError("Authentication required.")

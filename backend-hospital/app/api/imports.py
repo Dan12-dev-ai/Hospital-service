@@ -61,7 +61,7 @@ async def preview(request: Request, x_filename: Optional[str] = Header(default=N
 def _plan(staff: Staff, data: bytes, kind: str, filename: Optional[str]) -> Dict[str, Any]:
     stored = []
     try:
-        with session_scope() as session:
+        with session_scope(staff.hospital_id) as session:
             hospital = session.get(Hospital, staff.hospital_id)
             try:
                 planner = imports.plan(session, hospital, data, kind)
@@ -114,7 +114,7 @@ def confirm(import_id: str, staff: Staff = Depends(importers)) -> Dict[str, Any]
 
 
 def _confirm(import_id: str, staff: Staff) -> Dict[str, Any]:
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         batch = session.scalar(select(ImportBatch).where(
             ImportBatch.id == import_id, ImportBatch.hospital_id == staff.hospital_id).with_for_update())
         if batch is None:

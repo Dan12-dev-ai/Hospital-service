@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Iterator, Optional
 
-from sqlalchemy import MetaData, create_engine, event
+from sqlalchemy import MetaData, create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -93,10 +93,44 @@ def reset_engine() -> None:
     _engine = _engine_url = _sessions = None
 
 
+# --- Tenant context (PostgreSQL row-level security; see app/rls.py) -----------------------
+#
+# Every transaction starts by setting ``app.hospital_id`` (the tenant the
+# policies compare with) for itself only (``set_config(..., true)``, i.e. SET
+# LOCAL), in ``after_begin``: a transaction begun again after a commit inside a
+# ``with`` block gets it too, and it never outlives the transaction on a
+# pooled connection. A platform transaction instead takes the
+# ``hospital_platform`` role for itself (SET LOCAL ROLE). With neither, the
+# policies show no rows and refuse every write: it fails closed.
+
+TENANT_KEY = "hospital_id"
+SCOPE_KEY = "scope"
+PLATFORM = "platform"
+PLATFORM_ROLE = "hospital_platform"
+
+
+@event.listens_for(Session, "after_begin")
+def _apply_tenant(session: Session, _transaction, connection) -> None:
+    if connection.dialect.name != "postgresql":
+        return
+    connection.execute(text("SELECT set_config('app.hospital_id', :tenant, true)"),
+                       {"tenant": session.info.get(TENANT_KEY) or ""})
+    if session.info.get(SCOPE_KEY) == PLATFORM:
+        connection.exec_driver_sql(f"SET LOCAL ROLE {PLATFORM_ROLE}")
+
+
+def set_tenant(session: Session, hospital_id: Optional[str]) -> None:
+    """Make ``hospital_id`` the tenant of this session from now on (sign-in,
+    which learns the hospital from its first lookup)."""
+    session.info[TENANT_KEY] = hospital_id or ""
+    if session.in_transaction() and session.get_bind().dialect.name == "postgresql":
+        session.execute(text("SELECT set_config('app.hospital_id', :tenant, true)"), {"tenant": hospital_id or ""})
+
+
 @contextmanager
-def session_scope() -> Iterator[Session]:
+def _scope(hospital_id: Optional[str], scope: str) -> Iterator[Session]:
     get_engine()
-    session = _sessions()
+    session = _sessions(info={TENANT_KEY: hospital_id or "", SCOPE_KEY: scope})
     try:
         yield session
         session.commit()
@@ -105,6 +139,40 @@ def session_scope() -> Iterator[Session]:
         raise
     finally:
         session.close()
+
+
+def session_scope(hospital_id: Optional[str] = None):
+    """A transaction for one hospital: the database shows and accepts only
+    that hospital's rows. Pass the signed-in staff member's ``hospital_id``.
+
+    Without one, no hospital's rows are visible (enough for the tables that
+    belong to no hospital, such as the event outbox).
+    """
+    return _scope(hospital_id, "")
+
+
+def platform_session():
+    """A transaction acting for Endod across hospitals, as the
+    ``hospital_platform`` role: ``/platform`` routes (X-Platform-Key), events
+    from the bus, the worker's chores and the CLI. Never for a staff request,
+    nor for any request that is not authenticated."""
+    return _scope(None, PLATFORM)
+
+
+def check_connection_role() -> None:
+    """Refuse to run the API or worker as a role the policies do not hold:
+    a superuser, one with BYPASSRLS, or the tables' owner."""
+    engine = get_engine()
+    if engine.dialect.name != "postgresql":
+        return
+    from app.rls import connection_role_problem
+
+    with engine.connect() as connection:
+        problem = connection_role_problem(connection)
+        user = connection.execute(text("SELECT current_user")).scalar()
+    if problem:
+        raise RuntimeError(f"The database login {user!r} {problem}: connect as the app role (hospital_app), "
+                           "so row-level security applies.")
 
 
 def create_all() -> None:

@@ -29,7 +29,7 @@ from app import dispensing, files, linking, records
 from app.api.onboarding import platform_admin
 from app.api.patients import DEMOGRAPHIC_EDITORS, DIAGNOSIS_READERS
 from app.auth import Staff, audit, current_staff, require_roles
-from app.db import new_id, session_scope, utcnow
+from app.db import new_id, platform_session, session_scope, utcnow
 from app.models import (
     Booking, ClinicalRecord, Hospital, Patient, PatientLinkRequest, RecordCategory, RecordFile, Role,
     StaffUser, Visit,
@@ -98,7 +98,7 @@ def _link_payload(session, patient: Patient) -> Dict[str, Any]:
 
 @router.get("/patients/{patient_id}/link")
 def link_status(patient_id: str, staff: Staff = Depends(current_staff)) -> Dict[str, Any]:
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         return _link_payload(session, _patient(session, staff, patient_id))
 
 
@@ -120,7 +120,7 @@ def request_link(patient_id: str, body: LinkBody, staff: Staff = Depends(require
             dedan_id = normalize_dedan_id(body.dedan_id)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Not a valid Endod ID, e.g. DE482731.") from exc
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         patient = _patient(session, staff, patient_id, lock=True)
         try:
             request = linking.request_link(session, patient, dedan_id, staff.id, card_signature=signature,
@@ -136,7 +136,7 @@ def request_link(patient_id: str, body: LinkBody, staff: Staff = Depends(require
 @router.delete("/patients/{patient_id}/link")
 def unlink(patient_id: str, staff: Staff = Depends(require_roles(*LINKERS))) -> Dict[str, Any]:
     """Unlink (nothing more is sent to Endod), or withdraw a pending request."""
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         patient = _patient(session, staff, patient_id, lock=True)
         old = linking.unlink(session, patient)
         audit(session, staff.hospital_id, staff.id, "patient_unlinked" if old else "patient_link_withdrawn",
@@ -158,7 +158,7 @@ async def upload(patient_id: str, request: Request,
         raise HTTPException(status_code=413, detail="A file can be at most 20 MB.")
 
     def check() -> None:
-        with session_scope() as session:
+        with session_scope(staff.hospital_id) as session:
             _patient(session, staff, patient_id)
             pending = session.scalar(select(func.count()).where(
                 RecordFile.uploaded_by == staff.id, RecordFile.record_id.is_(None),
@@ -177,7 +177,7 @@ async def upload(patient_id: str, request: Request,
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     def save() -> Dict[str, Any]:
-        with session_scope() as session:
+        with session_scope(staff.hospital_id) as session:
             row = RecordFile(id=file_id, hospital_id=staff.hospital_id, patient_id=patient_id, filename=filename,
                              content_type=content_type, size=size, sha256=sha256, uploaded_by=staff.id)
             session.add(row)
@@ -273,7 +273,7 @@ def _clean(category: str, details: Dict[str, Any]) -> Dict[str, Any]:
 
 @router.get("/patients/{patient_id}/records")
 def list_records(patient_id: str, staff: Staff = Depends(readers)) -> Dict[str, Any]:
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         patient = _patient(session, staff, patient_id)
         rows = list(session.scalars(select(ClinicalRecord).where(ClinicalRecord.patient_id == patient.id)
                                     .order_by(ClinicalRecord.occurred_at.desc(), ClinicalRecord.created_at.desc())))
@@ -294,7 +294,7 @@ def create_record(patient_id: str, body: RecordCreate, staff: Staff = Depends(cu
         raise HTTPException(status_code=400, detail="Attach the document's file.")
     details = _clean(body.category, body.details)
     occurred_at = _when(body.occurred_at)
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         patient = _patient(session, staff, patient_id, lock=True)
         if body.visit_id and session.scalar(select(Visit.id).where(
                 Visit.id == body.visit_id, Visit.patient_id == patient.id)) is None:
@@ -332,7 +332,7 @@ def correct_record(record_id: str, body: RecordCorrection, staff: Staff = Depend
     changes = body.model_dump(exclude_unset=True)
     if not any(changes.get(k) for k in ("title", "details", "occurred_at", "add_file_ids", "remove_file_ids")):
         raise HTTPException(status_code=400, detail="Nothing to change.")
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         record = _record_for_update(session, staff, record_id)
         if record.retracted:
             raise HTTPException(status_code=409, detail="A retracted record cannot be corrected.")
@@ -364,7 +364,7 @@ def correct_record(record_id: str, body: RecordCorrection, staff: Staff = Depend
 @router.post("/records/{record_id}/retract")
 def retract_record(record_id: str, body: Retraction, staff: Staff = Depends(current_staff)) -> Dict[str, Any]:
     """Entered in error: kept here, marked retracted, and withdrawn from Endod."""
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         record = _record_for_update(session, staff, record_id)
         if record.retracted:
             raise HTTPException(status_code=409, detail="This record is already retracted.")
@@ -377,7 +377,7 @@ def retract_record(record_id: str, body: Retraction, staff: Staff = Depends(curr
 
 @router.get("/records/{record_id}/files/{file_id}")
 def read_file(record_id: str, file_id: str, staff: Staff = Depends(readers)):
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         row = session.scalar(select(RecordFile).join(ClinicalRecord, ClinicalRecord.id == RecordFile.record_id).where(
             RecordFile.id == file_id, RecordFile.record_id == record_id,
             ClinicalRecord.hospital_id == staff.hospital_id))
@@ -404,7 +404,7 @@ def _send(row: RecordFile) -> FileResponse:
 def platform_file(record_id: str, file_id: str):
     """For the Endod platform only (private network, X-Platform-Key): a file of
     a record published to Endod and not retracted."""
-    with session_scope() as session:
+    with platform_session() as session:
         row = session.scalar(select(RecordFile).join(ClinicalRecord, ClinicalRecord.id == RecordFile.record_id).where(
             RecordFile.id == file_id, RecordFile.record_id == record_id,
             ClinicalRecord.published_dedan_id.is_not(None), ClinicalRecord.retracted.is_(False)))
@@ -451,7 +451,7 @@ def _check_follow_up(session, staff: Staff, on: Optional[date]) -> None:
 
 @router.get("/patients/{patient_id}/visits")
 def list_visits(patient_id: str, staff: Staff = Depends(readers)) -> List[Dict[str, Any]]:
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         patient = _patient(session, staff, patient_id)
         rows = session.scalars(select(Visit).where(Visit.patient_id == patient.id).order_by(Visit.started_at.desc()))
         return [_visit_payload(session, v) for v in rows]
@@ -460,7 +460,7 @@ def list_visits(patient_id: str, staff: Staff = Depends(readers)) -> List[Dict[s
 @router.post("/patients/{patient_id}/visits", status_code=status.HTTP_201_CREATED)
 def create_visit(patient_id: str, body: VisitCreate,
                  staff: Staff = Depends(require_roles(*RECORD_WRITERS))) -> Dict[str, Any]:
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         patient = _patient(session, staff, patient_id, lock=True)
         doctor_id = body.doctor_id or (staff.id if staff.role == Role.DOCTOR else None)
         if doctor_id and session.scalar(select(StaffUser.id).where(
@@ -486,7 +486,7 @@ def create_visit(patient_id: str, body: VisitCreate,
 @router.patch("/visits/{visit_id}")
 def set_follow_up(visit_id: str, body: FollowUp,
                   staff: Staff = Depends(require_roles(*FOLLOW_UP_SETTERS))) -> Dict[str, Any]:
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         visit = session.scalar(select(Visit).where(Visit.id == visit_id, Visit.hospital_id == staff.hospital_id)
                                .with_for_update())
         if visit is None:

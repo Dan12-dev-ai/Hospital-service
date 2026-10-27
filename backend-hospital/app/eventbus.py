@@ -44,7 +44,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.db import ensure_aware, session_scope, utcnow
+from app.db import ensure_aware, platform_session, session_scope, utcnow
 from app.models import OutboxEvent, ProcessedEvent
 from app.validation import checked_dedan_id
 
@@ -238,7 +238,9 @@ def _handle(client: redis.Redis, message_id: str, fields: Dict[str, str], handle
             raise PermanentEventError("payload is not JSON") from exc
         if not isinstance(payload, dict):
             raise PermanentEventError("payload is not an object")
-        with session_scope() as session:
+        # Events from the platform name their hospital in the payload and may
+        # concern any of them: handlers act for Endod (platform scope).
+        with platform_session() as session:
             if session.get(ProcessedEvent, event_id) is None:
                 handler(session, payload)
                 session.add(ProcessedEvent(id=event_id, type=event_type))

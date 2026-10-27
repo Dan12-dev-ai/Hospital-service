@@ -7,7 +7,7 @@ from datetime import timedelta
 from sqlalchemy import delete, select
 
 from app import files, onboarding, queues, sharing
-from app.db import session_scope, utcnow
+from app.db import platform_session, utcnow
 from app.models import ImportBatch, RecordFile
 
 #: Uploads never attached to a record (an abandoned form or import preview).
@@ -19,7 +19,7 @@ def run() -> int:
     """End expired shares, cancel stale queue entries, delete abandoned uploads
     and old import plans. Returns the work done."""
     now = utcnow()
-    with session_scope() as session:
+    with platform_session() as session:  # every hospital's, for the worker
         work = sharing.expire(session)
         # Demo slots held by applications not submitted in time.
         work += onboarding.release_stale(session)

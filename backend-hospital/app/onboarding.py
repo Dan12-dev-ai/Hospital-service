@@ -23,7 +23,7 @@ from typing import Any, Dict, Iterator, List, Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -89,7 +89,14 @@ def release_stale(session: Session) -> int:
     """Release (delete) demo bookings that hold a slot for nothing: the
     application was not submitted within SUBMIT_WITHIN of booking, or the
     hospital was suspended before approval. Their slot and phone are free
-    again, and nothing more is sent about them. Returns how many."""
+    again, and nothing more is sent about them. Returns how many.
+
+    Any hospital's: an applicant's calendar must not show a slot held by a
+    stale booking of another. On PostgreSQL that is the one fixed delete of
+    release_stale_demo_bookings (app/rls.py), not a platform transaction."""
+    if _postgres(session):
+        return session.scalar(text("SELECT release_stale_demo_bookings(:cutoff)"),
+                              {"cutoff": now() - SUBMIT_WITHIN}) or 0
     unsubmitted = select(OnboardingApplication.hospital_id).where(
         OnboardingApplication.status.in_(ApplicationStatus.EDITABLE))
     suspended = select(Hospital.id).join(OnboardingApplication, OnboardingApplication.hospital_id == Hospital.id).where(
@@ -108,11 +115,33 @@ def release_demo(session: Session, hospital_id: str) -> None:
 
 
 def taken_slots(session: Session, except_hospital: Optional[str] = None) -> set:
-    """Slot starts (UTC) booked by other hospitals, from today on."""
-    query = select(DemoBooking.slot_start).where(DemoBooking.slot_start >= now() - timedelta(days=1))
-    if except_hospital:
-        query = query.where(DemoBooking.hospital_id != except_hospital)
-    return {ensure_aware(value).astimezone(timezone.utc) for value in session.scalars(query)}
+    """Slot starts (UTC) booked by other hospitals, from today on (only the
+    times: demo_slots_taken on PostgreSQL)."""
+    since = now() - timedelta(days=1)
+    if _postgres(session):
+        values = session.scalars(text("SELECT demo_slots_taken(:hospital, :since)"),
+                                 {"hospital": except_hospital, "since": since})
+    else:
+        query = select(DemoBooking.slot_start).where(DemoBooking.slot_start >= since)
+        if except_hospital:
+            query = query.where(DemoBooking.hospital_id != except_hospital)
+        values = session.scalars(query)
+    return {ensure_aware(value).astimezone(timezone.utc) for value in values}
+
+
+def phone_taken(session: Session, phone: str, hospital_id: str) -> bool:
+    """Whether another hospital's demo holds this mobile (a yes or no only)."""
+    if _postgres(session):
+        return bool(session.scalar(text("SELECT demo_phone_taken(:phone, :hospital)"),
+                                   {"phone": phone, "hospital": hospital_id}))
+    return session.scalar(select(DemoBooking.id).where(
+        DemoBooking.phone == phone, DemoBooking.hospital_id != hospital_id)) is not None
+
+
+def _postgres(session: Session) -> bool:
+    """Other hospitals' demo bookings are read through the narrow functions of
+    app/rls.py there (row-level security hides them otherwise)."""
+    return session.get_bind().dialect.name == "postgresql"
 
 
 def free_slots(session: Session, hospital_id: str) -> List[Dict[str, Any]]:
