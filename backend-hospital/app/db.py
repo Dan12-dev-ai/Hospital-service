@@ -13,6 +13,7 @@ from typing import Iterator, Optional
 
 from sqlalchemy import MetaData, create_engine, event, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import DisconnectionError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import get_settings
@@ -71,6 +72,8 @@ def get_engine() -> Engine:
         if url.startswith("sqlite"):
             kwargs["connect_args"] = {"check_same_thread": False}
         _engine = create_engine(url, **kwargs)
+        if _engine.dialect.name == "postgresql":
+            event.listen(_engine, "checkout", _clean_connection)
         if url.startswith("sqlite"):
             # SQLite ignores foreign keys unless asked, which would hide
             # integrity bugs in development and tests.
@@ -78,6 +81,22 @@ def get_engine() -> Engine:
         _engine_url = url
         _sessions = sessionmaker(bind=_engine, expire_on_commit=False)
     return _engine
+
+
+def _clean_connection(dbapi_connection, _record, _proxy) -> None:
+    """Every checkout starts from the login role with default settings: a
+    session-level SET ROLE or SET (not LOCAL) by an earlier user of this pooled
+    connection never carries over. A connection that cannot be reset is
+    replaced (DisconnectionError makes the pool try another)."""
+    try:
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("RESET ROLE; RESET ALL")
+        finally:
+            cursor.close()
+        dbapi_connection.commit()
+    except Exception as exc:  # noqa: BLE001
+        raise DisconnectionError(f"could not reset a pooled connection: {exc}") from exc
 
 
 def _sqlite_foreign_keys(dbapi_connection, _record) -> None:
