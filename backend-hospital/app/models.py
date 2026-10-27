@@ -390,6 +390,10 @@ class PatientAlert(Base):
     __tablename__ = "patient_alerts"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    #: The patient's hospital (so the database can keep the alert, its patient
+    #: and its author in one hospital: app/rls.py).
+    hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False,
+                                             index=True)
     patient_id: Mapped[str] = mapped_column(ForeignKey("patients.id", ondelete="CASCADE"), nullable=False, index=True)
     kind: Mapped[str] = mapped_column(String(12), nullable=False)
     label: Mapped[str] = mapped_column(String(120), nullable=False)

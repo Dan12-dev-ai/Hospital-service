@@ -26,7 +26,7 @@ def list_shared(patient_id: Optional[str] = Query(default=None, max_length=32),
                 staff: Staff = Depends(readers)) -> Dict[str, Any]:
     """Every active share (or one patient's), newest first, each with the
     hospital patient it belongs to when that patient is linked here."""
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         query = select(RecordShare).where(RecordShare.hospital_id == staff.hospital_id, *sharing.active_filter())
         if patient_id:
             patient = session.scalar(select(Patient).where(Patient.id == patient_id,
@@ -59,7 +59,7 @@ async def shared_file(share_id: str, file_id: str, staff: Staff = Depends(reader
     """A shared record's file, fetched from Endod now and passed on (not kept here)."""
 
     def find() -> Dict[str, Any]:
-        with session_scope() as session:
+        with session_scope(staff.hospital_id) as session:
             share = session.scalar(select(RecordShare).where(
                 RecordShare.id == share_id, RecordShare.hospital_id == staff.hospital_id, *sharing.active_filter()))
             if share is None:

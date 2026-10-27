@@ -141,10 +141,10 @@ class TestHandler:
         """Published, then taken off the account (re-link): a dispense Endod made
         just before it handled record.retracted is still stored."""
         from app import records
-        from app.db import session_scope
+        from app.db import platform_session
         from app.models import ClinicalRecord
 
-        with session_scope() as session:
+        with platform_session() as session:
             records.retract_from_platform(session, session.get(ClinicalRecord, prescription["id"]), DEDAN,
                                           "The hospital linked this record to a different Endod account.")
         kept = dispensed(prescription["id"], hospital)

@@ -92,7 +92,7 @@ def _queue_payload(session, doctor: StaffUser, queue: Optional[QueueDay],
 @router.get("")
 def list_queues(day: Optional[date] = Query(default=None), doctor_id: Optional[str] = Query(default=None),
                 staff: Staff = Depends(queue_staff)) -> Dict[str, Any]:
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         today = records.hospital_today(session, staff.hospital_id)
         day = day or today
         if staff.role == Role.DOCTOR:
@@ -116,7 +116,7 @@ def list_queues(day: Optional[date] = Query(default=None), doctor_id: Optional[s
 @router.post("/check-in", status_code=status.HTTP_201_CREATED)
 def check_in(body: CheckIn, staff: Staff = Depends(require_roles(*QUEUE_DESK))) -> Dict[str, Any]:
     try:
-        with session_scope() as session:
+        with session_scope(staff.hospital_id) as session:
             today = records.hospital_today(session, staff.hospital_id)
             booking: Optional[Booking] = None
             patient: Optional[Patient] = None
@@ -180,7 +180,7 @@ def _booking_dedan(booking: Booking) -> Optional[str]:
 @router.post("/{doctor_id}/call-next")
 def call_next(doctor_id: str, staff: Staff = Depends(queue_staff)) -> Dict[str, Any]:
     _own_queue_only(staff, doctor_id)
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         doctor = _doctor(session, staff, doctor_id)
         today = records.hospital_today(session, staff.hospital_id)
         # Patients still waiting from before midnight come first. Always the
@@ -205,7 +205,7 @@ ACTIONS = {"done": QueueStatus.DONE, "skip": QueueStatus.SKIPPED, "cancel": Queu
 def finish(entry_id: str, action: str, staff: Staff = Depends(queue_staff)) -> Dict[str, Any]:
     if action not in ACTIONS:
         raise HTTPException(status_code=404, detail="Not found.")
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         found = session.execute(select(QueueEntry, QueueDay).join(QueueDay, QueueDay.id == QueueEntry.queue_id)
                                 .where(QueueEntry.id == entry_id, QueueEntry.hospital_id == staff.hospital_id)).first()
         if found is None:

@@ -60,7 +60,7 @@ sys.path.insert(0, os.getcwd())
 from sqlalchemy import select  # noqa: E402
 
 from app import bookings, dispensing, linking, records, sharing  # noqa: E402
-from app.db import session_scope  # noqa: E402
+from app.db import platform_session  # noqa: E402
 from app.models import (  # noqa: E402
     Booking, ClinicalRecord, Hospital, HospitalStatus, LinkStatus, Patient, PatientLinkRequest, ProcessedEvent,
     StaffUser,
@@ -82,7 +82,7 @@ ROLES = {
 
 def seed_hospital(tag: str, unlisted: bool) -> dict:
     code = tag.upper()[:12]
-    with session_scope() as session:
+    with platform_session() as session:
         hospital = Hospital(
             code=code, name=f"{tag.title()} General Hospital", kind="private", city="Addis Ababa",
             status=HospitalStatus.APPROVED, timezone="Africa/Addis_Ababa",
@@ -126,10 +126,10 @@ def seed_booking(hospital_id: str, mode: str, minutes: int, patient: str) -> dic
     }
     event_id = uuid.uuid4().hex
     # As app.eventbus does for each event from the patient platform.
-    with session_scope() as session:
+    with platform_session() as session:
         bookings.on_requested(session, payload)
         session.add(ProcessedEvent(id=event_id, type="appointment.requested"))
-    with session_scope() as session:
+    with platform_session() as session:
         booking = session.scalar(select(Booking).where(Booking.external_id == appointment_id))
         if booking is None:
             raise SystemExit(f"booking was not accepted: {payload}")
@@ -138,13 +138,13 @@ def seed_booking(hospital_id: str, mode: str, minutes: int, patient: str) -> dic
 
 def handle(event_type: str, handler, payload: dict) -> None:
     """As app.eventbus does for each event from the patient platform."""
-    with session_scope() as session:
+    with platform_session() as session:
         handler(session, payload)
         session.add(ProcessedEvent(id=uuid.uuid4().hex, type=event_type))
 
 
 def link_reply(patient_id: str, answer: str, reason: str) -> dict:
-    with session_scope() as session:
+    with platform_session() as session:
         request = session.scalar(select(PatientLinkRequest).where(
             PatientLinkRequest.patient_id == patient_id, PatientLinkRequest.status == LinkStatus.PENDING))
         if request is None:
@@ -161,7 +161,7 @@ def link_reply(patient_id: str, answer: str, reason: str) -> dict:
 
 
 def link_now(patient_id: str, dedan_id: str) -> dict:
-    with session_scope() as session:
+    with platform_session() as session:
         patient = session.get(Patient, patient_id)
         linking.link(session, patient, dedan_id, records.hospital_today(session, patient.hospital_id))
         return {"patient_id": patient.id, "dedan_id": patient.dedan_id}
@@ -185,7 +185,7 @@ def share(hospital_id: str, dedan_id: str, patient: str, title: str) -> dict:
 
 
 def dispense(record_id: str, pharmacy: str, at: str, status: str, items: str) -> dict:
-    with session_scope() as session:
+    with platform_session() as session:
         record = session.get(ClinicalRecord, record_id)
         if record is None:
             raise SystemExit("unknown record")
@@ -204,7 +204,7 @@ def queue_yesterday(hospital_id: str, doctor_email: str, patient: str) -> dict:
 
     from app import queues
 
-    with session_scope() as session:
+    with platform_session() as session:
         doctor = session.scalar(select(StaffUser).where(StaffUser.email == doctor_email))
         yesterday = records.hospital_today(session, hospital_id) - days(days=1)
         queue = queues.lock_queue(session, hospital_id, doctor.id, yesterday)
@@ -222,7 +222,7 @@ def seed_applicant(tag: str, complete: bool, submitted: bool) -> dict:
 
     code = tag.upper()[:12]
     email = f"apply@{tag}.example"
-    with session_scope() as session:
+    with platform_session() as session:
         hospital = Hospital(code=code, name=f"{tag.title()} Applicant Clinic", kind="private", facility_type="clinic",
                             status=HospitalStatus.PENDING, timezone="Africa/Addis_Ababa")
         session.add(hospital)
@@ -261,7 +261,7 @@ def seed_applicant(tag: str, complete: bool, submitted: bool) -> dict:
 
 
 def seed_applicant_staff(hospital_id: str, email: str, role: str) -> dict:
-    with session_scope() as session:
+    with platform_session() as session:
         user = StaffUser(hospital_id=hospital_id, email=email, full_name="Staff Member", role=role,
                          password_hash=hash_password(TEMPORARY_PASSWORD), must_change_password=True)
         session.add(user)

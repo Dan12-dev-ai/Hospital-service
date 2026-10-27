@@ -89,7 +89,7 @@ class HospitalUpdate(BaseModel):
 
 @router.get("/hospital")
 def read_hospital(staff: Staff = Depends(current_staff)) -> Dict[str, Any]:
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         return hospital_payload(session.get(Hospital, staff.hospital_id))
 
 
@@ -113,7 +113,7 @@ def update_hospital(body: HospitalUpdate, staff: Staff = Depends(admin_only)) ->
     for field in ("price_in_person", "price_video"):
         if field in changes and changes[field] is not None:
             changes[field] = int((changes[field] * 100).to_integral_value())
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         hospital = session.scalar(select(Hospital).where(Hospital.id == staff.hospital_id).with_for_update())
         for field, value in changes.items():
             setattr(hospital, field, value)
@@ -155,7 +155,7 @@ def list_departments(
 ) -> List[Dict[str, Any]]:
     if kind is not None and kind not in DepartmentKind.ALL:
         raise HTTPException(status_code=400, detail=f"kind must be one of {list(DepartmentKind.ALL)}.")
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         query = select(Department).where(Department.hospital_id == staff.hospital_id)
         if kind:
             query = query.where(Department.kind == kind)
@@ -171,7 +171,7 @@ def create_department(body: DepartmentCreate, staff: Staff = Depends(admin_only)
     if body.capacity is not None and body.kind != DepartmentKind.WARD:
         raise HTTPException(status_code=400, detail="Only a ward has a bed capacity.")
     try:
-        with session_scope() as session:
+        with session_scope(staff.hospital_id) as session:
             department = Department(hospital_id=staff.hospital_id, kind=body.kind, name=body.name,
                                     name_am=body.name_am, capacity=body.capacity)
             session.add(department)
@@ -186,7 +186,7 @@ def create_department(body: DepartmentCreate, staff: Staff = Depends(admin_only)
 def update_department(department_id: str, body: DepartmentUpdate, staff: Staff = Depends(admin_only)) -> Dict[str, Any]:
     changes = {k: v for k, v in body.model_dump(exclude_unset=True).items() if not (k in ("name", "active") and v is None)}
     try:
-        with session_scope() as session:
+        with session_scope(staff.hospital_id) as session:
             department = session.scalar(select(Department).where(
                 Department.id == department_id, Department.hospital_id == staff.hospital_id))
             if department is None:
@@ -255,7 +255,7 @@ def list_staff(
     staff: Staff = Depends(admin_only),
 ) -> List[Dict[str, Any]]:
     _check_role(role)
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         query = select(StaffUser).where(StaffUser.hospital_id == staff.hospital_id)
         if role:
             query = query.where(StaffUser.role == role)
@@ -273,7 +273,7 @@ def create_staff(body: StaffCreate, staff: Staff = Depends(admin_only)) -> Dict[
     _check_role(body.role)
     password = temporary_password()
     try:
-        with session_scope() as session:
+        with session_scope(staff.hospital_id) as session:
             _check_department(session, staff.hospital_id, body.department_id)
             user = StaffUser(
                 hospital_id=staff.hospital_id, email=body.email.lower(), full_name=body.full_name.strip(),
@@ -294,7 +294,7 @@ def update_staff(user_id: str, body: StaffUpdate, staff: Staff = Depends(admin_o
                if not (k in ("full_name", "role", "active") and v is None)}
     _check_role(changes.get("role"))
     try:
-        with session_scope() as session:
+        with session_scope(staff.hospital_id) as session:
             user = session.scalar(select(StaffUser).where(
                 StaffUser.id == user_id, StaffUser.hospital_id == staff.hospital_id).with_for_update())
             if user is None:
@@ -332,7 +332,7 @@ def update_staff(user_id: str, body: StaffUpdate, staff: Staff = Depends(admin_o
 def reset_staff_password(user_id: str, staff: Staff = Depends(admin_only)) -> Dict[str, Any]:
     """A new one-time password; the account's sessions end."""
     password = temporary_password()
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         user = session.scalar(select(StaffUser).where(
             StaffUser.id == user_id, StaffUser.hospital_id == staff.hospital_id))
         if user is None:

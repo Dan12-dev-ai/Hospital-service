@@ -160,7 +160,7 @@ def list_doctors(
         if digits:
             matches.append(StaffUser.phone.like(like_pattern(digits), escape="\\"))
         query = query.where(or_(*matches))
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         rows = _rows(session, query.order_by(StaffUser.full_name))
         counts = {key: 0 for key in DutyStatus.ALL}
         for _, profile, _ in rows:
@@ -176,7 +176,7 @@ def list_doctors(
 
 @router.get("/{doctor_id}")
 def read_doctor(doctor_id: str, staff: Staff = Depends(current_staff)) -> Dict[str, Any]:
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         return _read_one(session, staff.hospital_id, doctor_id)
 
 
@@ -187,7 +187,7 @@ def update_profile(doctor_id: str, body: ProfileUpdate,
     if changes.get("rank") is not None and changes["rank"] not in DoctorRank.ALL:
         raise HTTPException(status_code=400, detail=f"rank must be one of {list(DoctorRank.ALL)}.")
     try:
-        with session_scope() as session:
+        with session_scope(staff.hospital_id) as session:
             _, profile = _doctor_for_update(session, staff.hospital_id, doctor_id)
             for field, value in changes.items():
                 setattr(profile, field, value)
@@ -208,7 +208,7 @@ def update_duty(doctor_id: str, body: DutyUpdate, staff: Staff = Depends(current
         raise HTTPException(status_code=403, detail="You can only change your own duty status.")
     if body.duty_status not in DutyStatus.ALL:
         raise HTTPException(status_code=400, detail=f"duty_status must be one of {list(DutyStatus.ALL)}.")
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         user, profile = _doctor_for_update(session, staff.hospital_id, doctor_id)
         if not user.active:
             raise HTTPException(status_code=400, detail="This account is deactivated.")

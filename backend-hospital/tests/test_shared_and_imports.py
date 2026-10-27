@@ -80,7 +80,7 @@ class TestSharing:
     def test_unshared_deletes_the_copy(self, client, doctor, linked, bus, hospital):
         from sqlalchemy import func, select
 
-        from app.db import session_scope
+        from app.db import platform_session
         from app.models import SharedRecord
 
         payload = share_payload(hospital)
@@ -88,7 +88,7 @@ class TestSharing:
         send(bus, "records.unshared", {"share_id": payload["share_id"], "hospital_id": hospital})
         consume(bus)
         assert shared(client, doctor) == []
-        with session_scope() as session:
+        with platform_session() as session:
             assert session.scalar(select(func.count()).select_from(SharedRecord)) == 0
 
     def test_unshared_before_shared_keeps_nothing(self, client, doctor, linked, bus, hospital):
@@ -103,7 +103,7 @@ class TestSharing:
         from sqlalchemy import update
 
         from app import chores
-        from app.db import session_scope
+        from app.db import platform_session
         from app.models import RecordShare
 
         past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
@@ -112,7 +112,7 @@ class TestSharing:
         send(bus, "records.shared", future)
         consume(bus)
         assert [s["share_id"] for s in shared(client, doctor)] == [future["share_id"]]
-        with session_scope() as session:
+        with platform_session() as session:
             session.execute(update(RecordShare).values(expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)))
         assert shared(client, doctor) == []  # hidden at once
         assert chores.run() >= 1  # and deleted by the worker

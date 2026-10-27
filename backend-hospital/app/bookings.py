@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import eventbus, jitsi
-from app.db import ensure_aware, session_scope, utcnow
+from app.db import ensure_aware, platform_session, utcnow
 from app.eventbus import PermanentEventError, RetryLater
 from app.models import Booking, BookingStatus, Hospital, HospitalStatus, Service, StaffUser, VisitMode
 
@@ -205,7 +205,7 @@ def expire_unapproved() -> int:
     (the patient is refunded on the platform). Returns how many."""
     cutoff = utcnow() - APPROVAL_GRACE
     expired = 0
-    with session_scope() as session:
+    with platform_session() as session:  # every hospital's, for the worker
         stale = session.scalars(select(Booking).where(
             Booking.status == BookingStatus.AWAITING_DOCTOR, Booking.scheduled_at < cutoff,
         ).with_for_update()).all()

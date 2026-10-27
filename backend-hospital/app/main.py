@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -14,14 +15,23 @@ from app.api import (
     admin, application, auth, bookings, doctors, history, imports, onboarding, patients, queue, shared,
 )
 from app.config import Settings, get_settings
+from app.db import check_connection_role
 
 logger = logging.getLogger("hospital")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Never serve as a database role that row-level security does not hold.
+    check_connection_role()
+    yield
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     app = FastAPI(
         title="Endod Hospital Service",
+        lifespan=lifespan,
         version="0.1.0",
         docs_url=None if settings.is_production else "/docs",
         redoc_url=None,

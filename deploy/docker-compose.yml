@@ -6,12 +6,21 @@
 # creates (Redis with Sentinel). Start that project first.
 #
 #   cd deploy && docker compose --env-file .env up -d --build
+#
+# Database roles: `hospital` (POSTGRES_USER) owns the database; only the
+# one-shot `migrate` service connects as it, runs the Alembic migrations, and
+# creates or updates the `hospital_app` role (migrations/env.py). The API and
+# the worker connect as `hospital_app`: no DDL, no BYPASSRLS, so row-level
+# security keeps every hospital's rows apart (backend-hospital/app/rls.py);
+# they refuse to start as a superuser or the owner. Work for Endod across
+# hospitals takes the NOLOGIN role `hospital_platform` for one transaction.
 
 name: endod-hospital
 
 x-api-env: &api-env
   HOSPITAL_ENVIRONMENT: production
-  HOSPITAL_DATABASE_URL: postgresql+psycopg://hospital:${POSTGRES_PASSWORD}@postgres:5432/hospital
+  # The app role, not the owner (see the top of this file).
+  HOSPITAL_DATABASE_URL: postgresql+psycopg://hospital_app:${APP_DB_PASSWORD:?set APP_DB_PASSWORD in deploy/.env}@postgres:5432/hospital
   HOSPITAL_CORS_ORIGINS: https://hospital.endod-health.com
   HOSPITAL_REDIS_SENTINELS: endod-sentinel-1:26379,endod-sentinel-2:26379,endod-sentinel-3:26379
   HOSPITAL_REDIS_SENTINEL_MASTER: endod
@@ -48,6 +57,23 @@ services:
       timeout: 5s
       retries: 10
 
+  # Applies the migrations as the owner, sets up the hospital_app role, then
+  # exits. `up` runs it again each time; the API starts only after it succeeded.
+  migrate:
+    build: ../backend-hospital
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      HOSPITAL_ENVIRONMENT: production
+      HOSPITAL_DATABASE_URL: postgresql+psycopg://hospital:${POSTGRES_PASSWORD}@postgres:5432/hospital
+      HOSPITAL_APP_ROLE: hospital_app
+      HOSPITAL_APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD in deploy/.env}
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   api:
     build: ../backend-hospital
     restart: unless-stopped
@@ -60,8 +86,8 @@ services:
       bus:
         aliases: [endod-hospital-api]
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   worker:
     build: ../backend-hospital

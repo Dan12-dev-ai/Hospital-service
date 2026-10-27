@@ -1,4 +1,4 @@
-"""Operator commands.
+"""Operator commands (they act for Endod across hospitals: platform scope).
 
     python -m app.cli bootstrap --code SPH --name "St. Paul's Millennium Medical Center" \
         --admin-email admin@example.com --admin-name "Admin User"
@@ -18,7 +18,7 @@ import sys
 from email_validator import EmailNotValidError, validate_email
 from sqlalchemy import select
 
-from app.db import session_scope
+from app.db import platform_session
 from app.models import Hospital, Role, StaffUser
 from app.security import hash_password, temporary_password
 
@@ -35,7 +35,7 @@ def bootstrap(code: str, name: str, name_am: str | None, admin_email: str, admin
         admin_email = validate_email(admin_email.strip(), check_deliverability=False).normalized.lower()
     except EmailNotValidError as exc:
         raise SystemExit(f"--admin-email is not a valid email: {exc}") from exc
-    with session_scope() as session:
+    with platform_session() as session:
         if session.scalar(select(Hospital).where(Hospital.code == code)) is not None:
             raise SystemExit(f"A hospital with code {code} already exists.")
         if session.scalar(select(StaffUser).where(StaffUser.email == admin_email)) is not None:
@@ -81,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
         from app.api.onboarding import set_status
         from app.models import HospitalStatus
 
-        with session_scope() as session:
+        with platform_session() as session:
             hospital = session.scalar(select(Hospital).where(Hospital.code == args.code.strip().upper()))
             if hospital is None:
                 raise SystemExit(f"No hospital with code {args.code}.")
@@ -99,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
               f" (not listed yet; missing {', '.join(result['missing_for_listing'])})"))
         return 0
     if args.command == "hospitals":
-        with session_scope() as session:
+        with platform_session() as session:
             for h in session.scalars(select(Hospital).order_by(Hospital.created_at)):
                 print(f"{h.code:8} {h.status:10} {h.name}")
         return 0
@@ -137,7 +137,7 @@ def show_application(code: str) -> int:
     from app import files
     from app.onboarding import application_payload
 
-    with session_scope() as session:
+    with platform_session() as session:
         hospital = session.scalar(select(Hospital).where(Hospital.code == code.strip().upper()))
         if hospital is None:
             raise SystemExit(f"No hospital with code {code}.")

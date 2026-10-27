@@ -78,7 +78,7 @@ def _booking_for_update(session, staff: Staff, booking_id: str) -> Booking:
 
 def _decide(staff: Staff, booking_id: str, action, *args) -> Dict[str, Any]:
     try:
-        with session_scope() as session:
+        with session_scope(staff.hospital_id) as session:
             booking = _booking_for_update(session, staff, booking_id)
             action(session, booking, *args)
             audit(session, staff.hospital_id, staff.id, f"booking_{booking.status}", "booking", booking.id)
@@ -100,7 +100,7 @@ def list_bookings(
         raise HTTPException(status_code=400, detail=f"status must be one of {list(BookingStatus.ALL)}.")
     if mode is not None and mode not in VisitMode.ALL:
         raise HTTPException(status_code=400, detail=f"mode must be one of {list(VisitMode.ALL)}.")
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         query = select(Booking).where(Booking.hospital_id == staff.hospital_id)
         if status_filter:
             query = query.where(Booking.status == status_filter)
@@ -123,7 +123,7 @@ def list_bookings(
 
 @router.get("/{booking_id}")
 def read_booking(booking_id: str, staff: Staff = Depends(viewer)) -> Dict[str, Any]:
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         booking = session.scalar(select(Booking).where(Booking.id == booking_id,
                                                        Booking.hospital_id == staff.hospital_id))
         if booking is None:
@@ -184,7 +184,7 @@ def complete_booking(booking_id: str,
 @router.post("/{booking_id}/video")
 def join_video(booking_id: str, staff: Staff = Depends(require_roles(Role.DOCTOR))) -> Dict[str, Any]:
     """Join details for the visit's own doctor, around the visit's time."""
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         booking = session.scalar(select(Booking).where(Booking.id == booking_id,
                                                        Booking.hospital_id == staff.hospital_id))
         if booking is None or booking.doctor_id != staff.id:

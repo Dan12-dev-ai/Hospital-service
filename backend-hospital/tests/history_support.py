@@ -78,10 +78,10 @@ def register(client, headers, name="Almaz Tefera", phone="0911 234 567", **extra
 
 def link_directly(patient_id, dedan_id):
     """As if Endod had confirmed the link (the patient.linked handler's effect)."""
-    from app.db import session_scope
+    from app.db import platform_session
     from app.models import Patient
 
-    with session_scope() as session:
+    with platform_session() as session:
         session.get(Patient, patient_id).dedan_id = dedan_id
 
 

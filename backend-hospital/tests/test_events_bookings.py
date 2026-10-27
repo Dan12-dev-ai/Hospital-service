@@ -61,10 +61,10 @@ def listed_hospital(client, admin, video=True):
 
 def mark_submitted(hospital_id):
     """The hospital's application as submitted (the wizard is tested in test_onboarding.py)."""
-    from app.db import session_scope
+    from app.db import platform_session
     from app.models import OnboardingApplication
 
-    with session_scope() as session:
+    with platform_session() as session:
         session.get(OnboardingApplication, hospital_id).status = "submitted"
 
 
@@ -191,7 +191,7 @@ class TestApprovalAndListing:
         from sqlalchemy import select
 
         from app import cli
-        from app.db import session_scope
+        from app.db import platform_session
         from app.models import AuditEvent
 
         hid = client.post("/onboarding", json=SIGNUP).json()["hospital"]["id"]
@@ -200,7 +200,7 @@ class TestApprovalAndListing:
         assert "not submitted" in str(refused.value) and "--force" in str(refused.value)
         assert cli.main(["approve", "--code", "TASH", "--force"]) == 0
         assert "TASH: approved" in capsys.readouterr().out
-        with session_scope() as session:
+        with platform_session() as session:
             event = session.scalar(select(AuditEvent).where(AuditEvent.hospital_id == hid,
                                                             AuditEvent.action == "hospital_approved"))
             assert jsonlib.loads(event.detail)["forced"] is True
@@ -386,10 +386,10 @@ class TestEventDelivery:
     def test_events_wait_in_the_database_while_redis_is_down(self, client, admin, hospital_ready):
         from sqlalchemy import func, select
 
-        from app.db import session_scope
+        from app.db import platform_session
         from app.models import OutboxEvent
 
-        with session_scope() as session:
+        with platform_session() as session:
             waiting = session.scalar(select(func.count()).select_from(OutboxEvent)
                                      .where(OutboxEvent.published_at.is_(None)))
         assert waiting >= 1  # the listing, not sent yet
@@ -525,7 +525,7 @@ class TestReviewFixes:
 
     def test_unapproved_visits_expire_and_past_ones_cannot_be_approved(self, client, admin, bus, hospital_ready):
         from app import bookings
-        from app.db import session_scope
+        from app.db import platform_session
         from app.models import Booking
         from sqlalchemy import update
 
@@ -534,11 +534,11 @@ class TestReviewFixes:
         send(bus, "appointment.requested", request_payload(hospital_ready, "video"))
         run_worker(bus)
         bid = client.get("/bookings", headers=admin).json()["items"][0]["id"]
-        with session_scope() as session:
+        with platform_session() as session:
             session.execute(update(Booking).values(scheduled_at=datetime.now(timezone.utc) - timedelta(minutes=5)))
         assert client.post(f"/bookings/{bid}/approve", headers=doctor, json={}).status_code == 409
         assert bookings.expire_unapproved() == 0  # still within the grace period
-        with session_scope() as session:
+        with platform_session() as session:
             session.execute(update(Booking).values(scheduled_at=datetime.now(timezone.utc) - timedelta(hours=1)))
         assert bookings.expire_unapproved() == 1
         run_worker(bus)

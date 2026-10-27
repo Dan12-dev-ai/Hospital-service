@@ -197,7 +197,7 @@ class TestCalling:
         def click():
             barrier.wait()
             try:
-                with session_scope() as session:
+                with session_scope(hospital) as session:  # as a staff request would
                     queue = queues.lock_queue(session, hospital, doctor_id(doctor), today())
                     results.append(queues.call_next(session, queue).patient_name)
             except queues.QueueError as exc:
@@ -301,9 +301,9 @@ class TestNear:
 def _yesterday_queue(hospital, doctor, names):
     """Entries checked in yesterday (hospital time), still waiting."""
     from app import queues
-    from app.db import session_scope
+    from app.db import platform_session
 
-    with session_scope() as session:
+    with platform_session() as session:
         queue = queues.lock_queue(session, hospital, doctor_id(doctor), today() - timedelta(days=1))
         for name in names:
             queues.check_in(session, queue, patient_name=name, phone="+251911000009", dedan_id=None,
@@ -335,14 +335,14 @@ class TestMidnight:
 
     def test_the_worker_cancels_stale_entries(self, client, desk, doctor, hospital, bus):
         from app import queues
-        from app.db import session_scope
+        from app.db import platform_session
         from app.models import QueueEntry
         from history_support import ZONE
 
         patient = register(client, desk)
         link_directly(patient["id"], "DE482731")
         queue_id = _yesterday_queue(hospital, doctor, ["Late One"])
-        with session_scope() as session:
+        with platform_session() as session:
             queue = queues.lock_queue(session, hospital, doctor_id(doctor), today() - timedelta(days=1))
             queues.check_in(session, queue, patient_name="Almaz Tefera", phone=None, dedan_id="DE482731",
                             patient_id=patient["id"], booking_id=None, staff_id=None)
@@ -351,11 +351,11 @@ class TestMidnight:
         bus.delete("endod:hospital")
 
         ended = datetime.combine(today(), datetime.min.time(), ZONE)  # yesterday's day ended at midnight
-        with session_scope() as session:
+        with platform_session() as session:
             assert queues.cancel_stale(session, (ended + timedelta(hours=11)).astimezone(timezone.utc)) == 0
-        with session_scope() as session:
+        with platform_session() as session:
             assert queues.cancel_stale(session, (ended + timedelta(hours=12, minutes=1)).astimezone(timezone.utc)) == 2
-        with session_scope() as session:
+        with platform_session() as session:
             from sqlalchemy import select
             statuses = {e.patient_name: e.status for e in session.scalars(select(QueueEntry))}
         assert statuses == {"Late One": "cancelled", "Almaz Tefera": "cancelled", "Today One": "waiting"}

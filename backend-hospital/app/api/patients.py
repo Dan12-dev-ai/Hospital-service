@@ -278,7 +278,7 @@ def list_patients(
         if digits:
             matches.append(Patient.phone.like(like_pattern(digits), escape="\\"))
         query = query.where(or_(*matches))
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         total = session.scalar(select(func.count()).select_from(query.subquery())) or 0
         patients = list(session.scalars(
             query.order_by(Patient.created_at.desc(), Patient.mrn.desc()).limit(limit).offset(offset)))
@@ -293,7 +293,7 @@ def list_patients(
 @router.get("/stats")
 def patient_stats(staff: Staff = Depends(current_staff)) -> Dict[str, Any]:
     """Counts for the directory's summary cards and tabs."""
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         hospital = session.get(Hospital, staff.hospital_id)
         by_status = dict(session.execute(
             select(Patient.status, func.count()).where(Patient.hospital_id == staff.hospital_id)
@@ -313,7 +313,7 @@ def register_patient(body: PatientCreate, staff: Staff = Depends(require_roles(*
     _one_of("sex", body.sex, Sex.ALL)
     _one_of("payer", body.payer, Payer.ALL)
     try:
-        with session_scope() as session:
+        with session_scope(staff.hospital_id) as session:
             hospital = session.get(Hospital, staff.hospital_id)
             today = _today(hospital)
             _check_birth(body.date_of_birth, today)
@@ -352,7 +352,7 @@ def register_patient(body: PatientCreate, staff: Staff = Depends(require_roles(*
 
 @router.get("/{patient_id}")
 def read_patient(patient_id: str, staff: Staff = Depends(current_staff)) -> Dict[str, Any]:
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         patient = session.scalar(select(Patient).where(
             Patient.id == patient_id, Patient.hospital_id == staff.hospital_id))
         if patient is None:
@@ -380,7 +380,7 @@ def update_patient(patient_id: str, body: PatientUpdate, staff: Staff = Depends(
     _one_of("status", changes.get("status"), PatientStatus.ALL)
 
     try:
-        with session_scope() as session:
+        with session_scope(staff.hospital_id) as session:
             patient = _patient_for_update(session, staff.hospital_id, patient_id)
             hospital = session.get(Hospital, staff.hospital_id)
             today = _today(hospital)
@@ -462,9 +462,10 @@ def _take_bed(session, hospital_id: str, patient: Patient, ward_id: str, bed: Op
 def add_alert(patient_id: str, body: AlertCreate,
               staff: Staff = Depends(require_roles(*CLINICAL_EDITORS))) -> Dict[str, Any]:
     _one_of("kind", body.kind, AlertKind.ALL)
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         patient = _patient_for_update(session, staff.hospital_id, patient_id)
-        alert = PatientAlert(patient_id=patient.id, kind=body.kind, label=body.label, created_by=staff.id)
+        alert = PatientAlert(hospital_id=patient.hospital_id, patient_id=patient.id, kind=body.kind,
+                             label=body.label, created_by=staff.id)
         session.add(alert)
         session.flush()
         audit(session, staff.hospital_id, staff.id, "patient_alert_added", "patient", patient.id,
@@ -475,7 +476,7 @@ def add_alert(patient_id: str, body: AlertCreate,
 @router.delete("/{patient_id}/alerts/{alert_id}")
 def remove_alert(patient_id: str, alert_id: str,
                  staff: Staff = Depends(require_roles(*CLINICAL_EDITORS))) -> Dict[str, Any]:
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         patient = _patient_for_update(session, staff.hospital_id, patient_id)
         alert = session.scalar(select(PatientAlert).where(
             PatientAlert.id == alert_id, PatientAlert.patient_id == patient.id))

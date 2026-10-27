@@ -101,7 +101,7 @@ def test_outpatients_count_toward_load_only_on_the_day(client, admin, hospital):
 
     from sqlalchemy import update
 
-    from app.db import session_scope, utcnow
+    from app.db import platform_session, utcnow
     from app.models import Patient
 
     doc = make_staff(hospital, "doc@sph.example", role="doctor")
@@ -109,7 +109,7 @@ def test_outpatients_count_toward_load_only_on_the_day(client, admin, hospital):
         p = client.post("/patients", headers=admin, json={"full_name": name, "sex": "female"}).json()
         client.patch(f"/patients/{p['id']}", headers=admin, json={"attending_doctor_id": doc})
     assert client.get(f"/doctors/{doc}", headers=admin).json()["load"]["patients"] == 2
-    with session_scope() as session:
+    with platform_session() as session:
         session.execute(update(Patient).where(Patient.full_name == "Dawit Bekele")
                         .values(status_changed_at=utcnow() - timedelta(days=2)))
     assert client.get(f"/doctors/{doc}", headers=admin).json()["load"]["patients"] == 1

@@ -24,7 +24,166 @@ first sign-in. API docs: http://localhost:8100/docs (outside production).
 
 ```sh
 python -m pytest tests -q
+# On PostgreSQL (as CI does): the URL is the owner's; the tests create the
+# hospital_app role and run the app as it, under row-level security.
+HOSPITAL_TEST_DATABASE_URL=postgresql+psycopg://hospital:pw@localhost:5432/hospital python -m pytest tests -q
 ```
+
+## Row-level security (PostgreSQL)
+
+A second wall between hospitals, in the database (`app/rls.py`, migration
+0007): even a query that forgets its `hospital_id` filter sees and writes only
+its own hospital's rows.
+
+- **Roles.** `hospital` owns the database and runs the migrations (the
+  one-shot `migrate` service). The API and the worker log in as
+  `hospital_app`: not a superuser, no BYPASSRLS, owns nothing, no DDL; the
+  audit log is SELECT and INSERT only, and the event outbox (patient names,
+  phones and clinical payloads of every hospital) INSERT only: the worker
+  reads, marks and deletes it as `hospital_platform`. `hospital_platform` (NOLOGIN)
+  acts for Endod across hospitals; `hospital_app` is a member without
+  INHERIT, so it has none of its rights until a transaction runs
+  `SET LOCAL ROLE hospital_platform`. `migrations/env.py` creates
+  `hospital_app` when `HOSPITAL_APP_DB_PASSWORD` is set (or sets its password
+  and attributes again) and grants it after every upgrade, on a new and an
+  existing database alike; without the role the migration fails. Creating
+  and altering roles (NOSUPERUSER, NOBYPASSRLS) needs a superuser migration
+  owner, which `hospital` (POSTGRES_USER) is. The password is never sent to
+  the server: only its SCRAM-SHA-256 verifier is (so it cannot reach the
+  statement log); it must be ASCII (hex, as below).
+- **Refusal at start.** The API and the worker refuse to start when their
+  login is a superuser, has BYPASSRLS or owns the tables.
+- **Tenant per transaction.** `session_scope(staff.hospital_id)` sets
+  `app.hospital_id` for its transaction only (`set_config(..., true)`, i.e.
+  `SET LOCAL`, in an `after_begin` hook, so it never reaches the next user of
+  a pooled connection). Every staff route passes the signed-in staff
+  member's hospital. Every checkout from the pool also runs `RESET ROLE;
+  RESET ALL`, so even a session-level `SET ROLE` or setting cannot carry over
+  to the next request.
+- **Platform scope.** `platform_session()` is the only place that takes the
+  `hospital_platform` role: `/platform/...` routes (X-Platform-Key), events
+  from the bus (`eventbus._handle`), the worker's chores and expiries, and the
+  CLI. No setting (GUC) opens anything: only that role has the
+  `platform_access` policy.
+- **Narrow lookups.** What must look past one hospital outside a platform
+  transaction goes through SECURITY DEFINER functions owned by
+  `hospital_platform`, with `search_path = public, pg_temp`, EXECUTE revoked
+  from PUBLIC and granted to `hospital_app`, returning only what is needed:
+  `hospital_of_staff_email` (sign-in; a deactivated account is found too, so
+  that its attempts, answered with the same 401, count toward the lockout),
+  `hospital_of_session_token` (every request; nothing for a revoked or
+  expired session or an inactive account), `hospital_code_taken` (sign-up),
+  `demo_slots_taken` and `demo_phone_taken` (slot times, yes or no) and
+  `release_stale_demo_bookings` (one fixed delete). The transaction then
+  takes the hospital it learnt and reads everything else under the
+  policies. The public sign-up never opens a platform transaction: it
+  generates the new hospital's id first and uses it as the tenant.
+- **Policies.** ENABLE and FORCE on 22 tables, each with `tenant_isolation`
+  (`USING (hospital_id = current_setting('app.hospital_id', true))` and the
+  same WITH CHECK) and `platform_access` (`TO hospital_platform`):
+  `hospitals` (by `id`), `departments`, `staff_users`, `audit_events`,
+  `doctor_profiles`, `patients`, `bookings`, `patient_link_requests`,
+  `visits`, `clinical_records`, `record_files`, `queue_days`,
+  `queue_entries`, `record_shares`, `import_batches`,
+  `onboarding_applications`, `onboarding_documents`, `demo_bookings`,
+  `prescription_dispenses`, `patient_alerts` (its `hospital_id` is new in
+  0007, filled from the alert's patient). The two tables without
+  `hospital_id` (`staff_sessions`, `shared_records`) are covered through
+  their parent (`EXISTS` on `staff_users`, `record_shares`, under their own
+  policies): a child can never disagree with its parent. `outbox_events` and
+  `processed_events` belong to no hospital (the outbox is kept from the app
+  by its table rights).
+- **Same-hospital references.** Foreign keys ignore row security, so 31
+  composite keys `(hospital_id, x) -> parent (hospital_id, id)` (with
+  `UNIQUE (hospital_id, id)` on the parents) make a record, file, visit,
+  queue entry, dispense... refer only to rows of its own hospital, with the
+  same ON DELETE as the plain key (`SET NULL (x)` keeps `hospital_id`).
+  Before adding them the migration looks for existing rows that point at
+  another hospital's and, if there are any, fails with their table, column
+  and ids, changing nothing.
+- **Fails closed.** With no tenant, every policy table reads as empty and
+  every write is refused.
+- **Limits.** This guards against mistakes in the app's queries. SQL injected
+  into a query as `hospital_app` could still `set_config` another hospital,
+  or with a second statement `SET ROLE hospital_platform`; the queries are
+  parameterised (SQLAlchemy) to keep that out.
+- The owner `hospital` is the container's superuser and is not subject to
+  the policies, so migrations and `pg_dump -U hospital` (the backups) see
+  everything as before.
+
+### Deploying it to the existing production database
+
+The migration adds `patient_alerts.hospital_id` (filled from each alert's patient), a role, keys, policies and functions; no other data changes.
+It checks the existing rows against the new same-hospital keys: if a
+cross-hospital reference already exists, it fails and changes nothing (the
+copy test shows this first).
+
+1. Test on a copy of production first (below).
+2. Add to `/opt/endod-hospital/deploy/.env`:
+   `APP_DB_PASSWORD=$(openssl rand -hex 32)` (hex: it goes into a URL).
+3. `cd /opt/endod-hospital && git pull` (this branch, once merged), then
+   `cd deploy && docker compose --env-file .env up -d --build`. The `migrate`
+   service runs first as `hospital`: migration 0007 (which creates
+   `hospital_platform`), then it creates `hospital_app` with that password
+   and grants it. The API and worker start after it, connecting as
+   `hospital_app`.
+4. Check: `docker compose logs migrate` ends with `0006 -> 0007`;
+   `docker compose exec postgres psql -U hospital -d hospital -c "select rolname, rolsuper, rolbypassrls from pg_roles where rolname = 'hospital_app'"`
+   shows `f | f`; the check below prints `hospital_app 0` (no tenant, no
+   rows); then sign in to the portal and open a patient.
+
+   ```sh
+   docker compose exec -T api python - <<'PY'
+   from sqlalchemy import text
+   from app.db import session_scope
+   with session_scope() as s:
+       print(s.scalar(text("select current_user")), s.scalar(text("select count(*) from patients")))
+   PY
+   ```
+
+**Copy test** (before step 3): copy production into a throwaway
+PostgreSQL 17 on a workstation and migrate it with this branch (from
+`backend-hospital/`; `server` is the production host):
+
+```sh
+docker run -d --name hospital-copy -e POSTGRES_USER=hospital -e POSTGRES_PASSWORD=copy -e POSTGRES_DB=hospital -p 55433:5432 postgres:17-alpine
+ssh server 'cd /opt/endod-hospital/deploy && docker compose exec -T postgres pg_dump -U hospital hospital' \
+  | docker exec -i hospital-copy psql -q -U hospital -d hospital
+HOSPITAL_ENVIRONMENT=development HOSPITAL_DATABASE_URL=postgresql+psycopg://hospital:copy@localhost:55433/hospital \
+  HOSPITAL_APP_DB_PASSWORD=copy-app alembic upgrade head
+HOSPITAL_ENVIRONMENT=development HOSPITAL_DATABASE_URL=postgresql+psycopg://hospital_app:copy-app@localhost:55433/hospital \
+  uvicorn app.main:app --port 8100     # sign in as a real admin: their patients only
+docker rm -f hospital-copy
+```
+
+### Rolling back
+
+Nothing is lost either way; the policies only filter.
+
+- **Switch the policies off, keep the code** (fastest; one statement per
+  table): as `hospital`, `ALTER TABLE <table> DISABLE ROW LEVEL SECURITY;`
+  for each of the 22 tables above (the same-hospital keys can stay), e.g.
+  `docker compose exec -T postgres psql -U hospital -d hospital -c "select format('ALTER TABLE %I DISABLE ROW LEVEL SECURITY;', relname) from pg_class where relrowsecurity" -At | docker compose exec -T postgres psql -U hospital -d hospital`.
+  The app keeps working (as `hospital_app`, it then sees what it asks for).
+  `ENABLE ROW LEVEL SECURITY` turns them back on.
+- **Undo the migration.** Order matters: the 0006 image cannot downgrade
+  (it does not know revision 0007; started on a database at 0007 its
+  `alembic upgrade head` fails), and the 0007 code cannot run once the
+  downgrade removed its functions. So stop the 0007 API and worker, downgrade
+  with the 0007 image's `migrate` service, and only then start the 0006 code:
+
+  ```sh
+  cd /opt/endod-hospital/deploy
+  docker compose --env-file .env stop api worker portal
+  docker compose --env-file .env run --rm migrate alembic downgrade 0006
+  cd .. && git checkout 06b5433          # the last commit before row-level security
+  cd deploy && docker compose --env-file .env up -d --build --remove-orphans
+  ```
+
+  The downgrade drops the policies, functions, same-hospital keys and
+  `patient_alerts.hospital_id`; every row stays. The 0006 API connects as
+  `hospital` again. The roles can stay, or for each of `hospital_app` and
+  `hospital_platform`: `DROP OWNED BY <role>; DROP ROLE <role>;`.
 
 ## What exists so far
 
@@ -96,7 +255,9 @@ python -m pytest tests -q
 - **Accounts** are created by an admin with a one-time password that must be
   changed before anything else works. Eight failed sign-ins lock an account
   for 15 minutes.
-- **Isolation:** every query is scoped to the signed-in staff member's hospital.
+- **Isolation:** every query is scoped to the signed-in staff member's hospital,
+  and on PostgreSQL row-level security enforces it again in the database
+  (below).
 - **Errors** look like `{"error": "...", "error_code": "..."}`.
 
 Next: appointments, pharmacy, billing, reports, and the
