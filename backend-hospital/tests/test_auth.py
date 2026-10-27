@@ -33,22 +33,25 @@ class TestSignIn:
 
         from sqlalchemy import update
 
-        from app.db import session_scope, utcnow
+        from app.db import platform_session, utcnow
         from app.models import StaffUser
 
         monkeypatch.setenv("HOSPITAL_LOGIN_LOCKOUT_ATTEMPTS", "3")
         make_staff(hospital, "a@sph.example")
         for _ in range(2):
             client.post("/auth/login", json={"email": "a@sph.example", "password": "Wrong1234567"})
-        with session_scope() as session:  # the two failures happened long ago
+        with platform_session() as session:  # the two failures happened long ago
             session.execute(update(StaffUser).values(last_failed_at=utcnow() - timedelta(days=1)))
         client.post("/auth/login", json={"email": "a@sph.example", "password": "Wrong1234567"})
         sign_in(client, "a@sph.example")
 
     def test_deactivated_account_cannot_sign_in(self, client, hospital):
+        """Answered like an unknown account: the sign-in lookup gives nothing
+        for an inactive one (app/rls.py)."""
         make_staff(hospital, "gone@sph.example", active=False)
         resp = client.post("/auth/login", json={"email": "gone@sph.example", "password": PASSWORD})
-        assert resp.status_code == 403
+        assert resp.status_code == 401
+        assert resp.json()["error"] == "Incorrect email or password."
 
     def test_requests_need_a_valid_token(self, client, hospital):
         assert client.get("/auth/me").status_code == 401
@@ -70,12 +73,12 @@ class TestSessions:
     def test_only_the_token_hash_is_stored(self, client, hospital):
         from sqlalchemy import select
 
-        from app.db import session_scope
+        from app.db import platform_session
         from app.models import StaffSession
 
         make_staff(hospital, "a@sph.example")
         token = sign_in(client, "a@sph.example")["Authorization"].split()[1]
-        with session_scope() as session:
+        with platform_session() as session:
             stored = session.scalars(select(StaffSession.token_hash)).all()
         assert token not in stored and len(stored) == 1
 
