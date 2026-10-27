@@ -78,7 +78,7 @@ def build(table, h, n):
         "prescription_dispenses": lambda: m.PrescriptionDispense(
             id=_id(h, "dispense", n), hospital_id=h, record_id=record, dedan_id="DE123456", pharmacy_name="Kenema",
             dispensed_at=NOW, status="open"),
-        "patient_alerts": lambda: m.PatientAlert(id=_id(h, "alert", n), patient_id=patient, kind="allergy",
+        "patient_alerts": lambda: m.PatientAlert(id=_id(h, "alert", n), hospital_id=h, patient_id=patient, kind="allergy",
                                                  label="Penicillin"),
         "staff_sessions": lambda: m.StaffSession(id=_id(h, "session", n), token_hash=_id(h, "token", n),
                                                  user_id=staff, expires_at=NOW + timedelta(days=3650)),
@@ -415,14 +415,17 @@ def test_sign_in_lookups_name_only_a_hospital(two_hospitals):
         assert rls.hospital_of_token(session, "unknown") is None
         # The lookups did not open anything else up.
         assert visible(session, "staff_users") == set()
-    with platform_session() as session:  # an inactive account, a revoked and an expired session: nothing
+    with platform_session() as session:  # an inactive account, a revoked and an expired session
         session.execute(text("UPDATE staff_users SET active = false WHERE id = :u"), {"u": _id(B, "staff", 1)})
         session.execute(text("UPDATE staff_sessions SET revoked_at = now() WHERE id = :s"),
                         {"s": _id(A, "session", 1)})
         session.add(models.StaffSession(id="expired", token_hash="expired", user_id=_id(A, "staff", 1),
                                         expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)))
     with session_scope() as session:
-        assert rls.hospital_of_email(session, "1@hospital-b.example") is None
+        # A deactivated account is still found (its attempts are counted), but
+        # its sessions are not.
+        assert rls.hospital_of_email(session, "1@hospital-b.example") == B
+        assert rls.hospital_of_token(session, _id(B, "token", 1)) is None
         assert rls.hospital_of_token(session, _id(A, "token", 1)) is None
         assert rls.hospital_of_token(session, "expired") is None
 
@@ -546,3 +549,88 @@ def test_migrations_set_up_the_app_role_on_an_existing_database(db):
     finally:
         drop_role()
         engine.dispose()
+
+
+# --- the event outbox -------------------------------------------------------------------------------
+
+@pg_only
+def test_the_app_can_only_append_to_the_outbox_and_the_worker_publishes(two_hospitals):
+    """Events (patient names, phones, clinical payloads of every hospital) are
+    written in tenant transactions but read, marked and deleted only by the
+    worker, as the platform role."""
+    import fakeredis
+
+    from app import eventbus
+
+    with session_scope(A) as session:  # a staff transaction emits
+        eventbus.emit(session, "test.event", {"hospital_id": A, "patient_name": "Abebe"})
+    for statement in ("SELECT count(*) FROM outbox_events", "UPDATE outbox_events SET type = 'x'",
+                      "DELETE FROM outbox_events"):
+        for tenant in ("", A):
+            with pytest.raises(DBAPIError) as caught:
+                with session_scope(tenant) as session:
+                    session.execute(text(statement))
+            assert "permission denied" in str(caught.value.orig), statement
+    bus = fakeredis.FakeRedis(decode_responses=True)
+    assert eventbus.publish_pending(bus) == 1
+    assert bus.xlen(eventbus.STREAM_OUT) == 1
+    with platform_session() as session:
+        assert session.scalar(text("SELECT count(*) FROM outbox_events WHERE published_at IS NULL")) == 0
+
+
+# --- pooled connections -----------------------------------------------------------------------------
+
+@pg_only
+def test_a_session_level_role_or_setting_never_reaches_the_next_checkout(db):
+    from app import db as dbmod
+
+    dbmod.reset_engine()
+    engine = dbmod.get_engine()
+    with engine.connect() as connection:
+        pid = connection.execute(text("SELECT pg_backend_pid()")).scalar()
+        connection.exec_driver_sql(f"SET ROLE {rls.PLATFORM_ROLE}")  # session level, not LOCAL
+        connection.execute(text("SELECT set_config('app.hospital_id', :h, false)"), {"h": B})
+        connection.commit()
+        assert connection.execute(text("SELECT current_user")).scalar() == rls.PLATFORM_ROLE
+    with engine.connect() as connection:  # the same pooled connection, cleaned
+        assert connection.execute(text("SELECT pg_backend_pid()")).scalar() == pid
+        assert connection.execute(text("SELECT current_user")).scalar() == APP_ROLE
+        assert connection.execute(text("SELECT current_setting('app.hospital_id', true)")).scalar() in ("", None)
+
+
+# --- migration safety -------------------------------------------------------------------------------
+
+def test_the_migration_checks_the_same_rows_as_app_rls():
+    assert _migration().cross_hospital_queries() == rls.cross_hospital_queries()
+
+
+@pg_only
+def test_existing_cross_hospital_rows_stop_the_migration_with_their_ids(two_hospitals):
+    engine = create_engine(postgres_url())  # the owner, as the migration runs
+    try:
+        with engine.connect() as connection:
+            transaction = connection.begin()
+            connection.exec_driver_sql(f"ALTER TABLE clinical_records DROP CONSTRAINT "
+                                       f"{rls.fk_name('clinical_records', 'patient_id')}")
+            connection.execute(text("UPDATE clinical_records SET patient_id = :b WHERE id = :r"),
+                               {"b": seed_id("patients", B), "r": seed_id("clinical_records", A)})
+            with pytest.raises(RuntimeError) as caught:
+                rls.check_same_hospital(connection)
+            transaction.rollback()
+    finally:
+        engine.dispose()
+    assert f"clinical_records.patient_id: {seed_id('clinical_records', A)}" in str(caught.value)
+
+
+@pg_only
+def test_the_app_password_is_stored_as_a_scram_verifier(db):
+    engine = create_engine(postgres_url())
+    try:
+        with engine.connect() as connection:
+            stored = connection.execute(text("SELECT rolpassword FROM pg_authid WHERE rolname = :r"),
+                                        {"r": APP_ROLE}).scalar()
+    finally:
+        engine.dispose()
+    assert stored.startswith("SCRAM-SHA-256$4096:")
+    with pytest.raises(RuntimeError, match="ASCII"):
+        rls.scram_verifier("pässword")

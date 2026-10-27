@@ -37,21 +37,29 @@ its own hospital's rows.
 
 - **Roles.** `hospital` owns the database and runs the migrations (the
   one-shot `migrate` service). The API and the worker log in as
-  `hospital_app`: not a superuser, no BYPASSRLS, owns nothing, no DDL, and
-  the audit log is SELECT and INSERT only. `hospital_platform` (NOLOGIN)
+  `hospital_app`: not a superuser, no BYPASSRLS, owns nothing, no DDL; the
+  audit log is SELECT and INSERT only, and the event outbox (patient names,
+  phones and clinical payloads of every hospital) INSERT only: the worker
+  reads, marks and deletes it as `hospital_platform`. `hospital_platform` (NOLOGIN)
   acts for Endod across hospitals; `hospital_app` is a member without
   INHERIT, so it has none of its rights until a transaction runs
   `SET LOCAL ROLE hospital_platform`. `migrations/env.py` creates
   `hospital_app` when `HOSPITAL_APP_DB_PASSWORD` is set (or sets its password
   and attributes again) and grants it after every upgrade, on a new and an
-  existing database alike; without the role the migration fails.
+  existing database alike; without the role the migration fails. Creating
+  and altering roles (NOSUPERUSER, NOBYPASSRLS) needs a superuser migration
+  owner, which `hospital` (POSTGRES_USER) is. The password is never sent to
+  the server: only its SCRAM-SHA-256 verifier is (so it cannot reach the
+  statement log); it must be ASCII (hex, as below).
 - **Refusal at start.** The API and the worker refuse to start when their
   login is a superuser, has BYPASSRLS or owns the tables.
 - **Tenant per transaction.** `session_scope(staff.hospital_id)` sets
   `app.hospital_id` for its transaction only (`set_config(..., true)`, i.e.
   `SET LOCAL`, in an `after_begin` hook, so it never reaches the next user of
   a pooled connection). Every staff route passes the signed-in staff
-  member's hospital.
+  member's hospital. Every checkout from the pool also runs `RESET ROLE;
+  RESET ALL`, so even a session-level `SET ROLE` or setting cannot carry over
+  to the next request.
 - **Platform scope.** `platform_session()` is the only place that takes the
   `hospital_platform` role: `/platform/...` routes (X-Platform-Key), events
   from the bus (`eventbus._handle`), the worker's chores and expiries, and the
@@ -61,7 +69,8 @@ its own hospital's rows.
   transaction goes through SECURITY DEFINER functions owned by
   `hospital_platform`, with `search_path = public, pg_temp`, EXECUTE revoked
   from PUBLIC and granted to `hospital_app`, returning only what is needed:
-  `hospital_of_staff_email` (sign-in; nothing for an inactive account),
+  `hospital_of_staff_email` (sign-in; a deactivated account is found too, so
+  that its attempts, answered with the same 401, count toward the lockout),
   `hospital_of_session_token` (every request; nothing for a revoked or
   expired session or an inactive account), `hospital_code_taken` (sign-up),
   `demo_slots_taken` and `demo_phone_taken` (slot times, yes or no) and
@@ -77,17 +86,21 @@ its own hospital's rows.
   `visits`, `clinical_records`, `record_files`, `queue_days`,
   `queue_entries`, `record_shares`, `import_batches`,
   `onboarding_applications`, `onboarding_documents`, `demo_bookings`,
-  `prescription_dispenses`. The three tables without `hospital_id`
-  (`patient_alerts`, `staff_sessions`, `shared_records`) are covered through
-  their parent (`EXISTS` on `patients`, `staff_users`, `record_shares`, under
-  their own policies): no new column or backfill, and a child can never
-  disagree with its parent. `outbox_events` and `processed_events` belong to
-  no hospital.
-- **Same-hospital references.** Foreign keys ignore row security, so 29
+  `prescription_dispenses`, `patient_alerts` (its `hospital_id` is new in
+  0007, filled from the alert's patient). The two tables without
+  `hospital_id` (`staff_sessions`, `shared_records`) are covered through
+  their parent (`EXISTS` on `staff_users`, `record_shares`, under their own
+  policies): a child can never disagree with its parent. `outbox_events` and
+  `processed_events` belong to no hospital (the outbox is kept from the app
+  by its table rights).
+- **Same-hospital references.** Foreign keys ignore row security, so 31
   composite keys `(hospital_id, x) -> parent (hospital_id, id)` (with
   `UNIQUE (hospital_id, id)` on the parents) make a record, file, visit,
   queue entry, dispense... refer only to rows of its own hospital, with the
   same ON DELETE as the plain key (`SET NULL (x)` keeps `hospital_id`).
+  Before adding them the migration looks for existing rows that point at
+  another hospital's and, if there are any, fails with their table, column
+  and ids, changing nothing.
 - **Fails closed.** With no tenant, every policy table reads as empty and
   every write is refused.
 - **Limits.** This guards against mistakes in the app's queries. SQL injected
@@ -100,7 +113,7 @@ its own hospital's rows.
 
 ### Deploying it to the existing production database
 
-The migration changes no rows; it adds a role, keys, policies and functions.
+The migration adds `patient_alerts.hospital_id` (filled from each alert's patient), a role, keys, policies and functions; no other data changes.
 It checks the existing rows against the new same-hospital keys: if a
 cross-hospital reference already exists, it fails and changes nothing (the
 copy test shows this first).
@@ -153,12 +166,24 @@ Nothing is lost either way; the policies only filter.
   `docker compose exec -T postgres psql -U hospital -d hospital -c "select format('ALTER TABLE %I DISABLE ROW LEVEL SECURITY;', relname) from pg_class where relrowsecurity" -At | docker compose exec -T postgres psql -U hospital -d hospital`.
   The app keeps working (as `hospital_app`, it then sees what it asks for).
   `ENABLE ROW LEVEL SECURITY` turns them back on.
-- **Undo the migration**: `docker compose run --rm migrate alembic downgrade 0006`
-  (drops the policies, functions and same-hospital keys), then deploy the
-  previous commit, whose API connects as `hospital` again
-  (`up -d --build --remove-orphans`).
-  The roles can stay, or for each of `hospital_app` and `hospital_platform`:
-  `DROP OWNED BY <role>; DROP ROLE <role>;`.
+- **Undo the migration.** Order matters: the 0006 image cannot downgrade
+  (it does not know revision 0007; started on a database at 0007 its
+  `alembic upgrade head` fails), and the 0007 code cannot run once the
+  downgrade removed its functions. So stop the 0007 API and worker, downgrade
+  with the 0007 image's `migrate` service, and only then start the 0006 code:
+
+  ```sh
+  cd /opt/endod-hospital/deploy
+  docker compose --env-file .env stop api worker portal
+  docker compose --env-file .env run --rm migrate alembic downgrade 0006
+  cd .. && git checkout 06b5433          # the last commit before row-level security
+  cd deploy && docker compose --env-file .env up -d --build --remove-orphans
+  ```
+
+  The downgrade drops the policies, functions, same-hospital keys and
+  `patient_alerts.hospital_id`; every row stays. The 0006 API connects as
+  `hospital` again. The roles can stay, or for each of `hospital_app` and
+  `hospital_platform`: `DROP OWNED BY <role>; DROP ROLE <role>;`.
 
 ## What exists so far
 
