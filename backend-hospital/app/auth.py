@@ -151,11 +151,11 @@ def login(email: str, password: str, user_agent: Optional[str] = None) -> Dict[s
             correct = verify_password(password, user.password_hash)
             if user.locked_until and ensure_aware(user.locked_until) > now:
                 failure = AuthError(INVALID_LOGIN)
-            elif not correct:
+            elif not correct or not user.active:
+                # A deactivated account answers like a wrong password (nothing
+                # tells it exists), and its attempts count toward the lockout too.
                 _record_failure(session, user, now, settings)
                 failure = AuthError(INVALID_LOGIN)
-            elif not user.active:
-                failure = AuthError("This account has been deactivated.", status.HTTP_403_FORBIDDEN)
         if failure is None:
             return _open_session(session, user, now, settings, user_agent)
     raise failure
@@ -188,7 +188,6 @@ def _bearer(authorization: Optional[str]) -> Optional[str]:
 
 
 def resolve_session(token: str) -> Staff:
-    now = utcnow()
     digest = token_hash(token)
     with session_scope() as session:
         # The token names the hospital (narrow lookup, app.rls); the session
@@ -206,11 +205,9 @@ def resolve_session(token: str) -> Staff:
         ).first()
         if row is None:
             raise AuthError("Authentication required.")
+        # Revoked and expired sessions and deactivated accounts were already
+        # refused by the lookup (rls.hospital_of_token gives no hospital).
         sess, user, hospital_status, application_status = row
-        if sess.revoked_at is not None or ensure_aware(sess.expires_at) <= now:
-            raise AuthError("Your session has ended. Please sign in again.")
-        if not user.active:
-            raise AuthError("This account has been deactivated.", status.HTTP_403_FORBIDDEN)
         return Staff(
             id=user.id, hospital_id=user.hospital_id, session_id=sess.id, email=user.email,
             full_name=user.full_name, role=user.role, must_change_password=user.must_change_password,

@@ -53,6 +53,21 @@ class TestSignIn:
         assert resp.status_code == 401
         assert resp.json()["error"] == "Incorrect email or password."
 
+    def test_attempts_on_a_deactivated_account_count_toward_the_lockout(self, client, hospital, monkeypatch):
+        from sqlalchemy import select
+
+        from app.db import platform_session
+        from app.models import StaffUser
+
+        monkeypatch.setenv("HOSPITAL_LOGIN_LOCKOUT_ATTEMPTS", "3")
+        make_staff(hospital, "gone@sph.example", active=False)
+        for _ in range(3):  # even with the right password
+            resp = client.post("/auth/login", json={"email": "gone@sph.example", "password": PASSWORD})
+            assert resp.status_code == 401
+        with platform_session() as session:
+            user = session.scalar(select(StaffUser).where(StaffUser.email == "gone@sph.example"))
+            assert user.locked_until is not None
+
     def test_requests_need_a_valid_token(self, client, hospital):
         assert client.get("/auth/me").status_code == 401
         assert client.get("/auth/me", headers={"Authorization": "Bearer nope"}).status_code == 401
