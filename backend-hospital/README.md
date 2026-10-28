@@ -390,24 +390,38 @@ docs at `/integrations/v1/docs`) and published by nginx at
 developers is [docs/integrations.md](../docs/integrations.md) (served from
 `app/integrations/guide.md`, a copy a test keeps identical).
 
-- **Tokens:** `POST /oauth/token`, client secret (argon2id hash only, shown
-  once) or `private_key_jwt` (SMART Backend Services; `jti` single-use).
+- **Tokens:** `POST /oauth/token`, client secret (a 288-bit random secret,
+  shown once; only its HMAC-SHA256 under a key derived from the master key is
+  kept) or `private_key_jwt` (SMART Backend Services; `jti` single-use).
   Access tokens: ES256 JWTs signed with the key in
   `HOSPITAL_INTEGRATIONS_SIGNING_KEY_FILE`, 5 minutes, `kid` published at
   `/.well-known/jwks.json`. Every call checks the client again in the
   database: disconnecting, rotating or suspending the hospital stops it at once.
+  Token requests are limited globally, per address and per client from one
+  address; only failed authentications slow a client down (the right secret
+  always works), so a public client_id cannot be used to lock a client out.
 - **Writes:** `POST /fhir` (transaction or batch) and `POST /fhir/{Type}`,
   mapped by the import's mapping code (`app/imports.py`), patients by MRN or
   Endod ID only (never created), corrections by resource id and versionId,
   `Idempotency-Key`, test mode, 100 entries / 10 MB, 60 requests per minute.
   Same encryption, row-level security, publishing and audit as the portal.
-- **Webhooks:** booking and patient-link events, signed
-  `Endod-Signature: t=..,v1=..` (HMAC-SHA256), sent by the worker with
-  retries for 24 hours, https and public addresses only (checked at every send).
+- **Webhooks:** booking and patient-link events (Live connections only),
+  signed `Endod-Signature: t=..,v1=..` (HMAC-SHA256), sent by the worker's own
+  delivery thread (never the event-bus loop; 4 at a time, 15 s each, DNS
+  included) with retries for 24 hours, https and public addresses only
+  (checked at every send).
+- **Test mode** stores nothing, receives no real events, sees sample bookings,
+  and never says whether a patient exists.
 - **Logs:** method, path, status, client, time, duration and address, 30 days;
   never a body.
 
 ### Deploying it
+
+The integration API runs as its own service, `integrations` (the same image:
+`uvicorn app.integrations_main:app`, serving only `/integrations/v1` and
+`/health`). It is the only service on the shared edge network and the only
+one with the token signing key, so a missing key stops the integration API
+alone; the portal API and the worker run without it.
 
 1. Migration 0009 creates the tables (with their row-level security) when
    `migrate` runs.
@@ -419,21 +433,28 @@ developers is [docs/integrations.md](../docs/integrations.md) (served from
    chmod 0400 /opt/endod-hospital/deploy/keys/integrations-signing.pem
    ```
 
-   `deploy/docker-compose.yml` mounts it read-only into the API and worker at
-   `/run/secrets/integrations-signing.pem`. Without it the integration API
-   answers 503 (outside development and test); the rest of the service runs.
-   Replacing it invalidates tokens issued before (they live 5 minutes).
-3. DNS: `api.endod-health.com` to the server (through Cloudflare, like the
-   portal: `HOSPITAL_TRUSTED_PROXY_HOPS` stays 2 so client addresses, used by
-   IP restrictions and the logs, are right).
-4. nginx (the shared edge): map only that prefix to the API, which joins the
-   edge network as `endod-hospital-integrations`:
+   `deploy/docker-compose.yml` mounts it read-only into the `integrations`
+   service only, at `/run/secrets/integrations-signing.pem`. Without it the
+   integration API answers 503. Replacing it invalidates tokens issued
+   before (they live 5 minutes).
+3. Set `EDGE_SHARED_SECRET` in `deploy/.env` (e.g. `openssl rand -hex 32`) and
+   the same value in nginx. The `integrations` service refuses every request
+   without it (`X-Endod-Edge-Key`, compared in constant time; 503 in
+   production while it is not set).
+4. DNS: `api.endod-health.com` to the server.
+5. nginx (the shared edge): only that prefix, to the `integrations` service.
+   The caller's address is taken ONLY from `X-Endod-Client-IP` (IP
+   restrictions and the logs); X-Forwarded-For is ignored there. Behind
+   Cloudflare, set it from `CF-Connecting-IP` (with nginx's real_ip module
+   trusting Cloudflare's ranges) instead of `$remote_addr`.
 
    ```nginx
    location /hospital/v1/ {
        proxy_pass http://endod-hospital-integrations:8000/integrations/v1/;
        proxy_set_header Host $host;
-       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+       proxy_set_header X-Endod-Client-IP $remote_addr;
+       proxy_set_header X-Endod-Edge-Key "<EDGE_SHARED_SECRET>";
+       proxy_set_header X-Forwarded-For "";
        proxy_set_header X-Forwarded-Proto $scheme;
        client_max_body_size 11m;
    }

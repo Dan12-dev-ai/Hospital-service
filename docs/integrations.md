@@ -135,7 +135,9 @@ creates a patient through this API, and never matches by name. Name the patient 
 - or a reference to a `Patient` entry of the same bundle carrying one of those identifiers
   (`"subject": {"reference": "urn:uuid:..."}`). That entry only names the patient.
 
-An unknown patient is an error for that entry (an OperationOutcome). A record of a
+An unknown patient is an error for that entry (an OperationOutcome). When both an Endod
+ID and a hospital number are given, they must name the same patient; otherwise the
+entry is refused (`business-rule`), never matched to one of them. A record of a
 patient not linked to Endod stays at the hospital and reaches the patient's Endod
 app once they are linked; for a linked patient it is published at once.
 
@@ -273,11 +275,18 @@ a `Location` header, or an OperationOutcome.
 
 ### Test mode
 
-A **Test** connection (client ID `endod_test_...`) checks and maps everything exactly
-as Live does, including patients and scopes, and answers what WOULD be stored (each
-entry's `outcome` says so; the response is tagged `test-mode`). It stores nothing,
-publishes nothing and changes nothing. Use it while you build; connect a Live system
-when you are ready.
+A **Test** connection (client ID `endod_test_...`) checks and maps everything as Live
+does (structure, scopes, dates, documents, how the patient is named) and answers what
+WOULD be stored (each entry's `outcome` says so; the response is tagged `test-mode`).
+It stores nothing, publishes nothing and changes nothing, and it never touches real
+patients' data:
+
+- it never looks a patient up: the answer is the same whether the hospital number or
+  Endod ID belongs to a registered patient or not (and never contains a hospital number);
+- `GET /bookings` answers made-up sample bookings (marked `"sample": true`);
+- its webhook receives only `endpoint.test` ("Send test event"), never a real event.
+
+Use it while you build; connect a Live system when you are ready.
 
 ## 4. Read bookings (`bookings.read`)
 
@@ -408,7 +417,9 @@ Everything but the token endpoint answers errors as a FHIR OperationOutcome:
 
 - A bundle: at most **100 entries** and **10 MB**.
 - **60 requests per minute** per connection (token requests not counted).
-- Token requests: 20 per minute per client, 30 per minute per address.
+- Token requests: 20 per minute per client from one address, 30 per minute per address,
+  and a limit for everyone together. Failed authentications slow down that address and
+  that client's failed attempts (the right credentials always work).
 - Access tokens live 5 minutes; client assertions at most 5 minutes.
 - Dates in the future are refused; a date without a time is midnight at the hospital,
   a time without an offset is the hospital's time.
@@ -424,4 +435,5 @@ Everything but the token endpoint answers errors as a FHIR OperationOutcome:
   for 30 days; never a body or a query string.
 - Webhook deliveries keep status and attempts; an event's body is deleted once it is
   delivered or given up.
-- Client secrets are kept only as an argon2 hash; webhook secrets are encrypted at rest.
+- Client secrets are 288-bit random values kept only as a keyed hash (HMAC-SHA256);
+  webhook secrets are encrypted at rest.

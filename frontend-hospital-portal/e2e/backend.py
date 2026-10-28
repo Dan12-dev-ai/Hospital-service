@@ -25,7 +25,14 @@ def main() -> None:
     if not url.startswith("sqlite:///"):
         raise SystemExit("The browser tests need a throwaway SQLite HOSPITAL_DATABASE_URL.")
     db.create_all()
-    uvicorn.run("app.main:app", host="127.0.0.1", port=port, log_level="warning")
+    # The portal API and, beside it, the integrations service (separate in
+    # production: app/integrations_main.py), so the tests reach both on one port.
+    from app import integrations_main
+    from app.main import create_app
+
+    app = create_app()
+    app.mount("/", integrations_main.create_app())
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
 
 
 if __name__ == "__main__":

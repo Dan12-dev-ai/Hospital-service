@@ -46,10 +46,8 @@ x-api-env: &api-env
   HOSPITAL_PLATFORM_API_URL: http://endod-platform-api:8000
   # Encryption at rest: the master key, mounted below (API and worker only).
   HOSPITAL_MASTER_KEY_FILE: /run/secrets/master.key
-  # The integration API for hospitals' own systems (docs/integrations.md): the
-  # key that signs its access tokens (mounted below), and where nginx publishes
-  # it (api.endod-health.com/hospital/v1 -> api:8000/integrations/v1).
-  HOSPITAL_INTEGRATIONS_SIGNING_KEY_FILE: /run/secrets/integrations-signing.pem
+  # Where nginx publishes the integration API (the `integrations` service
+  # below): the portal's "Connect your system" pages show it.
   HOSPITAL_INTEGRATIONS_PUBLIC_URL: ${INTEGRATIONS_PUBLIC_URL:-https://api.endod-health.com/hospital/v1}
 
 services:
@@ -99,6 +97,39 @@ services:
         read_only: true
         bind:
           create_host_path: false
+    networks:
+      default: {}
+      # The platform downloads record files from here (never through the portal).
+      bus:
+        aliases: [endod-hospital-api]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # The integration API for hospitals' own systems (docs/integrations.md):
+  # the same image, an app with only /integrations/v1 and /health. The only
+  # service on the shared edge (nginx: location /hospital/v1/ ->
+  # http://endod-hospital-integrations:8000/integrations/v1/, setting
+  # X-Endod-Client-IP and X-Endod-Edge-Key; backend-hospital/README.md), and
+  # the only one with the token signing key: without it only this stops.
+  integrations:
+    build: ../backend-hospital
+    restart: unless-stopped
+    command: ["uvicorn", "app.integrations_main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      <<: *api-env
+      HOSPITAL_INTEGRATIONS_SIGNING_KEY_FILE: /run/secrets/integrations-signing.pem
+      # nginx sends it as X-Endod-Edge-Key; every other request is refused.
+      HOSPITAL_EDGE_SHARED_SECRET: ${EDGE_SHARED_SECRET:?set EDGE_SHARED_SECRET (the same as in nginx)}
+    volumes:
+      - files:/data/files
+      # The master key (records are encrypted like the portal's): read-only.
+      - type: bind
+        source: ${MASTER_KEY_FILE:-/opt/endod-hospital/deploy/keys/master.key}
+        target: /run/secrets/master.key
+        read_only: true
+        bind:
+          create_host_path: false
       # The integration API's token signing key (backend-hospital/README.md,
       # "Integration API"): read-only, never created if missing.
       - type: bind
@@ -109,11 +140,6 @@ services:
           create_host_path: false
     networks:
       default: {}
-      # The platform downloads record files from here (never through the portal).
-      bus:
-        aliases: [endod-hospital-api]
-      # nginx publishes the integration API from here, and only its prefix
-      # (location /hospital/v1/ -> /integrations/v1/; backend-hospital/README.md).
       shared_edge:
         aliases: [endod-hospital-integrations]
     depends_on:
@@ -132,14 +158,6 @@ services:
       - type: bind
         source: ${MASTER_KEY_FILE:-/opt/endod-hospital/deploy/keys/master.key}
         target: /run/secrets/master.key
-        read_only: true
-        bind:
-          create_host_path: false
-      # The integration API's token signing key (backend-hospital/README.md,
-      # "Integration API"): read-only, never created if missing.
-      - type: bind
-        source: ${INTEGRATIONS_SIGNING_KEY_FILE:-/opt/endod-hospital/deploy/keys/integrations-signing.pem}
-        target: /run/secrets/integrations-signing.pem
         read_only: true
         bind:
           create_host_path: false

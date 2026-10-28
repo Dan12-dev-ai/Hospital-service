@@ -524,6 +524,8 @@ def map_resource(planner: Planner, r: Dict[str, Any], patients: Dict[str, List[D
     mapper makes of it. Raises Skip."""
     try:
         patient = _subject(planner, r, patients)
+    except ConflictingPatient:
+        raise
     except Skip as exc:
         raise UnknownPatient(str(exc)) from exc
     return patient, mapper(r)
@@ -544,7 +546,13 @@ def new_record(session: Session, hospital_id: str, patient: Patient, item: Dict[
     return record
 
 
-def _subject(planner: Planner, r: Dict[str, Any], patients: Dict[str, List[Dict[str, Any]]]) -> Patient:
+class ConflictingPatient(Skip):
+    """The Endod ID and the hospital number given name different patients (or one is unknown)."""
+
+
+def subject_identifiers(planner: Planner, r: Dict[str, Any],
+                        patients: Dict[str, List[Dict[str, Any]]]) -> Tuple[Optional[str], List[str]]:
+    """(Endod ID, hospital numbers) naming the resource's patient; nothing is looked up."""
     subject = r.get("subject") or r.get("patient")
     if not isinstance(subject, dict):
         raise Skip("no patient (subject)")
@@ -561,6 +569,18 @@ def _subject(planner: Planner, r: Dict[str, Any], patients: Dict[str, List[Dict[
         others = [str(x.get("value")) for x in identifiers if x.get("system") == planner.mrn_system and x.get("value")]
     else:
         others = [str(x.get("value")) for x in identifiers if x.get("system") != ENDOD_SYSTEM and x.get("value")]
+    return dedan, others
+
+
+def _subject(planner: Planner, r: Dict[str, Any], patients: Dict[str, List[Dict[str, Any]]]) -> Patient:
+    dedan, others = subject_identifiers(planner, r, patients)
+    if planner.mrn_system and dedan and others:
+        # The integration API: both must name the same patient here; never one preferred silently.
+        by_dedan = planner.patient_by(dedan_id=dedan)
+        by_mrn = {planner.patient_by(mrn=value).id for value in others}
+        if by_mrn != {by_dedan.id}:
+            raise ConflictingPatient("the Endod ID and the hospital number name different patients")
+        return by_dedan
     if dedan:
         try:
             return planner.patient_by(dedan_id=dedan)

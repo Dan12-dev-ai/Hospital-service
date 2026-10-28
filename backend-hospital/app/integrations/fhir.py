@@ -17,7 +17,9 @@ or one resource, mapped to clinical records by the import's mapping code
   Endod for linked patients only (app/records.publish), and is audited with
   the client, the action and the record ids, never a clinical value.
 * Test mode checks and maps everything and says what WOULD be stored; it
-  stores nothing.
+  stores nothing, looks no patient up and never says whether an Endod ID or
+  a hospital number exists (nor returns one): a test connection learns
+  nothing about real patients.
 * A transaction is all or nothing; a batch handles each entry on its own.
 """
 
@@ -27,6 +29,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -38,6 +41,7 @@ from app.auth import audit
 from app.db import new_id, session_scope, utcnow
 from app.integrations import scopes as S
 from app.integrations.tokens import Caller
+from app.validation import normalize_dedan_id
 from app.models import (
     ClinicalRecord, Hospital, IntegrationIdempotency, IntegrationMode, IntegrationResource, Patient, RecordFile,
 )
@@ -168,7 +172,8 @@ def _write(session, work: Work, hospital: Hospital, kind: str, resource: Dict[st
     version_id = meta.get("versionId")
     version_id = str(version_id)[:64] if version_id is not None else None
     content_hash = item["import_key"]
-    mode = "Test mode: nothing was stored. " if work.test else ""
+    assert not work.test  # test mode never reaches a write (_test_entry)
+    mode = ""
     existing = None
     if resource_id is not None:
         existing = session.scalar(select(IntegrationResource).where(
@@ -187,10 +192,6 @@ def _write(session, work: Work, hospital: Hospital, kind: str, resource: Dict[st
         if unchanged:
             return EntryResult(200, _location(kind, record), f'W/"{record.version}"',
                                outcome("information", "informational", f"{mode}Already stored; nothing changed."))
-        if work.test:
-            return EntryResult(200, _location(kind, record), None, outcome(
-                "information", "informational",
-                f"{mode}This would correct record {record.id} (version {record.version + 1})."))
         record.title = item["title"]
         record.details = json.dumps(item["details"], ensure_ascii=False)
         record.occurred_at = datetime.fromisoformat(item["occurred_at"]).astimezone(timezone.utc)
@@ -213,11 +214,6 @@ def _write(session, work: Work, hospital: Hospital, kind: str, resource: Dict[st
         if same is not None:
             return EntryResult(200, _location(kind, same), f'W/"{same.version}"',
                                outcome("information", "informational", f"{mode}Already stored; nothing changed."))
-    if work.test:
-        return EntryResult(201, None, None, outcome(
-            "information", "informational",
-            f"{mode}This would create a {item['category'].replace('_', ' ')} record for patient {patient.mrn}"
-            f"{'' if patient.dedan_id else ' (not linked to Endod: kept at the hospital until linked)'}."))
     key_free = not imports.already_imported(session, caller.hospital_id, content_hash)
     record = imports.new_record(session, caller.hospital_id, patient,
                                 {**item, "import_key": content_hash if key_free else None})
@@ -257,12 +253,16 @@ def _entry(session, work: Work, hospital: Hospital, planner: imports.Planner, in
     scope = scope_for(resource)
     if scope not in work.caller.scopes:
         raise EntryFailed(403, "forbidden", f"This connection may not send {kind} ({scope} is not granted).")
+    if work.test:
+        return _test_entry(planner, index, kind, resource, patients)
     try:
         patient, mapped = imports.map_resource(planner, resource, patients, imports.API_MAPPERS[kind])
     except imports.UnknownPatient as exc:
         raise EntryFailed(422, "not-found", f"Unknown patient: {exc}. Patients are matched by the hospital number "
                                             f"({planner.mrn_system}) or the Endod ID ({imports.ENDOD_SYSTEM}) "
                                             "and must already be registered at the hospital.") from None
+    except imports.ConflictingPatient as exc:
+        raise EntryFailed(422, "business-rule", f"{exc}: check both identifiers.") from None
     except imports.Skip as exc:
         raise EntryFailed(422, "invalid", str(exc)) from None
     except (AttributeError, TypeError, KeyError, ValueError):
@@ -275,6 +275,38 @@ def _entry(session, work: Work, hospital: Hospital, planner: imports.Planner, in
     except imports.Skip as exc:
         raise EntryFailed(422, "invalid", str(exc)) from None
     return _write(session, work, hospital, kind, resource, patient, item, document)
+
+
+def _test_entry(planner: imports.Planner, index: int, kind: str, resource: Dict[str, Any],
+                patients: Dict[str, List[Dict[str, Any]]]) -> EntryResult:
+    """Test mode: the resource is checked and mapped as in live mode, but no
+    patient is looked up (the answer is the same whether one exists or not)."""
+    try:
+        dedan, numbers = imports.subject_identifiers(planner, resource, patients)
+        if dedan:
+            normalize_dedan_id(dedan)
+    except imports.Skip as exc:
+        raise EntryFailed(422, "invalid", str(exc)) from None
+    except ValueError:
+        raise EntryFailed(422, "invalid", "The Endod ID is not well formed (e.g. DE482731).") from None
+    if not dedan and not numbers:
+        raise EntryFailed(422, "invalid", f"Name the patient by the hospital number ({planner.mrn_system}) or the "
+                                          f"Endod ID ({imports.ENDOD_SYSTEM}).")
+    stand_in = SimpleNamespace(id="test-mode", mrn="", full_name="")
+    try:
+        mapped = imports.API_MAPPERS[kind](resource)
+        category, title, details, when, who = mapped[:5]
+        item = planner.prepare(index, kind, stand_in, category, title, details, planner.when(when), who,
+                               source=resource)
+    except imports.Skip as exc:
+        raise EntryFailed(422, "invalid", str(exc)) from None
+    except (AttributeError, TypeError, KeyError, ValueError):
+        raise EntryFailed(422, "invalid", "The resource is malformed.") from None
+    return EntryResult(201, None, None, outcome(
+        "information", "informational",
+        f"Test mode: nothing was stored. This would store a {item['category'].replace('_', ' ')} record for the "
+        "patient it names, if that patient is registered at the hospital (test mode never says whether a "
+        "patient exists)."))
 
 
 def parse_body(data: bytes) -> Dict[str, Any]:

@@ -83,6 +83,10 @@ class Settings(BaseSettings):
     #: of this service). The token URL, which client assertions must name as
     #: their audience, is this plus ``/oauth/token``.
     INTEGRATIONS_PUBLIC_URL: str = "https://api.endod-health.com/hospital/v1"
+    #: The secret nginx sends as ``X-Endod-Edge-Key`` to the integrations
+    #: service (app/integrations_main.py), which refuses any request without
+    #: it, and answers 503 in production while it is not set.
+    EDGE_SHARED_SECRET: Optional[str] = None
 
     @field_validator("ENVIRONMENT", mode="before")
     @classmethod

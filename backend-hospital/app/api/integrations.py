@@ -1,16 +1,25 @@
 """The integration API, served under /integrations/v1 (published by nginx at
 HOSPITAL_INTEGRATIONS_PUBLIC_URL, e.g. https://api.endod-health.com/hospital/v1).
 
-A FastAPI application of its own (mounted by app.main), so it has its own
+A FastAPI application of its own, run by its own service (the
+``integrations`` service, app/integrations_main.py: the only one on the
+shared edge network, and the only one with the token signing key), so it has its own
 OpenAPI document (``/openapi.json``), its own docs page (``/docs``, with the
 guide, docs/integrations.md) and its own errors: OAuth errors from the token
 endpoint, FHIR OperationOutcomes everywhere else. Every call is written to the
 request log (method, path, status, client, time, duration, address; never a
 body), once the client is known.
+
+Only nginx reaches it: every request must carry ``X-Endod-Edge-Key`` (the
+shared EDGE_SHARED_SECRET, compared in constant time; without one configured,
+production answers 503). The caller's address is taken ONLY from
+``X-Endod-Client-IP``, which nginx sets; X-Forwarded-For is ignored.
 """
 
 from __future__ import annotations
 
+import hmac
+import ipaddress
 import logging
 import time
 from pathlib import Path
@@ -27,11 +36,11 @@ from pydantic import AwareDatetime
 from sqlalchemy import select
 from starlette.exceptions import HTTPException
 
-from app.api.onboarding import client_address
+from app.config import get_settings
 from app.db import ensure_aware, session_scope
-from app.integrations import fhir, ratelimit, scopes as S, signing, tokens
+from app.integrations import fhir, scopes as S, signing, tokens
 from app.integrations.tokens import Caller
-from app.models import Booking, BookingStatus, IntegrationRequest
+from app.models import Booking, BookingStatus, IntegrationMode, IntegrationRequest
 
 logger = logging.getLogger("hospital.integrations")
 
@@ -40,6 +49,34 @@ MAX_TOKEN_REQUEST = 16 * 1024
 FHIR_JSON = "application/fhir+json"
 GUIDE = Path(__file__).resolve().parents[1] / "integrations" / "guide.md"
 RECORD_SCOPES = (S.LABS, S.PRESCRIPTIONS, S.DIAGNOSES, S.VISITS, S.DOCUMENTS, S.IMAGING)
+
+
+EDGE_KEY_HEADER = "x-endod-edge-key"
+CLIENT_IP_HEADER = "x-endod-client-ip"
+
+
+def client_address(request: Request) -> str:
+    """The caller's address as nginx saw it (X-Endod-Client-IP), else the peer's.
+    Never X-Forwarded-For (a client could choose it)."""
+    value = (request.headers.get(CLIENT_IP_HEADER) or "").strip()
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        return request.client.host if request.client else "unknown"
+
+
+def edge_refusal(request: Request) -> Optional[JSONResponse]:
+    """None if the request came through nginx (the edge key matches); else the refusal."""
+    settings = get_settings()
+    key = settings.EDGE_SHARED_SECRET
+    if not key:
+        if settings.is_production:
+            return _outcome_response(503, "transient", "The integration API is not available.")
+        return None  # development and tests: no edge in front
+    given = request.headers.get(EDGE_KEY_HEADER) or ""
+    if not hmac.compare_digest(given.encode(), key.encode()):
+        return _outcome_response(403, "forbidden", "Requests must come through the Endod API gateway.")
+    return None
 
 
 def _outcome_response(status_code: int, code: str, message: str, headers: Optional[Dict[str, str]] = None,
@@ -76,6 +113,9 @@ def create_app() -> FastAPI:
 
     @api.middleware("http")
     async def request_log(request: Request, call_next):
+        refused = edge_refusal(request)
+        if refused is not None:
+            return refused
         started = time.perf_counter()
         caller = Caller()
         request.state.caller = caller
@@ -156,10 +196,7 @@ def create_app() -> FastAPI:
         client_secret in the form) or a client assertion (private_key_jwt).
         Answers an access token valid 5 minutes."""
         address = client_address(request)
-        wait = ratelimit.TOKENS_PER_ADDRESS.hit(address)
-        if wait:
-            raise tokens.OAuthError("slow_down", "Too many token requests from this address; try again shortly.",
-                                    429, {"Retry-After": str(wait)})
+        tokens.check_caller(address)
         if not (request.headers.get("content-type") or "").lower().startswith("application/x-www-form-urlencoded"):
             raise tokens.OAuthError("invalid_request", "Send the form as application/x-www-form-urlencoded.")
         body = bytearray()
@@ -191,6 +228,25 @@ def create_app() -> FastAPI:
             "updated_at": ensure_aware(b.updated_at).isoformat(),
         }
 
+    def sample_bookings() -> list:
+        """What a Test connection sees: made-up bookings (never a real patient's)."""
+        from datetime import datetime, time as clock, timedelta, timezone
+
+        base = datetime.combine(datetime.now(timezone.utc).date() + timedelta(days=1), clock(6, 0), timezone.utc)
+        rows = []
+        for n, (mode, status) in enumerate((("in_person", "confirmed"), ("video", "awaiting_doctor"),
+                                            ("in_person", "cancelled"))):
+            at = (base + timedelta(hours=n)).isoformat()
+            rows.append({
+                "id": f"sample{n + 1:0>26}", "endod_appointment_id": f"sample-appointment-{n + 1}",
+                "status": status, "visit_mode": mode, "service": "general_medicine", "scheduled_at": at,
+                "duration_minutes": 30,
+                "patient": {"endod_id": f"DE00000{n + 1}", "name": f"Sample Patient {n + 1}", "phone": None},
+                "reason": "Cancelled by the patient." if status == "cancelled" else None,
+                "created_at": base.isoformat(), "updated_at": base.isoformat(), "sample": True,
+            })
+        return rows
+
     @api.get("/bookings", tags=["bookings"], summary="Bookings patients made through Endod (bookings.read)")
     def list_bookings(status: Optional[str] = Query(default=None, description=f"One of {list(BookingStatus.ALL)}"),
                       scheduled_from: Optional[AwareDatetime] = Query(default=None, alias="from"),
@@ -202,6 +258,9 @@ def create_app() -> FastAPI:
         tokens.require(who, S.BOOKINGS_READ)
         if status is not None and status not in BookingStatus.ALL:
             raise HTTPException(status_code=400, detail=f"status must be one of {list(BookingStatus.ALL)}.")
+        if who.mode == IntegrationMode.TEST:
+            # Test connections never see real patients' bookings.
+            return {"items": [b for b in sample_bookings() if status is None or b["status"] == status][:limit]}
         with session_scope(who.hospital_id) as session:
             query = select(Booking).where(Booking.hospital_id == who.hospital_id)
             if status:
@@ -218,6 +277,11 @@ def create_app() -> FastAPI:
     @api.get("/bookings/{booking_id}", tags=["bookings"], summary="One booking (bookings.read)")
     def read_booking(booking_id: str, who: Caller = Depends(caller)) -> Dict[str, Any]:
         tokens.require(who, S.BOOKINGS_READ)
+        if who.mode == IntegrationMode.TEST:
+            found = next((b for b in sample_bookings() if b["id"] == booking_id), None)
+            if found is None:
+                raise HTTPException(status_code=404, detail="Booking not found.")
+            return found
         with session_scope(who.hospital_id) as session:
             booking = session.scalar(select(Booking).where(Booking.id == booking_id,
                                                            Booking.hospital_id == who.hospital_id))

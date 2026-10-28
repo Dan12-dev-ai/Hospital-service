@@ -64,7 +64,8 @@ class TestEnrolment:
 
     def test_secrets_are_encrypted_and_recovery_codes_hashed(self, client, nurse):
         _headers, codes = enrol(client, nurse)
-        with get_engine().connect() as connection:
+        with platform_session() as session:  # as stored, every hospital's rows (row-level security)
+            connection = session.connection()
             stored = connection.execute(text("SELECT totp_secret FROM staff_users")).one()
             pending = connection.execute(text("SELECT totp_pending_secret FROM staff_sessions")).scalars().all()
             hashes = connection.execute(text("SELECT code_hash FROM staff_recovery_codes")).scalars().all()
@@ -81,8 +82,8 @@ class TestEnrolment:
         real = login(client, nurse)
         started = client.post("/auth/enroll/start", headers=bearer(real)).json()
         assert started["secret"] != stolen
-        with get_engine().connect() as connection:  # encrypted at rest, on the session
-            pending = connection.execute(text("SELECT totp_pending_secret FROM staff_sessions "
+        with platform_session() as session:  # encrypted at rest, on the session
+            pending = session.connection().execute(text("SELECT totp_pending_secret FROM staff_sessions "
                                               "WHERE totp_pending_secret IS NOT NULL")).scalars().all()
         assert len(pending) == 2 and all(p.startswith("enc:v1:") for p in pending)
         done = client.post("/auth/enroll/confirm", headers=bearer(real), json={"code": totp_code(started["secret"])})

@@ -1,33 +1,51 @@
 """Connections (integration clients): ids, secrets, address limits.
 
 * The client_id is public (``endod_live_...`` / ``endod_test_...``).
-* The client secret is 48 random URL-safe characters after a prefix, shown
-  once; only its argon2id hash is kept. Unknown clients are checked against a
-  dummy hash, so a wrong client_id costs the same as a wrong secret.
+* The client secret is 48 random URL-safe characters (288 bits) after a
+  prefix, shown once. Only its HMAC-SHA256 under a server key (derived from
+  the master key) is kept: a secret this random cannot be guessed, so a
+  memory-hard hash would only make every token request expensive (and the
+  endpoint easy to overload). A leaked table without the master key reveals
+  nothing. Unknown clients are checked against a dummy value, so a wrong
+  client_id costs the same as a wrong secret. Malformed ids and secrets are
+  refused before any database work (:func:`well_formed_client_id`).
 * The webhook signing secret is kept encrypted at rest (it must be read to
   sign), and shown once.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import ipaddress
+import re
 import secrets
 from typing import Iterable, List, Optional, Union
 from urllib.parse import urlsplit
 
-from argon2 import PasswordHasher
-from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
-
+from app import crypto
 from app.models import IntegrationMode
 
 SECRET_PREFIX = "ehs_"
 WEBHOOK_SECRET_PREFIX = "whsec_"
 MAX_CIDRS = 20
 
-# argon2id, OWASP's minimum (19 MiB, 2 passes): the secret is random and long,
-# the hash only has to make a stolen table useless.
-_hasher = PasswordHasher(time_cost=2, memory_cost=19 * 1024, parallelism=1)
-_DUMMY_HASH = _hasher.hash(secrets.token_urlsafe(36))
+HASH_PREFIX = "hmac-sha256$"
+_CLIENT_ID = re.compile(r"^endod_(live|test)_[0-9a-f]{24}$")
+_SECRET = re.compile(r"^ehs_[A-Za-z0-9_-]{48}$")
+_DUMMY = "ehs_" + "0" * 48
+
+
+def well_formed_client_id(value: Optional[str]) -> bool:
+    return isinstance(value, str) and bool(_CLIENT_ID.match(value))
+
+
+def well_formed_secret(value: Optional[str]) -> bool:
+    return isinstance(value, str) and bool(_SECRET.match(value))
+
+
+def _secret_key() -> bytes:
+    return hmac.new(crypto.master_key(), b"endod-hospital|integration-client-secrets|v1", hashlib.sha256).digest()
 
 
 def new_client_id(mode: str) -> str:
@@ -43,15 +61,14 @@ def new_webhook_secret() -> str:
 
 
 def hash_secret(secret: str) -> str:
-    return _hasher.hash(secret)
+    return HASH_PREFIX + hmac.new(_secret_key(), secret.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def verify_secret(secret: Optional[str], stored: Optional[str]) -> bool:
-    """Constant work whether or not the client exists (``stored`` None: the dummy hash)."""
-    try:
-        return _hasher.verify(stored or _DUMMY_HASH, secret or "") and stored is not None
-    except (VerifyMismatchError, VerificationError, InvalidHashError):
-        return False
+    """The same work whether or not the client exists (``stored`` None: a dummy value)."""
+    expected = stored if stored and stored.startswith(HASH_PREFIX) else hash_secret(_DUMMY)
+    given = hash_secret(secret if isinstance(secret, str) else "")
+    return hmac.compare_digest(given, expected) and stored is not None
 
 
 Network = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]

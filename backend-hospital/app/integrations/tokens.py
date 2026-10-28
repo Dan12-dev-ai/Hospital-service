@@ -156,9 +156,13 @@ def issue(form: Dict[str, List[str]], authorization: Optional[str], address: str
             raise OAuthError("invalid_request", "client_id differs from the Basic credentials.")
     else:
         client_id, secret = form_id, form_secret
-    if not client_id or len(client_id) > 64:
+    # Cheap checks before any database or cryptographic work.
+    if not clients.well_formed_client_id(client_id) or (parsed is None and not clients.well_formed_secret(secret)):
+        _failed(client_id if clients.well_formed_client_id(client_id) else None, address)
         raise OAuthError("invalid_client", "Unknown client or wrong credentials.", 401)
-    wait = ratelimit.TOKENS_PER_CLIENT.hit(client_id)
+    # Per client_id from this address: a client_id is public, so one address
+    # can never use up the allowance of the client's own system elsewhere.
+    wait = ratelimit.TOKENS_PER_CLIENT_ADDRESS.hit(f"{client_id}|{address}")
     if wait:
         raise OAuthError("slow_down", "Too many token requests for this client; try again shortly.", 429,
                          {"Retry-After": str(wait)})
@@ -167,7 +171,37 @@ def issue(form: Dict[str, List[str]], authorization: Optional[str], address: str
         key = signing.signing_key()
     except signing.SigningKeyMissing:
         raise OAuthError("temporarily_unavailable", "The integration API is not available.", 503) from None
-    return _authenticate_and_issue(client_id, secret, parsed, requested, address, key, caller)
+    try:
+        return _authenticate_and_issue(client_id, secret, parsed, requested, address, key, caller)
+    except OAuthError as exc:
+        if exc.error == "invalid_client":
+            _failed(client_id, address)
+            # Only failed attempts slow down: the right credentials still work.
+            wait = ratelimit.FAILURES_PER_CLIENT.blocked(client_id)
+            if wait:
+                raise OAuthError("slow_down", "Too many failed attempts for this client; try again later.", 429,
+                                 {"Retry-After": str(wait)}) from None
+        raise
+
+
+def _failed(client_id: Optional[str], address: str) -> None:
+    ratelimit.FAILURES_PER_ADDRESS.note(address)
+    if client_id:
+        ratelimit.FAILURES_PER_CLIENT.note(client_id)
+
+
+def check_caller(address: str) -> None:
+    """Before anything else (the token endpoint): every caller together, this
+    address, and this address's failed authentications. Raises OAuthError 429."""
+    for limiter, message in ((ratelimit.TOKENS_GLOBAL, "The token endpoint is busy; try again shortly."),
+                             (ratelimit.TOKENS_PER_ADDRESS, "Too many token requests from this address."),):
+        wait = limiter.hit(address if limiter is not ratelimit.TOKENS_GLOBAL else "*")
+        if wait:
+            raise OAuthError("slow_down", message, 429, {"Retry-After": str(wait)})
+    wait = ratelimit.FAILURES_PER_ADDRESS.blocked(address)
+    if wait:
+        raise OAuthError("slow_down", "Too many failed attempts from this address; try again later.", 429,
+                         {"Retry-After": str(wait)})
 
 
 def _authenticate_and_issue(client_id: str, secret: Optional[str], parsed: Optional[jose.Parsed],

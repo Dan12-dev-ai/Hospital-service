@@ -133,6 +133,19 @@ def set_status(hospital_id, status=None, application=None):
 
 
 @pytest.fixture
+def client(db):
+    """The portal API and the integrations service (a separate app), side by side."""
+    from fastapi.testclient import TestClient
+
+    from app import integrations_main
+    from app.main import create_app
+
+    app = create_app()
+    app.mount("/", integrations_main.create_app())  # what the main API does not serve
+    return TestClient(app)
+
+
+@pytest.fixture
 def admin(client, hospital):
     """The hospital's admin, signed in with a fresh authenticator code (changes need one)."""
     make_staff(hospital, "admin@sph.example", role="admin")
@@ -169,7 +182,7 @@ class TestConnections:
         assert secret not in json.dumps(client.get(f"/connections/{connection['id']}", headers=admin).json())
         with platform_session() as session:
             row = session.get(IntegrationClient, connection["id"])
-            assert row.secret_hash.startswith("$argon2id$") and secret not in row.secret_hash
+            assert row.secret_hash.startswith("hmac-sha256$") and secret not in row.secret_hash
 
     def test_changes_need_a_fresh_authenticator_code(self, client, hospital, monkeypatch):
         make_staff(hospital, "it@sph.example", role="admin")
@@ -278,7 +291,8 @@ class TestTokens:
 
     def test_wrong_or_unknown_credentials(self, client, conn):
         cid = conn["connection"]["client_id"]
-        for headers in (basic(cid, "wrong-secret"), basic("endod_live_unknown", conn["client_secret"])):
+        for headers in (basic(cid, "wrong-secret"), basic(cid, "ehs_" + "z" * 48),
+                        basic("endod_live_" + "0" * 24, conn["client_secret"])):
             resp = token_request(client, headers=headers)
             assert resp.status_code == 401 and resp.json()["error"] == "invalid_client"
         assert token_request(client, {"grant_type": "password"}).status_code == 400
@@ -306,16 +320,20 @@ class TestTokens:
                                                    conn["client_secret"])).status_code == 401
 
     def test_ip_restriction(self, client, admin, conn, monkeypatch):
+        # Even with proxies trusted for the portal, X-Forwarded-For never counts here.
         monkeypatch.setenv("HOSPITAL_TRUSTED_PROXY_HOPS", "1")
         client.post(f"/connections/{conn['connection']['id']}/ip-restriction", headers=admin,
                     json={"allowed_ips": ["203.0.113.0/24"]})
         creds = basic(conn["connection"]["client_id"], conn["client_secret"])
-        outside = token_request(client, headers={**creds, "X-Forwarded-For": "198.51.100.9"})
+        outside = token_request(client, headers={**creds, "X-Endod-Client-IP": "198.51.100.9"})
         assert outside.status_code == 401 and "address" in outside.json()["error_description"]
-        inside = token_request(client, headers={**creds, "X-Forwarded-For": "203.0.113.9"})
+        spoofed = token_request(client, headers={**creds, "X-Forwarded-For": "203.0.113.9",
+                                                 "X-Endod-Client-IP": "198.51.100.9"})
+        assert spoofed.status_code == 401
+        inside = token_request(client, headers={**creds, "X-Endod-Client-IP": "203.0.113.9"})
         assert inside.status_code == 200
         auth = {"Authorization": f"Bearer {inside.json()['access_token']}"}
-        moved = post_bundle(client, {**auth, "X-Forwarded-For": "198.51.100.9"}, [entry(observation())])
+        moved = post_bundle(client, {**auth, "X-Endod-Client-IP": "198.51.100.9"}, [entry(observation())])
         assert moved.status_code == 403
 
     def test_unapproved_or_suspended_hospitals(self, client, conn, auth, hospital, patient):
@@ -329,10 +347,44 @@ class TestTokens:
         set_status(hospital, application=ApplicationStatus.APPROVED)
         assert token_request(client, headers=creds).status_code == 200
 
-    def test_token_requests_are_rate_limited(self, client, conn, monkeypatch):
-        monkeypatch.setattr(ratelimit, "TOKENS_PER_CLIENT", ratelimit.Limiter(2, 60))
+    def test_token_requests_are_limited_per_client_and_address(self, client, conn, monkeypatch):
+        """A client_id is public: hammering it from one address never blocks the client's own system."""
+        monkeypatch.setattr(ratelimit, "TOKENS_PER_CLIENT_ADDRESS", ratelimit.Limiter(2, 60))
         creds = basic(conn["connection"]["client_id"], conn["client_secret"])
-        assert [token_request(client, headers=creds).status_code for _ in range(3)] == [200, 200, 429]
+        attacker = {**creds, "X-Endod-Client-IP": "198.51.100.66"}
+        assert [token_request(client, headers=attacker).status_code for _ in range(3)] == [200, 200, 429]
+        assert token_request(client, headers={**creds, "X-Endod-Client-IP": "203.0.113.5"}).status_code == 200
+
+    def test_failed_attempts_never_lock_out_the_right_credentials(self, client, conn, monkeypatch):
+        monkeypatch.setattr(ratelimit, "FAILURES_PER_CLIENT", ratelimit.Limiter(3, 900))
+        cid = conn["connection"]["client_id"]
+        wrong = "ehs_" + "x" * 48
+        codes = [token_request(client, headers={**basic(cid, wrong), "X-Endod-Client-IP": f"198.51.100.{n}"})
+                 .status_code for n in range(5)]
+        assert codes == [401, 401, 429, 429, 429]  # failures slow down...
+        right = token_request(client, headers={**basic(cid, conn["client_secret"]), "X-Endod-Client-IP": "203.0.113.5"})
+        assert right.status_code == 200  # ... the right secret still works
+
+    def test_an_address_with_many_failures_and_the_global_limit(self, client, conn, monkeypatch):
+        monkeypatch.setattr(ratelimit, "FAILURES_PER_ADDRESS", ratelimit.Limiter(2, 900))
+        cid = conn["connection"]["client_id"]
+        here = {"X-Endod-Client-IP": "198.51.100.7"}
+        for _ in range(2):
+            assert token_request(client, headers={**basic(cid, "ehs_" + "y" * 48), **here}).status_code == 401
+        blocked = token_request(client, headers={**basic(cid, conn["client_secret"]), **here})
+        assert blocked.status_code == 429 and blocked.headers["retry-after"]
+        monkeypatch.setattr(ratelimit, "TOKENS_GLOBAL", ratelimit.Limiter(1, 60))
+        creds = basic(cid, conn["client_secret"])
+        assert token_request(client, headers={**creds, "X-Endod-Client-IP": "203.0.113.1"}).status_code == 200
+        assert token_request(client, headers={**creds, "X-Endod-Client-IP": "203.0.113.2"}).status_code == 429
+
+    def test_malformed_credentials_are_refused_before_any_database_work(self, client, conn, monkeypatch):
+        from app import rls
+
+        monkeypatch.setattr(rls, "hospital_of_integration_client", lambda *_a: pytest.fail("looked up"))
+        for headers in (basic("not-a-client-id", conn["client_secret"]),
+                        basic(conn["connection"]["client_id"], "short")):
+            assert token_request(client, headers=headers).status_code == 401
 
     def test_a_forged_or_foreign_token_is_refused(self, client, auth):
         other = ec.generate_private_key(ec.SECP256R1())
@@ -478,10 +530,9 @@ class TestFhir:
 
     def test_records_are_encrypted_and_readable_in_the_portal(self, client, admin, hospital, auth, patient):
         post_bundle(client, auth, [entry(observation(test=f"Glucose {MARK}"))])
-        from app.db import get_engine
-        with get_engine().connect() as connection:
-            from sqlalchemy import text
-            raw = connection.execute(text("SELECT title FROM clinical_records")).scalars().all()
+        from sqlalchemy import text
+        with platform_session() as session:  # as stored (no ORM), every hospital's rows (row-level security)
+            raw = session.execute(text("SELECT title FROM clinical_records")).scalars().all()
         assert raw and all(MARK not in (v or "") for v in raw)  # ciphertext at rest
         make_staff(hospital, "doc@sph.example", role="doctor")
         doctor = sign_in(client, "doc@sph.example")
@@ -572,11 +623,43 @@ class TestFhir:
         bundle = resp.json()
         assert bundle["meta"]["tag"][0]["code"] == "test-mode"
         assert {e["response"]["status"] for e in bundle["entry"]} == {"201 Created"}
-        assert "would create" in bundle["entry"][0]["response"]["outcome"]["issue"][0]["diagnostics"]
+        assert "would store" in bundle["entry"][0]["response"]["outcome"]["issue"][0]["diagnostics"]
         assert records_of(patient) == [] and count(RecordFile) == 0 and count(IntegrationResource) == 0
         assert count(OutboxEvent) == 0 and count(AuditEvent) == before
-        bad = post_bundle(client, auth, [entry(observation(mrn="SPH-404404"))])
-        assert bad.status_code == 422  # validated all the same
+        bad = observation()
+        bad["effectiveDateTime"] = "2999-01-01"
+        assert post_bundle(client, auth, [entry(bad)]).status_code == 422  # validated all the same
+
+    def test_test_mode_never_says_whether_a_patient_exists(self, client, admin, hospital, patient):
+        make_patient(hospital, mrn="SPH-000002", dedan_id="DE654321")
+        auth = get_token(client, connected(client, admin, mode="test"))
+        by_endod = observation()
+        by_endod["subject"] = {"identifier": {"system": ENDOD, "value": "DE654321"}}
+        unknown_endod = observation()
+        unknown_endod["subject"] = {"identifier": {"system": ENDOD, "value": "DE999999"}}
+        answers = [post_bundle(client, auth, [entry(r)]) for r in
+                   (observation(), observation(mrn="SPH-404404"), by_endod, unknown_endod)]
+        assert {a.status_code for a in answers} == {200}
+        outcomes = {json.dumps(a.json()["entry"]) for a in answers}
+        assert len(outcomes) == 1  # the same answer, patient or not
+        assert "SPH-" not in outcomes.pop()
+        nobody = observation()
+        nobody["subject"] = {"display": "Almaz Tefera"}
+        assert post_bundle(client, auth, [entry(nobody)]).status_code == 422  # no identifier at all
+
+    def test_an_endod_id_and_a_number_naming_different_patients_are_refused(self, client, auth, hospital, patient):
+        make_patient(hospital, mrn="SPH-000002", dedan_id="DE654321")
+        both = observation()
+        both["subject"] = {"reference": "urn:uuid:p"}
+        patient_entry = {"fullUrl": "urn:uuid:p", "resource": {"resourceType": "Patient", "identifier": [
+            {"system": ENDOD, "value": "DE654321"}, {"system": MRN_SYSTEM, "value": "SPH-000001"}]}}
+        resp = post_bundle(client, auth, [patient_entry, entry(both)], kind="batch")
+        result = resp.json()["entry"][1]["response"]
+        assert result["status"].startswith("422") and "different patients" in json.dumps(result["outcome"])
+        assert records_of(patient) == []
+        agree = {"fullUrl": "urn:uuid:p", "resource": {"resourceType": "Patient", "identifier": [
+            {"system": ENDOD, "value": "DE654321"}, {"system": MRN_SYSTEM, "value": "SPH-000002"}]}}
+        assert post_bundle(client, auth, [agree, entry(both)]).status_code == 200
 
     def test_scopes_per_resource(self, client, admin, patient):
         auth = get_token(client, connected(client, admin, scopes=["records.labs.write"]))
@@ -629,6 +712,14 @@ class TestIsolation:
         resp = post_bundle(client, auth, [entry(a) for a in attempts], kind="batch")
         assert [e["response"]["status"][:3] for e in resp.json()["entry"]] == ["422"] * 3
         assert records_of(theirs) == []
+
+    def test_a_test_connection_sees_only_sample_bookings(self, client, admin, hospital):
+        real = book(hospital)
+        auth = get_token(client, connected(client, admin, scopes=["bookings.read"], mode="test"))
+        items = client.get(f"{API}/bookings", headers=auth).json()["items"]
+        assert items and all(b["sample"] for b in items) and real not in {b["id"] for b in items}
+        assert client.get(f"{API}/bookings/{real}", headers=auth).status_code == 404
+        assert client.get(f"{API}/bookings/{items[0]['id']}", headers=auth).json()["sample"] is True
 
     def test_bookings_are_the_hospitals_own(self, client, admin, hospital):
         other = make_hospital(code="BET", name="Bethel Hospital")
@@ -705,7 +796,7 @@ class TestWebhooks:
                          webhook_url="https://hooks.example.com/endod")
         sent = []
 
-        def fake_post(url, headers, body):
+        def fake_post(url, headers, body, deadline=None):
             sent.append((url, headers, body))
             return webhooks.Sent(True, 200, None)
 
@@ -743,6 +834,16 @@ class TestWebhooks:
         with platform_session() as session:
             row = session.scalar(select(WebhookDelivery))
             assert row.status == "failed" and row.body is None and row.attempts == 2 and first_retry is not None
+
+    def test_test_connections_get_only_test_events(self, client, admin, hospital, monkeypatch):
+        conn = connected(client, admin, scopes=["webhooks"], mode="test", webhook_url="https://hooks.example.com/t")
+        sent = []
+        monkeypatch.setattr(webhooks, "post", lambda url, headers, body, deadline=None: sent.append(json.loads(body))
+                            or webhooks.Sent(True, 200, None))
+        book(hospital)
+        client.post(f"/connections/{conn['connection']['id']}/webhook/test", headers=admin, json={})
+        webhooks.deliver_due()
+        assert [e["type"] for e in sent] == ["endpoint.test"]
 
     def test_disconnected_or_suspended_get_nothing(self, client, admin, hospital, monkeypatch):
         conn = connected(client, admin, scopes=["webhooks"], webhook_url="https://hooks.example.com/endod")
@@ -798,6 +899,8 @@ class TestDocs:
 
     def test_the_served_guide_is_docs_integrations_md(self):
         root = Path(__file__).resolve().parents[2]
+        if not (root / "docs" / "integrations.md").exists():
+            pytest.skip("docs/ is not here (only backend-hospital/ was copied)")
         served = root / "backend-hospital" / "app" / "integrations" / "guide.md"
         assert served.read_text(encoding="utf-8") == (root / "docs" / "integrations.md").read_text(encoding="utf-8")
 
@@ -823,8 +926,94 @@ def test_the_signing_key_comes_from_its_file(tmp_path, monkeypatch):
         signing.clear_cache()
 
 
-def test_secrets_are_long_and_random():
+def test_secrets_are_long_and_random(db):
     assert len(clients.new_secret()) >= 40 and clients.new_secret() != clients.new_secret()
     assert clients.verify_secret("x", None) is False
     hashed = clients.hash_secret("abc")
     assert clients.verify_secret("abc", hashed) and not clients.verify_secret("abd", hashed)
+
+
+# --- the separate service behind the edge ---------------------------------------------------------
+
+class TestEdge:
+    def test_the_main_api_does_not_serve_the_integration_api(self, db):
+        from fastapi.testclient import TestClient
+
+        from app.main import create_app
+
+        assert TestClient(create_app()).get(f"{API}/.well-known/jwks.json").status_code == 404
+
+    def test_the_edge_key_is_required_when_set(self, client, monkeypatch):
+        monkeypatch.setenv("HOSPITAL_EDGE_SHARED_SECRET", "edge-secret-123")
+        assert client.get(f"{API}/.well-known/jwks.json").status_code == 403
+        assert client.get(f"{API}/.well-known/jwks.json", headers={"X-Endod-Edge-Key": "wrong"}).status_code == 403
+        ok = client.get(f"{API}/.well-known/jwks.json", headers={"X-Endod-Edge-Key": "edge-secret-123"})
+        assert ok.status_code == 200
+        assert client.get("/health").status_code == 200  # the container's own health check
+
+    def test_production_without_the_edge_key_answers_503(self, client, monkeypatch):
+        monkeypatch.setenv("HOSPITAL_ENVIRONMENT", "production")
+        monkeypatch.delenv("HOSPITAL_EDGE_SHARED_SECRET", raising=False)
+        assert client.get(f"{API}/.well-known/jwks.json").status_code == 503
+
+
+def test_counters_are_bounded_without_forgetting_live_keys():
+    limiter = ratelimit.Limiter(2, 60, tracked=3)
+    for key in ("a", "b", "c"):
+        assert limiter.hit(key, now=0) is None
+    assert limiter.hit("a", now=1) is None
+    assert limiter.hit("d", now=2) is not None  # full of live keys: refused, nothing forgotten
+    assert limiter.hit("a", now=3) is not None  # "a" still remembers its two hits
+    assert limiter.hit("d", now=100) is None  # once the windows passed, old keys go
+
+
+class TestDeliveryThread:
+    def test_the_event_bus_loop_never_delivers_webhooks(self, db, monkeypatch):
+        import fakeredis
+
+        from app import worker
+
+        monkeypatch.setattr(webhooks, "deliver_due", lambda *a, **k: pytest.fail("webhooks in the bus loop"))
+        worker.run_once(fakeredis.FakeRedis(decode_responses=True))
+
+    def test_a_slow_dns_answer_is_cut_short(self, monkeypatch):
+        import socket
+
+        monkeypatch.setattr(webhooks, "DNS_TIMEOUT_SECONDS", 0.2)
+        monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: time.sleep(2) or [])
+        started = time.monotonic()
+        sent = webhooks.post("https://slow.example.com/hook", {}, b"{}")
+        assert not sent.ok and "in time" in sent.error and time.monotonic() - started < 1.5
+
+    def test_a_slow_endpoint_is_given_up_at_the_deadline(self, client, admin, hospital, monkeypatch):
+        from concurrent.futures import ThreadPoolExecutor
+
+        connected(client, admin, scopes=["webhooks"], webhook_url="https://hooks.example.com/endod")
+        monkeypatch.setattr(webhooks, "DEADLINE_SECONDS", 0.3)
+        monkeypatch.setattr(webhooks, "post", lambda *a, **k: time.sleep(3) or webhooks.Sent(True, 200, None))
+        book(hospital)
+        pool = ThreadPoolExecutor(max_workers=2)
+        started = time.monotonic()
+        assert webhooks.deliver_due(pool=pool) == 2
+        assert time.monotonic() - started < 2.5
+        with platform_session() as session:
+            rows = session.scalars(select(WebhookDelivery)).all()
+        assert {(r.status, r.last_error) for r in rows} == {("pending", "timed out")}
+        pool.shutdown(wait=False)
+
+    def test_the_delivery_thread_delivers_and_stops(self, client, admin, hospital, monkeypatch):
+        connected(client, admin, scopes=["webhooks"], webhook_url="https://hooks.example.com/endod")
+        monkeypatch.setattr(webhooks, "post", lambda *a, **k: webhooks.Sent(True, 200, None))
+        book(hospital)
+        thread = webhooks.Deliverer(workers=2, idle_seconds=0.05)
+        thread.start()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            with platform_session() as session:
+                if {r.status for r in session.scalars(select(WebhookDelivery))} == {"delivered"}:
+                    break
+            time.sleep(0.05)
+        thread.stop()
+        assert not thread.is_alive()
+        with platform_session() as session:
+            assert {r.status for r in session.scalars(select(WebhookDelivery))} == {"delivered"}
