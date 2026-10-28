@@ -26,12 +26,11 @@ from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse
 from pydantic import AwareDatetime, BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app import eventbus, files, onboarding
+from app import crypto, eventbus, files, onboarding
 from app.api.onboarding import platform_admin
 from app.auth import Staff, audit, signed_in_staff
 from app.db import ensure_aware, new_id, platform_session, session_scope, utcnow
@@ -228,16 +227,18 @@ async def upload_document(kind: str, request: Request,
     if content_length is not None and content_length > onboarding.MAX_DOCUMENT_BYTES:
         raise HTTPException(status_code=413, detail=f"A document can be at most {limit_mb} MB.")
 
-    def check() -> None:
+    def check() -> crypto.DataKey:
         with session_scope(staff.hospital_id) as session:
             hospital = _hospital(session, staff)
             onboarding.require_editable(hospital, onboarding.application_for(session, hospital))
+            # Encrypted as it arrives, with the hospital's data key.
+            return crypto.active_key(session, staff.hospital_id)
 
-    await run_in_threadpool(check)
+    key = await run_in_threadpool(check)
     file_id = new_id()
     try:
         size, sha256, content_type = await files.store_stream(
-            request.stream(), staff.hospital_id, file_id, max_bytes=onboarding.MAX_DOCUMENT_BYTES)
+            request.stream(), staff.hospital_id, file_id, key, max_bytes=onboarding.MAX_DOCUMENT_BYTES)
         filename = files.safe_filename(unquote(x_filename or ""), content_type)
     except files.FileRejected as exc:
         files.delete(staff.hospital_id, file_id)
@@ -275,16 +276,14 @@ async def upload_document(kind: str, request: Request,
     return payload
 
 
-def _send(doc: OnboardingDocument) -> FileResponse:
+def _send(session, doc: OnboardingDocument):
+    """The document, decrypted and checked against its sha256 before the
+    first byte is sent."""
     try:
-        path = files.path_for(doc.hospital_id, doc.id)
+        plain = files.open_checked(session, doc.hospital_id, doc.id, doc.size, doc.sha256)
     except files.FileRejected as exc:
         raise HTTPException(status_code=404, detail="Document not found.") from exc
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="Document not found.")
-    return FileResponse(path, media_type=doc.content_type, filename=doc.filename, content_disposition_type="inline",
-                        headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store",
-                                 "X-Sha256": doc.sha256})
+    return files.streaming_response(plain, doc.content_type, doc.filename, doc.sha256)
 
 
 def _document(session, hospital_id: str, kind: str) -> OnboardingDocument:
@@ -301,7 +300,7 @@ def _document(session, hospital_id: str, kind: str) -> OnboardingDocument:
 def read_document(kind: str, staff: Staff = Depends(applicant)):
     """The hospital's own document (only its own: the hospital comes from the session)."""
     with session_scope(staff.hospital_id) as session:
-        return _send(_document(session, staff.hospital_id, kind))
+        return _send(session, _document(session, staff.hospital_id, kind))
 
 
 # --- the demo --------------------------------------------------------------------------------
@@ -487,7 +486,7 @@ def read_application_for_endod(hospital_id: str) -> Dict[str, Any]:
 def read_document_for_endod(hospital_id: str, kind: str):
     with platform_session() as session:
         hospital = _applied_hospital(session, hospital_id)
-        return _send(_document(session, hospital.id, kind))
+        return _send(session, _document(session, hospital.id, kind))
 
 
 class Rejection(BaseModel):

@@ -15,6 +15,7 @@ import time
 import redis
 
 from app import bookings, chores, dispensing, eventbus, linking, sharing
+from app.crypto import check_master_key
 from app.db import check_connection_role
 
 logger = logging.getLogger("hospital.worker")
@@ -59,7 +60,9 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
-    # Never run as a database role that row-level security does not hold.
+    # Never run as a database role that row-level security does not hold, nor
+    # without the master key (HOSPITAL_MASTER_KEY_FILE).
+    check_master_key()
     check_connection_role()
     backoff = 1.0
     client = None

@@ -21,11 +21,10 @@ from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse
 from pydantic import AwareDatetime, BaseModel, Field
 from sqlalchemy import func, select
 
-from app import dispensing, files, linking, records
+from app import crypto, dispensing, files, linking, records
 from app.api.onboarding import platform_admin
 from app.api.patients import DEMOGRAPHIC_EDITORS, DIAGNOSIS_READERS
 from app.auth import Staff, audit, current_staff, require_roles
@@ -157,7 +156,7 @@ async def upload(patient_id: str, request: Request,
     if content_length is not None and content_length > files.MAX_FILE_BYTES:
         raise HTTPException(status_code=413, detail="A file can be at most 20 MB.")
 
-    def check() -> None:
+    def check() -> crypto.DataKey:
         with session_scope(staff.hospital_id) as session:
             _patient(session, staff, patient_id)
             pending = session.scalar(select(func.count()).where(
@@ -166,11 +165,13 @@ async def upload(patient_id: str, request: Request,
             if pending >= MAX_PENDING_UPLOADS:
                 raise HTTPException(status_code=429, detail="Too many files waiting to be attached. "
                                                             "Save or discard your records first.")
+            # The file is encrypted as it arrives, with the hospital's data key.
+            return crypto.active_key(session, staff.hospital_id)
 
-    await run_in_threadpool(check)
+    key = await run_in_threadpool(check)
     file_id = new_id()
     try:
-        size, sha256, content_type = await files.store_stream(request.stream(), staff.hospital_id, file_id)
+        size, sha256, content_type = await files.store_stream(request.stream(), staff.hospital_id, file_id, key)
         filename = files.safe_filename(unquote(x_filename or ""), content_type)
     except files.FileRejected as exc:
         files.delete(staff.hospital_id, file_id)
@@ -385,19 +386,17 @@ def read_file(record_id: str, file_id: str, staff: Staff = Depends(readers)):
             raise HTTPException(status_code=404, detail="File not found.")
         audit(session, staff.hospital_id, staff.id, "record_file_viewed", "patient", row.patient_id,
               {"record_id": record_id, "file_id": file_id})
-        return _send(row)
+        return _send(session, row)
 
 
-def _send(row: RecordFile) -> FileResponse:
+def _send(session, row: RecordFile):
+    """The file, decrypted and checked against its sha256 before the first
+    byte is sent (inside ``session``, which looks up the hospital's key)."""
     try:
-        path = files.path_for(row.hospital_id, row.id)
+        plain = files.open_checked(session, row.hospital_id, row.id, row.size, row.sha256)
     except files.FileRejected as exc:
         raise HTTPException(status_code=404, detail="File not found.") from exc
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="File not found.")
-    return FileResponse(path, media_type=row.content_type, filename=row.filename, content_disposition_type="inline",
-                        headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store",
-                                 "X-Sha256": row.sha256})
+    return files.streaming_response(plain, row.content_type, row.filename, row.sha256)
 
 
 @platform_router.get("/platform/records/{record_id}/files/{file_id}", dependencies=[Depends(platform_admin)])
@@ -410,7 +409,7 @@ def platform_file(record_id: str, file_id: str):
             ClinicalRecord.published_dedan_id.is_not(None), ClinicalRecord.retracted.is_(False)))
         if row is None:
             raise HTTPException(status_code=404, detail="File not found.")
-        return _send(row)
+        return _send(session, row)
 
 
 # --- visits and follow-ups -----------------------------------------------------------------------

@@ -468,8 +468,9 @@ def add_alert(patient_id: str, body: AlertCreate,
                              label=body.label, created_by=staff.id)
         session.add(alert)
         session.flush()
+        # The label is health data, encrypted at rest: the audit log (plain) names the alert only.
         audit(session, staff.hospital_id, staff.id, "patient_alert_added", "patient", patient.id,
-              {"kind": body.kind, "label": body.label})
+              {"kind": body.kind, "alert_id": alert.id})
         return {"id": alert.id, "kind": alert.kind, "label": alert.label}
 
 
@@ -484,5 +485,5 @@ def remove_alert(patient_id: str, alert_id: str,
             raise HTTPException(status_code=404, detail="Alert not found.")
         session.delete(alert)
         audit(session, staff.hospital_id, staff.id, "patient_alert_removed", "patient", patient.id,
-              {"kind": alert.kind, "label": alert.label})
+              {"kind": alert.kind, "alert_id": alert.id})
         return {"ok": True}

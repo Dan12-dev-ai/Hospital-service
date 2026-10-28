@@ -261,7 +261,8 @@ class TestDocuments:
         view = client.get("/onboarding/documents/moh_license", headers=headers)
         assert view.status_code == 200 and view.content == PNG
         assert view.headers["content-type"] == "image/png" and view.headers["x-content-type-options"] == "nosniff"
-        assert files.path_for(hospital_id, next(iter(now_files)).name).read_bytes() == PNG
+        stored = files.path_for(hospital_id, next(iter(now_files)).name).read_bytes()
+        assert stored.startswith(b"ENDODENC") and PNG not in stored  # encrypted at rest (app/crypto.py)
 
     @pytest.mark.parametrize("data,name,status", [
         (b"just text, not a document", "notes.pdf", 415),

@@ -49,8 +49,10 @@ into a query as ``hospital_app`` could still call ``set_config`` to choose
 another hospital, or, with a second statement, ``SET ROLE hospital_platform``;
 parameterised queries are what keep that out.
 
-Migration 0007 installs these objects; the tests (which create the tables
-directly) call :func:`install`. tests/test_rls.py checks the two agree.
+Migration 0007 installs these objects, and 0008 the policies of
+``hospital_keys`` (each hospital's wrapped data keys, app/crypto.py); the
+tests (which create the tables directly) call :func:`install`.
+tests/test_rls.py checks they agree.
 """
 
 from __future__ import annotations
@@ -90,6 +92,8 @@ TENANT_TABLES: List[Tuple[str, str]] = [
     ("demo_bookings", "hospital_id"),
     ("prescription_dispenses", "hospital_id"),
     ("patient_alerts", "hospital_id"),
+    # Migration 0008: the hospitals' wrapped data keys.
+    ("hospital_keys", "hospital_id"),
 ]
 
 #: Child tables without a hospital column: table -> (parent, foreign key column).
@@ -106,8 +110,11 @@ SHARED_TABLES = ("outbox_events", "processed_events")
 #: payloads of every hospital, with no hospital column) is write-only for the
 #: app, which only emits events inside its transactions: reading, marking
 #: sent and cleaning up are the worker's, as hospital_platform.
-APP_RIGHTS = {"audit_events": "SELECT, INSERT", "outbox_events": "INSERT"}
-PLATFORM_RIGHTS = {"audit_events": "SELECT, INSERT"}
+#: Data keys are added and deactivated (rotation), never deleted by the app:
+#: without its key, a hospital's data is lost.
+APP_RIGHTS = {"audit_events": "SELECT, INSERT", "outbox_events": "INSERT",
+              "hospital_keys": "SELECT, INSERT, UPDATE"}
+PLATFORM_RIGHTS = {"audit_events": "SELECT, INSERT", "hospital_keys": "SELECT, INSERT, UPDATE"}
 APPEND_ONLY = ("audit_events",)
 
 #: References between two rows of one hospital: (child, column, parent, on delete).

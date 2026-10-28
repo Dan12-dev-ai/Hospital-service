@@ -158,11 +158,12 @@ class Planner:
         if key in self._seen or source_key in self._seen:
             raise Skip("the same record appears twice in this file")
         self._seen.update((key, source_key))
-        if already_imported(self.session, self.hospital.id, source_key) or self.session.scalar(
-                select(ClinicalRecord.id).where(
-                ClinicalRecord.patient_id == patient.id, ClinicalRecord.category == category,
-                ClinicalRecord.title == title, ClinicalRecord.occurred_at == occurred_at,
-                ClinicalRecord.source == "import", ClinicalRecord.retracted.is_(False))):
+        if already_imported(self.session, self.hospital.id, source_key) or any(
+                record.title == title for record in self.session.scalars(select(ClinicalRecord).where(
+                    ClinicalRecord.patient_id == patient.id, ClinicalRecord.category == category,
+                    ClinicalRecord.occurred_at == occurred_at, ClinicalRecord.source == "import",
+                    ClinicalRecord.retracted.is_(False)))):
+            # Titles are encrypted at rest: compared here, after decryption.
             raise Skip("already imported")
         item = {
             "index": index, "what": what, "patient_id": patient.id, "patient": f"{patient.full_name} ({patient.mrn})",

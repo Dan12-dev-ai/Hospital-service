@@ -192,7 +192,8 @@ def fetch_file(share_id: str, file_id: str, expected: Dict[str, Any]) -> Tuple[t
     url = f"{settings.PLATFORM_API_URL.rstrip('/')}/internal/shares/{share_id}/files/{file_id}"
     request = urllib.request.Request(url, headers={"X-Platform-Key": settings.PLATFORM_ADMIN_KEY})
     limit = int(expected["size"])
-    out = tempfile.SpooledTemporaryFile(max_size=2 * 1024 * 1024)
+    # Kept in memory (at most one file's size), never written to disk in plain text.
+    out = tempfile.SpooledTemporaryFile(max_size=files.MAX_FILE_BYTES + 1)
     digest = hashlib.sha256()
     size = 0
     try:
