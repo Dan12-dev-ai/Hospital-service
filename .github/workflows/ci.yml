@@ -65,6 +65,11 @@ jobs:
               assert session.scalar(text("SELECT count(*) FROM staff_users")) == 1
           print("hospital_app: row-level security holds")
           PY
+          # Encryption at rest after the migrations, with a real master key file.
+          head -c 32 /dev/urandom > "$RUNNER_TEMP/master.key"
+          export HOSPITAL_MASTER_KEY_FILE="$RUNNER_TEMP/master.key"
+          python -m app.cli encrypt-existing
+          python -m app.cli check-encryption
 
   backend-image:
     name: Hospital backend image
