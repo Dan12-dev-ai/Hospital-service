@@ -6,6 +6,7 @@ import { Icon } from "@/components/ui/icon";
 import {
   EmptyState,
   ErrorState,
+  dangerButtonClass,
   FormError,
   LoadingState,
   Modal,
@@ -17,9 +18,9 @@ import {
 } from "@/components/common/states";
 import { useDashboard } from "@/components/dashboard/dashboard-context";
 import { useSignedIn } from "@/components/session/session-context";
-import { ConfirmPassword, CopyField } from "@/components/connect/confirm-password";
+import { CopyField, useFreshAction } from "@/components/connect/confirm-code";
 import { AdvancedPanel } from "@/components/connect/advanced-panel";
-import { apiFetch, useApi } from "@/lib/api";
+import { ApiError, apiFetch, useApi } from "@/lib/api";
 import {
   ABILITIES,
   NOTIFY_SCOPE,
@@ -136,24 +137,59 @@ function Connections() {
         />
       )}
       {disconnecting && (
-        <ConfirmPassword
-          title={`Disconnect ${disconnecting.name}?`}
-          actionLabel="Disconnect"
-          danger
+        <Disconnect
+          connection={disconnecting}
           onClose={() => setDisconnecting(null)}
-          onConfirm={async (password) => {
-            await apiFetch(`connections/${disconnecting.id}/disconnect`, { method: "POST", body: { password } });
-            setDisconnecting(null);
+          onDone={() => {
             showToast(`${disconnecting.name} disconnected`);
+            setDisconnecting(null);
             reload();
           }}
-        >
-          <p className="text-sm text-slate-600">
-            It stops working immediately. Records it already sent stay in Endod.
-          </p>
-        </ConfirmPassword>
+        />
       )}
     </div>
+  );
+}
+
+function Disconnect({ connection, onClose, onDone }: { connection: Connection; onClose: () => void; onDone: () => void }) {
+  const fresh = useFreshAction();
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function disconnect() {
+    setBusy(true);
+    setError(null);
+    try {
+      const done = await fresh.run({
+        title: `Disconnect ${connection.name}`,
+        actionLabel: "Disconnect",
+        danger: true,
+        action: async () => {
+          await apiFetch(`connections/${connection.id}/disconnect`, { method: "POST" });
+          onDone();
+        },
+      });
+      if (!done) setBusy(false);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not disconnect.");
+      setBusy(false);
+    }
+  }
+
+  if (fresh.dialog) return fresh.dialog;
+  return (
+    <Modal title={`Disconnect ${connection.name}?`} icon="warning" onClose={onClose}>
+      <p className="text-sm text-slate-600">It stops working immediately. Records it already sent stay in Endod.</p>
+      <FormError message={error} />
+      <div className="flex justify-end gap-2">
+        <button type="button" className={secondaryButtonClass} onClick={onClose} disabled={busy}>
+          Cancel
+        </button>
+        <button type="button" className={dangerButtonClass} onClick={disconnect} disabled={busy}>
+          Disconnect
+        </button>
+      </div>
+    </Modal>
   );
 }
 
@@ -221,8 +257,9 @@ function ConnectFlow({ onClose }: { onClose: () => void }) {
   const [mode, setMode] = useState<ConnectionMode>("live");
   const [notifyUrl, setNotifyUrl] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<NewConnectionResult | null>(null);
+  const fresh = useFreshAction();
   const notify = chosen.includes(NOTIFY_SCOPE);
 
   function toggle(scope: string) {
@@ -239,36 +276,32 @@ function ConnectFlow({ onClose }: { onClose: () => void }) {
     if (notify && !/^https:\/\/\S+$/i.test(notifyUrl.trim())) {
       return setError("Give the https:// address where your system wants to be notified.");
     }
-    setConfirming(true);
+    void create();
   }
 
-  if (confirming && !result) {
-    return (
-      <ConfirmPassword
-        title="Connect this system"
-        actionLabel="Connect"
-        onClose={() => setConfirming(false)}
-        onConfirm={async (password) => {
+  async function create() {
+    setBusy(true);
+    try {
+      await fresh.run({
+        title: "Connect this system",
+        actionLabel: "Connect",
+        action: async () => {
           const created = await apiFetch<NewConnectionResult>("connections", {
             method: "POST",
-            body: {
-              name: name.trim(),
-              scopes: chosen,
-              mode,
-              webhook_url: notify ? notifyUrl.trim() : null,
-              password,
-            },
+            body: { name: name.trim(), scopes: chosen, mode, webhook_url: notify ? notifyUrl.trim() : null },
           });
           setResult(created);
           setStep(3);
-        }}
-      >
-        <p className="text-sm text-slate-600">
-          You are connecting <strong>{name.trim()}</strong> ({mode === "live" ? "Live" : "Test"}).
-        </p>
-      </ConfirmPassword>
-    );
+        },
+      });
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not connect the system.");
+    } finally {
+      setBusy(false);
+    }
   }
+
+  if (fresh.dialog && !result) return fresh.dialog;
 
   return (
     <Modal title={step === 3 ? "Your system is connected" : "Connect a system"} icon="add_link" onClose={onClose}>
@@ -368,7 +401,7 @@ function ConnectFlow({ onClose }: { onClose: () => void }) {
           </button>
         )}
         {step < 3 ? (
-          <button type="button" className={primaryButtonClass} onClick={next}>
+          <button type="button" className={primaryButtonClass} onClick={next} disabled={busy}>
             {step === 2 ? "Connect" : "Next"}
           </button>
         ) : (

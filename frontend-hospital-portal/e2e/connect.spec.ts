@@ -6,6 +6,7 @@ import {
   seedHospital,
   signIn,
   signInThroughForm,
+  totpCode,
   type SeededHospital,
 } from "./helpers";
 import { BACKEND_URL } from "./env";
@@ -13,6 +14,10 @@ import { BACKEND_URL } from "./env";
 // "Connect your system": the hospital's own systems and the integration API.
 
 let hospital: SeededHospital;
+
+// Each sign-in and each fresh confirmation uses a new authenticator code; the
+// test clock may wait for the next 30-second step.
+test.describe.configure({ timeout: 120_000 });
 
 test.beforeAll(() => {
   hospital = seedHospital("con");
@@ -22,7 +27,7 @@ async function asAdmin(page: Page) {
   await signIn(page, hospital.accounts.admin.email, hospital.password);
 }
 
-/** The 3 steps, through the confirmation of the admin's password. Returns the client ID and secret. */
+/** The 3 steps, through a fresh code from the admin's authenticator. Returns the client ID and secret. */
 async function connectSystem(page: Page, name: string, abilities: string[], mode: "Live" | "Test" = "Live") {
   await page.goto("/connect");
   await page.getByRole("button", { name: "Connect a system" }).click();
@@ -35,10 +40,12 @@ async function connectSystem(page: Page, name: string, abilities: string[], mode
   await dialog.getByText(mode, { exact: true }).click();
   await dialog.getByRole("button", { name: "Connect" }).click();
 
-  // Re-authentication: the admin's password again.
-  const confirm = page.getByTestId("confirm-password");
+  // Re-authentication: a fresh code from the admin's authenticator app.
+  const confirm = page.getByTestId("confirm-code");
   await expect(confirm).toBeVisible();
-  await confirm.getByLabel("Confirm it's you: enter your password").fill(hospital.password);
+  await confirm.getByLabel("Confirm it's you: enter the code from your authenticator app").fill(
+    totpCode(hospital.accounts.admin.email)
+  );
   await confirm.getByRole("button", { name: "Connect" }).click();
 
   const done = page.getByTestId("connect-done");
@@ -56,19 +63,20 @@ test("an admin connects a system in 3 steps; the secret is shown once", async ({
   await expect(page).toHaveURL(/\/connect$/);
   await expect(page.getByRole("link", { name: "Developer guide" })).toHaveAttribute("href", /\/integrations\/v1\/docs$/);
 
-  // A wrong password is refused and nothing is connected.
+  // A wrong code is refused and nothing is connected.
   await page.getByRole("button", { name: "Connect a system" }).click();
   const dialog = page.getByRole("dialog", { name: "Connect a system" });
-  await dialog.getByLabel("What is the system called?").fill("Wrong password system");
+  await dialog.getByLabel("What is the system called?").fill("Wrong code system");
   await dialog.getByRole("button", { name: "Next" }).click();
   await dialog.getByText("Send lab results", { exact: true }).click();
   await dialog.getByRole("button", { name: "Connect" }).click();
-  const confirm = page.getByTestId("confirm-password");
-  await confirm.getByLabel("Confirm it's you: enter your password").fill("not-my-password");
+  const confirm = page.getByTestId("confirm-code");
+  await confirm.getByLabel("Confirm it's you: enter the code from your authenticator app").fill("000000");
   await confirm.getByRole("button", { name: "Connect" }).click();
-  await expect(confirm.getByTestId("form-error")).toHaveText("That password is not correct.");
+  await expect(confirm.getByTestId("form-error")).toContainText("That code is not valid");
   await confirm.getByRole("button", { name: "Cancel" }).click();
   await page.getByRole("button", { name: "Close dialog" }).click();
+  expect((await (await page.request.get("/api/connections")).json()).items).toHaveLength(0);
 
   const { clientId, secret, done } = await connectSystem(page, "Main lab system", ["Send lab results", "See bookings"]);
   expect(clientId).toMatch(/^endod_live_[0-9a-f]{24}$/);
@@ -120,17 +128,13 @@ test("the Advanced panel: IP restriction, webhook with a test event, logs", asyn
   await expect(card.getByTestId("last-used")).toHaveText(/Last used/);
 
   await advanced.getByLabel("Allowed IP addresses").fill("196.188.10.0/24\n127.0.0.1");
+  // The code given to connect is fresh for 10 minutes: no new one asked.
   await advanced.getByRole("button", { name: "Save addresses" }).click();
-  const confirm = page.getByTestId("confirm-password");
-  await confirm.getByLabel("Confirm it's you: enter your password").fill(hospital.password);
-  await confirm.getByRole("button", { name: "Save" }).click();
-  await expect(confirm).toHaveCount(0);
+  await expect(page.getByTestId("confirm-code")).toHaveCount(0);
   await expect(advanced.getByLabel("Allowed IP addresses")).toHaveValue("196.188.10.0/24\n127.0.0.1");
 
   await advanced.getByLabel("Webhook URL").fill("https://hooks.example.com/endod");
   await advanced.getByRole("button", { name: "Save webhook" }).click();
-  await confirm.getByLabel("Confirm it's you: enter your password").fill(hospital.password);
-  await confirm.getByRole("button", { name: "Save" }).click();
   await expect(page.getByTestId("revealed-secret")).toContainText("whsec_");
   await page.getByRole("button", { name: "I saved it" }).click();
 
@@ -139,18 +143,15 @@ test("the Advanced panel: IP restriction, webhook with a test event, logs", asyn
   await expect(advanced.getByTestId("delivery-log")).toContainText("endpoint.test");
 });
 
-test("disconnecting asks for confirmation and the password, and stops the system", async ({ page }) => {
+test("disconnecting asks for confirmation (and a fresh code), and stops the system", async ({ page }) => {
   await asAdmin(page);
   const { clientId, secret } = await connectSystem(page, "Old radiology system", ["Send imaging reports"]);
   await page.getByRole("button", { name: "I saved the secret" }).click();
   const card = page.getByTestId("connection").filter({ hasText: "Old radiology system" });
   await card.getByRole("button", { name: "Disconnect" }).click();
-  const confirm = page.getByTestId("confirm-password");
-  await expect(page.getByRole("dialog", { name: "Disconnect Old radiology system?" })).toContainText(
-    "It stops working immediately"
-  );
-  await confirm.getByLabel("Confirm it's you: enter your password").fill(hospital.password);
-  await confirm.getByRole("button", { name: "Disconnect" }).click();
+  const dialog = page.getByRole("dialog", { name: "Disconnect Old radiology system?" });
+  await expect(dialog).toContainText("It stops working immediately");
+  await dialog.getByRole("button", { name: "Disconnect" }).click();
   await expect(card).toHaveCount(0);
 
   const token = await page.request.post(`${BACKEND_URL}/integrations/v1/oauth/token`, {

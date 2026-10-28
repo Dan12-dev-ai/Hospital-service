@@ -30,6 +30,11 @@ export type Staff = {
   active: boolean;
   must_change_password: boolean;
   last_login_at: string | null;
+  /** An authenticator app is set up (two-step verification). */
+  two_factor_enrolled?: boolean;
+  /** /auth/me only: "full", or a sign-in half-way ("totp": a code is next; "enroll": set up the authenticator). */
+  stage?: "full" | "totp" | "enroll";
+  recovery_codes_left?: number;
   hospital?: { id: string; code: string; name: string; name_am: string | null; status: HospitalStatus;
     /** The onboarding application is not approved: only it (or its status) is open. */
     locked: boolean;

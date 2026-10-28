@@ -15,12 +15,12 @@ import {
 } from "@/components/common/states";
 import { useDashboard } from "@/components/dashboard/dashboard-context";
 import { useSignedIn } from "@/components/session/session-context";
-import { ConfirmPassword, CopyField } from "@/components/connect/confirm-password";
+import { CopyField, useFreshAction } from "@/components/connect/confirm-code";
 import { ApiError, apiFetch, useApi } from "@/lib/api";
 import type { Connection, Delivery, RequestLogEntry } from "@/lib/connect-types";
 import { formatDateTime } from "@/lib/format";
 
-/** A change that needs the password again: what to send, and what to say afterwards. */
+/** A change that needs a fresh authenticator code: what to send, and what to say afterwards. */
 type PendingChange = {
   title: string;
   actionLabel: string;
@@ -37,7 +37,7 @@ type PendingChange = {
  */
 export function AdvancedPanel({ connection, onChanged }: { connection: Connection; onChanged: () => void }) {
   const { showToast } = useDashboard();
-  const [pending, setPending] = useState<PendingChange | null>(null);
+  const fresh = useFreshAction();
   const [revealed, setRevealed] = useState<{ title: string; label: string; value: string } | null>(null);
   const [ips, setIps] = useState(connection.allowed_ips.join("\n"));
   const [jwks, setJwks] = useState("");
@@ -45,9 +45,22 @@ export function AdvancedPanel({ connection, onChanged }: { connection: Connectio
   const [error, setError] = useState<string | null>(null);
   const base = `connections/${connection.id}`;
 
-  function ask(change: Omit<PendingChange, "done"> & { done?: PendingChange["done"] }) {
+  async function ask(change: Omit<PendingChange, "done"> & { done?: PendingChange["done"] }) {
     setError(null);
-    setPending({ done: () => undefined, ...change });
+    try {
+      await fresh.run({
+        title: change.title,
+        actionLabel: change.actionLabel,
+        danger: change.danger,
+        action: async () => {
+          const answer = await apiFetch<Record<string, unknown>>(change.path, { method: "POST", body: change.body });
+          (change.done ?? (() => undefined))(answer);
+          onChanged();
+        },
+      });
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not save the change.");
+    }
   }
 
   async function sendTest() {
@@ -234,23 +247,7 @@ export function AdvancedPanel({ connection, onChanged }: { connection: Connectio
       <RequestLog base={base} />
       <Deliveries base={base} />
 
-      {pending && (
-        <ConfirmPassword
-          title={pending.title}
-          actionLabel={pending.actionLabel}
-          danger={pending.danger}
-          onClose={() => setPending(null)}
-          onConfirm={async (password) => {
-            const answer = await apiFetch<Record<string, unknown>>(pending.path, {
-              method: "POST",
-              body: { ...pending.body, password },
-            });
-            setPending(null);
-            pending.done(answer);
-            onChanged();
-          }}
-        />
-      )}
+      {fresh.dialog}
       {revealed && (
         <Modal title={revealed.title} icon="key" onClose={() => setRevealed(null)}>
           <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">

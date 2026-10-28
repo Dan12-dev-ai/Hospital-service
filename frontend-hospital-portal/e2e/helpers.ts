@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHmac } from "node:crypto";
 import path from "node:path";
 import { expect, type APIRequestContext, type Page } from "@playwright/test";
 import { BACKEND_URL, PLATFORM_KEY, backendDir, backendEnv, python } from "./env";
@@ -113,10 +114,50 @@ export function newDedanId(): string {
   return `DE${String(Math.floor(Math.random() * 1_000_000)).padStart(6, "0")}`;
 }
 
-/** Signs in through the portal's own API, so the page gets the session cookie. */
+/** A code from the account's authenticator app (never one used before). */
+export function totpCode(email: string): string {
+  return seed<{ code: string }>("totp-code", email).code;
+}
+
+/** A TOTP code (RFC 6238: SHA-1, 30 s, 6 digits) from a base32 secret, as an authenticator app makes it. */
+export function totpFromSecret(secret: string, at: number = Date.now()): string {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  let bits = "";
+  for (const char of secret.replace(/[\s=]/g, "").toUpperCase()) bits += alphabet.indexOf(char).toString(2).padStart(5, "0");
+  const key = Buffer.from(bits.match(/.{8}/g)!.map((byte) => parseInt(byte, 2)));
+  const counter = Buffer.alloc(8);
+  counter.writeBigUInt64BE(BigInt(Math.floor(at / 1000 / 30)));
+  const digest = createHmac("sha1", key).update(counter).digest();
+  const offset = digest[digest.length - 1] & 0x0f;
+  const value = (digest.readUInt32BE(offset) & 0x7fffffff) % 1_000_000;
+  return value.toString().padStart(6, "0");
+}
+
+/**
+ * Signs in through the portal's own API, so the page gets the session
+ * cookie: the password, then the code from the authenticator (or, the
+ * first time, setting the authenticator up).
+ */
 export async function signIn(page: Page, email: string, password: string) {
   const response = await page.request.post("/api/auth/login", { data: { email, password } });
   expect(response.status(), await response.text()).toBe(200);
+  const { stage, staff } = (await response.json()) as { stage: string; staff: { must_change_password: boolean } };
+  if (stage === "totp") {
+    const code = await page.request.post("/api/auth/totp", { data: { code: totpCode(email) } });
+    expect(code.status(), await code.text()).toBe(200);
+  } else if (stage === "enroll" && !staff.must_change_password) {
+    const started = await page.request.post("/api/auth/enroll/start", { data: {} });
+    expect(started.status(), await started.text()).toBe(200);
+    const { secret } = (await started.json()) as { secret: string };
+    const done = await page.request.post("/api/auth/enroll/confirm", { data: { code: totpFromSecret(secret) } });
+    expect(done.status(), await done.text()).toBe(200);
+  }
+}
+
+/** The code step of the sign-in form, with a code from the account's authenticator. */
+export async function enterCode(page: Page, email: string) {
+  await page.getByLabel("Authentication code").fill(totpCode(email));
+  await page.getByRole("button", { name: "Verify" }).click();
 }
 
 export async function signInThroughForm(page: Page, email: string, password: string) {

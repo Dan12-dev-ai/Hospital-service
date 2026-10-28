@@ -10,14 +10,22 @@ import {
   primaryButtonClass,
   secondaryButtonClass,
 } from "@/components/common/states";
-import { ApiError } from "@/lib/api";
+import { ApiError, apiFetch } from "@/lib/api";
+
+/** The backend's answer (app/twofactor.py, REAUTH_REQUIRED) when a fresh code is needed. */
+export const REAUTH_REQUIRED = "Confirm it is you: enter a code from your authenticator app.";
+
+export function needsFreshCode(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 403 && error.message === REAUTH_REQUIRED;
+}
 
 /**
- * Asks the signed-in admin for their password again before a sensitive
- * change (connecting a system, its credentials, disconnecting it). The
- * backend checks it, counts wrong ones toward the lockout, and audits it.
+ * Asks for a fresh code from the admin's authenticator app (re-authentication)
+ * before a sensitive change: connecting a system, its credentials or settings,
+ * disconnecting it. The code is good for 10 minutes; wrong ones are counted
+ * (and pause the account after a few), but never sign anyone out.
  */
-export function ConfirmPassword({
+export function ConfirmCode({
   title,
   actionLabel,
   danger = false,
@@ -29,45 +37,55 @@ export function ConfirmPassword({
   actionLabel: string;
   danger?: boolean;
   children?: ReactNode;
-  /** Does the change with the password; throws ApiError to show its message. */
-  onConfirm: (password: string) => Promise<void>;
+  /** Runs after the code is accepted; throws ApiError to show its message. */
+  onConfirm: () => Promise<void>;
   onClose: () => void;
 }) {
-  const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [accepted, setAccepted] = useState(false);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!password) return setError("Enter your password.");
     setBusy(true);
     setError(null);
     try {
-      await onConfirm(password);
+      if (!accepted) {
+        const digits = code.replace(/\s/g, "");
+        if (digits.length !== 6) throw new ApiError("Enter the 6-digit code from your authenticator app.", 400);
+        await apiFetch("auth/reauth", { method: "POST", body: { code: digits } });
+        setAccepted(true);
+      }
+      await onConfirm();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Something went wrong. Try again.");
+      setCode("");
       setBusy(false);
     }
   }
 
   return (
     <Modal title={title} icon={danger ? "warning" : "lock"} onClose={onClose}>
-      <form onSubmit={submit} className="flex flex-col gap-4" data-testid="confirm-password">
+      <form onSubmit={submit} className="flex flex-col gap-4" data-testid="confirm-code">
         {children}
-        <div>
-          <label htmlFor="confirm-password-input" className={labelClass}>
-            Confirm it&apos;s you: enter your password
-          </label>
-          <input
-            id="confirm-password-input"
-            type="password"
-            autoComplete="current-password"
-            autoFocus
-            className={inputClass}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-        </div>
+        {!accepted && (
+          <div>
+            <label htmlFor="confirm-code-input" className={labelClass}>
+              Confirm it&apos;s you: enter the code from your authenticator app
+            </label>
+            <input
+              id="confirm-code-input"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              autoFocus
+              placeholder="123456"
+              className={`${inputClass} font-mono tracking-[0.3em]`}
+              value={code}
+              onChange={(e) => setCode(e.target.value.replace(/[^\d ]/g, "").slice(0, 7))}
+            />
+          </div>
+        )}
         <FormError message={error} />
         <div className="flex justify-end gap-2">
           <button type="button" className={secondaryButtonClass} onClick={onClose} disabled={busy}>
@@ -80,6 +98,43 @@ export function ConfirmPassword({
       </form>
     </Modal>
   );
+}
+
+type Pending = { title: string; actionLabel: string; danger?: boolean; action: () => Promise<void> };
+
+/**
+ * Runs a sensitive change; when the backend wants a fresh code first, asks
+ * for it (ConfirmCode) and runs the change again. Other errors are thrown
+ * to the caller. Render ``dialog``.
+ */
+export function useFreshAction() {
+  const [pending, setPending] = useState<Pending | null>(null);
+
+  async function run(change: Pending): Promise<boolean> {
+    try {
+      await change.action();
+      return true;
+    } catch (err) {
+      if (!needsFreshCode(err)) throw err;
+      setPending(change);
+      return false;
+    }
+  }
+
+  const dialog = pending ? (
+    <ConfirmCode
+      title={pending.title}
+      actionLabel={pending.actionLabel}
+      danger={pending.danger}
+      onClose={() => setPending(null)}
+      onConfirm={async () => {
+        await pending.action();
+        setPending(null);
+      }}
+    />
+  ) : null;
+
+  return { run, dialog };
 }
 
 /** A value shown once, with a copy button. */
