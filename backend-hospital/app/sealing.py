@@ -50,6 +50,10 @@ SEALED: Dict[str, Tuple[str, ...]] = {
     "record_files": ("filename",),
     "shared_records": ("title", "details", "files"),
     "import_batches": ("plan",),
+    # Migration 0009: the integration API.
+    "integration_clients": ("webhook_secret",),
+    "integration_idempotency": ("response",),
+    "webhook_deliveries": ("body",),
 }
 
 #: Tables whose hospital is their parent row's: table -> (parent table, foreign key column).

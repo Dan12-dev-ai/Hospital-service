@@ -15,6 +15,7 @@ import time
 import redis
 
 from app import bookings, chores, dispensing, eventbus, linking, sharing
+from app.integrations import webhooks
 from app.crypto import check_master_key, verify_master_key
 from app.db import check_connection_role
 
@@ -51,6 +52,8 @@ def run_once(client: redis.Redis, now: float | None = None) -> int:
         work += chores.run()
         _last["expire"] = now
     work += eventbus.publish_pending(client)
+    # Events for hospitals' own systems (their webhooks), retried with backoff.
+    work += webhooks.deliver_due()
     work += eventbus.consume_once(client, handlers(), block_ms=1000)
     if now - _last["purge"] >= PURGE_EVERY:
         # Our events are plain text in Redis until every reader acknowledged them.

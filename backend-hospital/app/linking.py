@@ -21,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import eventbus, records
+from app.integrations import webhooks
 from app.db import utcnow
 from app.eventbus import PermanentEventError
 from app.models import LinkStatus, Patient, PatientLinkRequest
@@ -109,6 +110,7 @@ def link(session: Session, patient: Patient, dedan_id: str, today: date) -> None
     session.flush()
     _close_pending(session, patient.id, LinkStatus.SUPERSEDED, "linked")
     records.publish_history(session, patient, today)
+    webhooks.patient_event(session, patient, "patient.linked", dedan_id)
 
 
 def unlink(session: Session, patient: Patient) -> Optional[str]:
@@ -116,6 +118,8 @@ def unlink(session: Session, patient: Patient) -> Optional[str]:
     Returns the Endod ID that was linked, if any."""
     _close_pending(session, patient.id, LinkStatus.SUPERSEDED, "withdrawn")
     old, patient.dedan_id = patient.dedan_id, None
+    if old:
+        webhooks.patient_event(session, patient, "patient.unlinked", old)
     return old
 
 

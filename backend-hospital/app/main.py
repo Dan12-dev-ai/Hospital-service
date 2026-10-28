@@ -12,11 +12,13 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
 from app.api import (
-    admin, application, auth, bookings, doctors, history, imports, onboarding, patients, queue, shared,
+    admin, application, auth, bookings, connections, doctors, history, imports, integrations, onboarding, patients,
+    queue, shared,
 )
 from app.config import Settings, get_settings
 from app.crypto import check_master_key, verify_master_key
 from app.db import check_connection_role
+from app.integrations import signing
 
 logger = logging.getLogger("hospital")
 
@@ -29,6 +31,8 @@ async def lifespan(_app: FastAPI):
     check_connection_role()
     # ... and only with this database's master key (recorded on the first start).
     verify_master_key()
+    # The integration API answers 503 without its signing key (outside development and test).
+    signing.check_at_start()
     yield
 
 
@@ -96,6 +100,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(queue.router)
     app.include_router(shared.router)
     app.include_router(imports.router)
+    app.include_router(connections.router)
+    # The integration API for hospitals' own systems: its own app, OpenAPI and errors.
+    app.mount(integrations.PREFIX, integrations.create_app())
     return app
 
 

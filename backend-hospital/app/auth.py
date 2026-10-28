@@ -298,6 +298,36 @@ def change_password(staff: Staff, current: str, new: str) -> None:
         raise failure
 
 
+def confirm_identity(staff: Staff, password: Optional[str]) -> None:
+    """Re-authentication for a sensitive action (connecting a system, changing
+    or removing its credentials): the staff member types their password
+    again. A wrong one counts toward the lockout like a failed sign-in
+    (reaching it ends every session). Raises AuthError (400; 401 once locked
+    out), recorded before it is raised."""
+    settings = get_settings()
+    now = utcnow()
+    failure: Optional[AuthError] = None
+    with session_scope(staff.hospital_id) as session:
+        user = session.scalar(select(StaffUser).where(StaffUser.id == staff.id).with_for_update())
+        if user is None or not user.active:
+            raise AuthError("Authentication required.")
+        if user.locked_until and ensure_aware(user.locked_until) > now:
+            revoke_all_sessions(session, user.id)
+            failure = AuthError("Authentication required.")
+        elif not password or len(password) > 200 or not verify_password(password, user.password_hash):
+            if _record_failure(session, user, now, settings):
+                revoke_all_sessions(session, user.id)
+                failure = AuthError("Too many wrong passwords: you were signed out.")
+            else:
+                failure = AuthError("That password is not correct.", status.HTTP_400_BAD_REQUEST)
+            audit(session, user.hospital_id, user.id, "staff_reauth_failed")
+        else:
+            user.failed_logins = 0
+            user.last_failed_at = None
+    if failure is not None:
+        raise failure
+
+
 def revoke_all_sessions(session, user_id: str) -> None:
     session.execute(
         update(StaffSession).where(StaffSession.user_id == user_id, StaffSession.revoked_at.is_(None))

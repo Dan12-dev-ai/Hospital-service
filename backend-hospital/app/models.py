@@ -893,5 +893,165 @@ class EncryptionState(Base):
     kek_recorded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
+# --- Integration API for hospitals' own systems (app/integrations, docs/integrations.md) ---
+
+class IntegrationMode:
+    #: Writes real records.
+    LIVE = "live"
+    #: Checks and maps everything, stores nothing.
+    TEST = "test"
+    ALL = (LIVE, TEST)
+
+
+class IntegrationAuth:
+    #: A random secret (only its argon2 hash is kept).
+    SECRET = "client_secret"
+    #: A signed client assertion, checked against the client's public keys (SMART Backend Services).
+    PRIVATE_KEY_JWT = "private_key_jwt"
+    ALL = (SECRET, PRIVATE_KEY_JWT)
+
+
+class DeliveryStatus:
+    PENDING = "pending"
+    DELIVERED = "delivered"
+    FAILED = "failed"
+    ALL = (PENDING, DELIVERED, FAILED)
+
+
+class IntegrationClient(Base):
+    """A hospital system connected to the integration API (OAuth 2.0 client
+    credentials). Never deleted: disconnecting sets ``revoked_at``."""
+
+    __tablename__ = "integration_clients"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False,
+                                             index=True)
+    #: Public (the OAuth client_id).
+    client_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    #: Granted scopes, space-separated (app/integrations/scopes.py).
+    scopes: Mapped[str] = mapped_column(String(400), nullable=False)
+    mode: Mapped[str] = mapped_column(String(4), nullable=False, default=IntegrationMode.LIVE)
+    auth_method: Mapped[str] = mapped_column(String(20), nullable=False, default=IntegrationAuth.SECRET)
+    #: argon2id hash of the client secret (client_secret auth only).
+    secret_hash: Mapped[Optional[str]] = mapped_column(String(255))
+    #: The client's public keys (a JWKS, JSON; private_key_jwt auth only). Public, not encrypted.
+    jwks: Mapped[Optional[str]] = mapped_column(Text)
+    #: Addresses the client may call from (comma-separated CIDRs; empty: anywhere).
+    allowed_cidrs: Mapped[Optional[str]] = mapped_column(String(2000))
+    #: Where events are sent (https only), and the secret they are signed with (encrypted at rest).
+    webhook_url: Mapped[Optional[str]] = mapped_column(String(500))
+    webhook_secret: Mapped[Optional[str]] = mapped_column(Text)
+    created_by: Mapped[Optional[str]] = mapped_column(ForeignKey("staff_users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    #: When the credentials last changed (secret rotated, keys replaced): tokens
+    #: issued before are refused.
+    credentials_changed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class IntegrationAssertion(Base):
+    """A client assertion's ``jti``, kept until the assertion expires: each is used once."""
+
+    __tablename__ = "integration_assertions"
+    __table_args__ = (UniqueConstraint("client_pk", "jti", name="uq_integration_assertion_jti"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False,
+                                             index=True)
+    client_pk: Mapped[str] = mapped_column(ForeignKey("integration_clients.id", ondelete="CASCADE"), nullable=False)
+    jti: Mapped[str] = mapped_column(String(255), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class IntegrationRequest(Base):
+    """One call to the integration API: no bodies, no clinical data. Kept 30 days."""
+
+    __tablename__ = "integration_requests"
+    __table_args__ = (Index("ix_integration_requests_client_at", "client_pk", "at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False,
+                                             index=True)
+    client_pk: Mapped[str] = mapped_column(ForeignKey("integration_clients.id", ondelete="CASCADE"), nullable=False)
+    method: Mapped[str] = mapped_column(String(8), nullable=False)
+    #: The path only (never the query string).
+    path: Mapped[str] = mapped_column(String(300), nullable=False)
+    status: Mapped[int] = mapped_column(Integer, nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    ip: Mapped[Optional[str]] = mapped_column(String(64))
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class IntegrationResource(Base):
+    """A FHIR resource a client sent (by its id), and the record it became:
+    sending it again with another meta.versionId (or other content) corrects
+    the record (a new version)."""
+
+    __tablename__ = "integration_resources"
+    __table_args__ = (UniqueConstraint("client_pk", "resource_type", "resource_id",
+                                       name="uq_integration_resource"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False,
+                                             index=True)
+    client_pk: Mapped[str] = mapped_column(ForeignKey("integration_clients.id", ondelete="CASCADE"), nullable=False)
+    resource_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    resource_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    version_id: Mapped[Optional[str]] = mapped_column(String(64))
+    #: sha256 of the resource as sent (tells an unchanged resource from a correction).
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    record_id: Mapped[str] = mapped_column(ForeignKey("clinical_records.id", ondelete="CASCADE"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow,
+                                                 onupdate=utcnow)
+
+
+class IntegrationIdempotency(Base):
+    """The answer to a request sent with an Idempotency-Key, replayed when the
+    same key comes again (for a day). The answer is encrypted at rest."""
+
+    __tablename__ = "integration_idempotency"
+    __table_args__ = (UniqueConstraint("client_pk", "key", name="uq_integration_idempotency_key"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False,
+                                             index=True)
+    client_pk: Mapped[str] = mapped_column(ForeignKey("integration_clients.id", ondelete="CASCADE"), nullable=False)
+    key: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: sha256 of the method, path and body: the same key with another request is refused.
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status_code: Mapped[int] = mapped_column(Integer, nullable=False)
+    response: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class WebhookDelivery(Base):
+    """An event for a client's webhook, sent by the worker with retries. The
+    body (encrypted at rest) is deleted once delivered or given up."""
+
+    __tablename__ = "webhook_deliveries"
+    __table_args__ = (Index("ix_webhook_deliveries_due", "status", "next_attempt_at"),
+                      Index("ix_webhook_deliveries_client", "client_pk", "created_at"))
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False,
+                                             index=True)
+    client_pk: Mapped[str] = mapped_column(ForeignKey("integration_clients.id", ondelete="CASCADE"), nullable=False)
+    event_id: Mapped[str] = mapped_column(String(40), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    body: Mapped[Optional[str]] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default=DeliveryStatus.PENDING)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_attempt_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_status_code: Mapped[Optional[int]] = mapped_column(Integer)
+    last_error: Mapped[Optional[str]] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    delivered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
 # The encrypted columns are encrypted on flush and decrypted on load.
 from app import sealing  # noqa: E402,F401  (registers the ORM events)

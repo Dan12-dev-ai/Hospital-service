@@ -63,6 +63,10 @@ class Skip(ValueError):
     """One item cannot be imported; the message says why."""
 
 
+class UnknownPatient(Skip):
+    """The item's patient is not found here (by hospital number or Endod ID)."""
+
+
 def import_key(source: Any) -> str:
     """The identity of a source item (a FHIR resource or a CSV row): sha256 of
     its canonical JSON. Stored on the record, unique per hospital."""
@@ -76,11 +80,19 @@ def already_imported(session: Session, hospital_id: str, key: str) -> bool:
 
 
 class Planner:
-    """Builds the plan: resolves patients and checks every item."""
+    """Builds the plan: resolves patients and checks every item.
 
-    def __init__(self, session: Session, hospital: Hospital):
+    The integration API (app/integrations/fhir.py) uses it too, with
+    ``mrn_system`` (only identifiers of the hospital's MRN system count as
+    hospital numbers) and ``require_link=False`` (a record of a patient not
+    linked to Endod is kept here, and published once they are linked)."""
+
+    def __init__(self, session: Session, hospital: Hospital, *, mrn_system: Optional[str] = None,
+                 require_link: bool = True):
         self.session = session
         self.hospital = hospital
+        self.mrn_system = mrn_system
+        self.require_link = require_link
         self.zone = ZoneInfo(hospital.timezone)
         self.items: List[Dict[str, Any]] = []
         self.skipped: List[Dict[str, Any]] = []
@@ -116,9 +128,8 @@ class Planner:
                 Patient.hospital_id == self.hospital.id, condition))
         return self._patients[key]
 
-    @staticmethod
-    def _linked(patient: Patient) -> Patient:
-        if not patient.dedan_id:
+    def _linked(self, patient: Patient) -> Patient:
+        if self.require_link and not patient.dedan_id:
             raise Skip(f"{patient.full_name} ({patient.mrn}) is not linked to Endod")
         return patient
 
@@ -142,10 +153,9 @@ class Planner:
             raise Skip("the date is in the future")
         return moment.astimezone(timezone.utc)
 
-    def add(self, index: int, what: str, patient: Patient, category: str, title: str, details: Dict[str, Any],
-            occurred_at: datetime, recorded_by: Optional[str], document: Optional[Tuple[bytes, str, str]] = None,
-            *, source: Any):
-        """``source`` is the item as the file gave it (its hash identifies it)."""
+    def prepare(self, index: int, what: str, patient: Patient, category: str, title: str, details: Dict[str, Any],
+                occurred_at: datetime, recorded_by: Optional[str], *, source: Any) -> Dict[str, Any]:
+        """The item a source item becomes, checked (raises Skip); not yet in the plan."""
         title = (title or "").strip()[:200]
         if not title:
             raise Skip("no title")
@@ -153,7 +163,18 @@ class Planner:
             cleaned = clean_details(category, details)
         except DetailsError as exc:
             raise Skip(str(exc)) from exc
-        source_key = import_key(source)
+        return {
+            "index": index, "what": what, "patient_id": patient.id, "patient": f"{patient.full_name} ({patient.mrn})",
+            "category": category, "title": title, "details": cleaned, "occurred_at": occurred_at.isoformat(),
+            "recorded_by": (recorded_by or "").strip()[:160] or None, "file": None, "import_key": import_key(source),
+        }
+
+    def add(self, index: int, what: str, patient: Patient, category: str, title: str, details: Dict[str, Any],
+            occurred_at: datetime, recorded_by: Optional[str], document: Optional[Tuple[bytes, str, str]] = None,
+            *, source: Any):
+        """``source`` is the item as the file gave it (its hash identifies it)."""
+        item = self.prepare(index, what, patient, category, title, details, occurred_at, recorded_by, source=source)
+        title, source_key = item["title"], item["import_key"]
         key = (patient.id, category, title.lower(), occurred_at.isoformat())
         if key in self._seen or source_key in self._seen:
             raise Skip("the same record appears twice in this file")
@@ -165,11 +186,6 @@ class Planner:
                     ClinicalRecord.retracted.is_(False)))):
             # Titles are encrypted at rest: compared here, after decryption.
             raise Skip("already imported")
-        item = {
-            "index": index, "what": what, "patient_id": patient.id, "patient": f"{patient.full_name} ({patient.mrn})",
-            "category": category, "title": title, "details": cleaned, "occurred_at": occurred_at.isoformat(),
-            "recorded_by": (recorded_by or "").strip()[:160] or None, "file": None, "import_key": source_key,
-        }
         if document is not None:
             data, content_type, filename = document
             item["file"] = {"filename": filename, "content_type": content_type, "size": len(data)}
@@ -288,9 +304,8 @@ def _medication(r: Dict[str, Any]) -> Tuple[str, str, Dict[str, Any], Any, Optio
     return RecordCategory.PRESCRIPTION, f"Prescription: {drug}", {"items": [item], "notes": _notes(r)}, when, who
 
 
-def _observation(r: Dict[str, Any]) -> Tuple[str, str, Dict[str, Any], Any, Optional[str]]:
-    if not _category_has(r, "laboratory"):
-        raise Skip("not a laboratory observation")
+def _lab_item(r: Dict[str, Any]) -> Dict[str, Any]:
+    """One test of a laboratory Observation: name, value, unit, range and flag."""
     test = _text_of(r.get("code"))
     if not test:
         raise Skip("the test has no name")
@@ -312,8 +327,15 @@ def _observation(r: Dict[str, Any]) -> Tuple[str, str, Dict[str, Any], Any, Opti
         high = (reference.get("high") or {}).get("value")
         reference_range = f"{'' if low is None else low}-{'' if high is None else high}"
     flag_code = str((_first(_codes(_first(r.get("interpretation")))) or {}).get("code", "")).upper()
-    item = {"test": test, "value": value, "unit": unit, "reference_range": reference_range,
+    return {"test": test, "value": value, "unit": unit, "reference_range": reference_range,
             "flag": _FLAGS.get(flag_code)}
+
+
+def _observation(r: Dict[str, Any]) -> Tuple[str, str, Dict[str, Any], Any, Optional[str]]:
+    if not _category_has(r, "laboratory"):
+        raise Skip("not a laboratory observation")
+    item = _lab_item(r)
+    test = item["test"]
     when = r.get("effectiveDateTime") or r.get("issued") or (r.get("effectivePeriod") or {}).get("start")
     return (RecordCategory.LAB_RESULT, test,
             {"items": [item], "specimen": _display(r.get("specimen")), "notes": _notes(r)},
@@ -365,6 +387,63 @@ MAPPERS = {
     "DocumentReference": _document,
 }
 
+LAB_REPORT_CODES = ("LAB", "laboratory")
+IMAGING_REPORT_CODES = ("rad", "imaging", "radiology", "LP29684-5")
+
+
+def _lab_report(r: Dict[str, Any]) -> Tuple[str, str, Dict[str, Any], Any, Optional[str]]:
+    """A laboratory DiagnosticReport: its contained Observations are its tests
+    (else the report's own code is the one test, its conclusion the notes)."""
+    name = _text_of(r.get("code"))
+    if not name:
+        raise Skip("the report has no name")
+    contained = [c for c in r.get("contained") or []
+                 if isinstance(c, dict) and c.get("resourceType") == "Observation"]
+    items = [_lab_item(c) for c in contained][:60] or [{"test": name}]
+    conclusion = r.get("conclusion") if isinstance(r.get("conclusion"), str) else None
+    when = r.get("effectiveDateTime") or r.get("issued") or (r.get("effectivePeriod") or {}).get("start")
+    return (RecordCategory.LAB_RESULT, name,
+            {"items": items, "specimen": _display(_first(r.get("specimen"))), "notes": conclusion},
+            when, _display(_first(r.get("performer"))))
+
+
+def _encounter(r: Dict[str, Any]) -> Tuple[str, str, Dict[str, Any], Any, Optional[str]]:
+    """An Encounter becomes a visit note: why (reasonCode), what was found
+    (its diagnoses' names) and what follows (the discharge disposition)."""
+    reasons = [t for t in (_text_of(c) for c in r.get("reasonCode") or []) if t]
+    found = [t for t in (_display((d or {}).get("condition")) for d in r.get("diagnosis") or []
+                         if isinstance(d, dict)) if t]
+    plan = _text_of((r.get("hospitalization") or {}).get("dischargeDisposition"))
+    if not (reasons or found or plan):
+        raise Skip("the visit has no reason (reasonCode), diagnosis or discharge plan")
+    kind = _text_of(_first(r.get("type"))) or (r.get("class") or {}).get("display") or "Visit"
+    when = (r.get("period") or {}).get("start")
+    who = next((_display(p.get("individual")) for p in r.get("participant") or []
+                if isinstance(p, dict) and _display(p.get("individual"))), None)
+    return (RecordCategory.VISIT_NOTE, str(kind),
+            {"complaint": "; ".join(reasons) or None, "findings": "; ".join(found) or None, "plan": plan},
+            when, who)
+
+
+def _diagnostic_report(r: Dict[str, Any]) -> Tuple[str, str, Dict[str, Any], Any, Optional[str]]:
+    if _category_has(r, *LAB_REPORT_CODES):
+        return _lab_report(r)
+    if _category_has(r, *IMAGING_REPORT_CODES):
+        return _report(r)
+    raise Skip("a DiagnosticReport must be a laboratory (LAB) or imaging (RAD) report")
+
+
+#: The integration API's mappers (app/integrations/fhir.py): the import's,
+#: plus Encounter and laboratory reports; MedicationStatement is not taken.
+API_MAPPERS = {
+    "Condition": _condition,
+    "MedicationRequest": _medication,
+    "Observation": _observation,
+    "DiagnosticReport": _diagnostic_report,
+    "DocumentReference": _document,
+    "Encounter": _encounter,
+}
+
 
 def _depth(value: Any) -> int:
     """How deeply lists and objects nest (iteratively: no recursion to overflow)."""
@@ -402,13 +481,7 @@ def plan_fhir(planner: Planner, data: bytes) -> None:
         raise ImportFailed(f"A bundle can have at most {MAX_ITEMS} entries.")
     resources = [(i, (e or {}).get("fullUrl"), (e or {}).get("resource")) for i, e in enumerate(entries, start=1)
                  if isinstance(e, dict)]
-    patients: Dict[str, List[Dict[str, Any]]] = {}
-    for _i, full_url, r in resources:
-        if isinstance(r, dict) and r.get("resourceType") == "Patient":
-            identifiers = [x for x in r.get("identifier") or [] if isinstance(x, dict)]
-            for ref in (full_url, f"Patient/{r.get('id')}" if r.get("id") else None):
-                if ref:
-                    patients[ref] = identifiers
+    patients = bundle_patients(resources)
     for index, _full_url, r in resources:
         if not isinstance(r, dict):
             planner.skip(index, "entry", "no resource")
@@ -422,8 +495,7 @@ def plan_fhir(planner: Planner, data: bytes) -> None:
             planner.skip(index, what, f"{kind} is not imported")
             continue
         try:
-            patient = _subject(planner, r, patients)
-            mapped = mapper(r)
+            patient, mapped = map_resource(planner, r, patients, mapper)
             category, title, details, when, who = mapped[:5]
             planner.add(index, what, patient, category, title, details, planner.when(when), who,
                         mapped[5] if len(mapped) > 5 else None, source=r)
@@ -431,6 +503,45 @@ def plan_fhir(planner: Planner, data: bytes) -> None:
             planner.skip(index, what, str(exc))
         except (AttributeError, TypeError, KeyError, ValueError):
             planner.skip(index, what, "the resource is malformed")
+
+
+def bundle_patients(resources) -> Dict[str, List[Dict[str, Any]]]:
+    """The identifiers of a bundle's Patient entries, by their references
+    (fullUrl, and Patient/<id>), from (index, fullUrl, resource) triples."""
+    patients: Dict[str, List[Dict[str, Any]]] = {}
+    for _i, full_url, r in resources:
+        if isinstance(r, dict) and r.get("resourceType") == "Patient":
+            identifiers = [x for x in r.get("identifier") or [] if isinstance(x, dict)]
+            for ref in (full_url, f"Patient/{r.get('id')}" if r.get("id") else None):
+                if isinstance(ref, str) and ref:
+                    patients[ref] = identifiers
+    return patients
+
+
+def map_resource(planner: Planner, r: Dict[str, Any], patients: Dict[str, List[Dict[str, Any]]], mapper):
+    """(patient, mapped tuple) of one resource: its patient, found by hospital
+    number or Endod ID only (never created, never by name), and what the
+    mapper makes of it. Raises Skip."""
+    try:
+        patient = _subject(planner, r, patients)
+    except Skip as exc:
+        raise UnknownPatient(str(exc)) from exc
+    return patient, mapper(r)
+
+
+def new_record(session: Session, hospital_id: str, patient: Patient, item: Dict[str, Any]) -> ClinicalRecord:
+    """A planned item stored as a clinical record (``source: "import"``),
+    flushed; publish it with app.records.publish (linked patients only)."""
+    record = ClinicalRecord(
+        hospital_id=hospital_id, patient_id=patient.id, category=item["category"], title=item["title"],
+        details=json.dumps(item["details"], ensure_ascii=False),
+        occurred_at=datetime.fromisoformat(item["occurred_at"]).astimezone(timezone.utc),
+        recorded_by=None, recorded_by_name=item["recorded_by"], source="import", version=1,
+        import_key=item.get("import_key"),
+    )
+    session.add(record)
+    session.flush()
+    return record
 
 
 def _subject(planner: Planner, r: Dict[str, Any], patients: Dict[str, List[Dict[str, Any]]]) -> Patient:
@@ -445,7 +556,11 @@ def _subject(planner: Planner, r: Dict[str, Any], patients: Dict[str, List[Dict[
         if not identifiers:
             raise Skip(f"patient {subject['reference']} is not in the bundle")
     dedan = next((str(x.get("value")) for x in identifiers if x.get("system") == ENDOD_SYSTEM and x.get("value")), None)
-    others = [str(x.get("value")) for x in identifiers if x.get("system") != ENDOD_SYSTEM and x.get("value")]
+    if planner.mrn_system:
+        # Only the hospital's own numbering: another system's numbers mean nothing here.
+        others = [str(x.get("value")) for x in identifiers if x.get("system") == planner.mrn_system and x.get("value")]
+    else:
+        others = [str(x.get("value")) for x in identifiers if x.get("system") != ENDOD_SYSTEM and x.get("value")]
     if dedan:
         try:
             return planner.patient_by(dedan_id=dedan)
