@@ -1,4 +1,4 @@
-from conftest import PASSWORD, make_hospital, make_staff, sign_in
+from conftest import PASSWORD, bearer, finish_sign_in, make_hospital, make_staff, sign_in
 
 
 class TestSignIn:
@@ -95,7 +95,7 @@ class TestSessions:
         token = sign_in(client, "a@sph.example")["Authorization"].split()[1]
         with platform_session() as session:
             stored = session.scalars(select(StaffSession.token_hash)).all()
-        assert token not in stored and len(stored) == 1
+        assert token not in stored and len(stored) == 2  # the sign-in half-way (ended), then the full one
 
 
 class TestTemporaryPassword:
@@ -108,7 +108,13 @@ class TestTemporaryPassword:
         resp = client.post("/auth/password", headers=headers,
                            json={"current_password": PASSWORD, "new_password": "BrandNewPass1"})
         assert resp.status_code == 200
-        assert client.get("/hospital", headers=headers).status_code == 200
+        # Then the authenticator (an approved hospital), in the same half-finished sign-in.
+        refused = client.get("/hospital", headers=headers)
+        assert refused.status_code == 403 and refused.json()["error"] == "Finish signing in first."
+        me = client.get("/auth/me", headers=headers).json()
+        full = finish_sign_in(client, "new@sph.example", {"stage": me["stage"], "staff": me,
+                                                          "access_token": headers["Authorization"].split()[1]})
+        assert client.get("/hospital", headers=bearer(full)).status_code == 200
 
     def test_password_rules(self, client, admin):
         for weak in ("short", "alllowercase123", "ALLUPPERCASE123"):

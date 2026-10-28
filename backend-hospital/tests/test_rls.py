@@ -107,6 +107,8 @@ def build(table, h, n):
         "integration_idempotency": lambda: m.IntegrationIdempotency(
             id=_id(h, "idem", n), hospital_id=h, client_pk=client, key=f"key-{n}", request_hash="0" * 64,
             status_code=200, response="{}"),
+        "staff_recovery_codes": lambda: m.StaffRecoveryCode(
+            id=_id(h, "recovery", n), hospital_id=h, user_id=staff, code_hash=f"{n}" * 64),
         "webhook_deliveries": lambda: m.WebhookDelivery(
             id=_id(h, "delivery", n), hospital_id=h, client_pk=client, event_id=f"evt-{n}",
             event_type="booking.created", body="{}", status="pending", attempts=0),
@@ -120,7 +122,7 @@ SEED_ORDER = ["hospitals", "hospital_keys", "departments", "staff_users", "staff
               "record_files", "queue_days", "queue_entries", "record_shares", "shared_records", "import_batches",
               "onboarding_applications", "onboarding_documents", "demo_bookings", "prescription_dispenses",
               "integration_clients", "integration_assertions", "integration_requests", "integration_resources",
-              "integration_idempotency", "webhook_deliveries"]
+              "integration_idempotency", "webhook_deliveries", "staff_recovery_codes"]
 
 
 #: A second row for the same hospital is not possible (or not a new hospital's).
@@ -180,15 +182,18 @@ def test_migration_installs_what_app_rls_describes():
     adds, and the integration API's tables and lookup, which 0009 adds."""
     migration, keys = _migration(), _migration("0008_encryption_at_rest.py")
     integrations = _migration("0009_integration_api.py")
-    assert migration.TENANT_TABLES + keys.TENANT_TABLES + integrations.TENANT_TABLES == rls.TENANT_TABLES
+    two_step = _migration("0010_two_step_verification.py")
+    assert migration.TENANT_TABLES + keys.TENANT_TABLES + integrations.TENANT_TABLES + two_step.TENANT_TABLES         == rls.TENANT_TABLES
     assert migration.CHILD_TABLES == rls.CHILD_TABLES
-    assert migration.SAME_HOSPITAL_REFERENCES + integrations.SAME_HOSPITAL_REFERENCES == rls.SAME_HOSPITAL_REFERENCES
+    assert migration.SAME_HOSPITAL_REFERENCES + integrations.SAME_HOSPITAL_REFERENCES         + two_step.SAME_HOSPITAL_REFERENCES == rls.SAME_HOSPITAL_REFERENCES
     assert migration.FUNCTIONS + integrations.FUNCTIONS == rls.FUNCTIONS
-    for later in (keys, integrations):
+    for later in (keys, integrations, two_step):
         assert later.PLATFORM_ROLE == rls.PLATFORM_ROLE and later.TENANT == rls.TENANT
     assert set(migration._parents()) | set(integrations.NEW_PARENTS) == set(rls.parents())
-    assert sorted(migration.install_statements() + keys.policy_statements() + integrations.install_statements())         == sorted(rls.install_statements())
-    assert sorted(migration.drop_statements() + keys.drop_statements() + integrations.drop_statements())         == sorted(rls.drop_statements())
+    assert sorted(migration.install_statements() + keys.policy_statements() + integrations.install_statements()
+                  + two_step.install_statements()) == sorted(rls.install_statements())
+    assert sorted(migration.drop_statements() + keys.drop_statements() + integrations.drop_statements()
+                  + two_step.drop_statements()) == sorted(rls.drop_statements())
 
 
 def test_every_reference_between_two_rows_of_a_hospital_is_a_composite_key():
@@ -644,7 +649,8 @@ def test_a_session_level_role_or_setting_never_reaches_the_next_checkout(db):
 
 def test_the_migration_checks_the_same_rows_as_app_rls():
     # 0009's tables are new (empty) when their composite keys are added: nothing to check there.
-    new = {child for child, *_rest in _migration("0009_integration_api.py").SAME_HOSPITAL_REFERENCES}
+    new = {child for name in ("0009_integration_api.py", "0010_two_step_verification.py")
+           for child, *_rest in _migration(name).SAME_HOSPITAL_REFERENCES}
     assert _migration().cross_hospital_queries() == [q for q in rls.cross_hospital_queries() if q[0] not in new]
 
 

@@ -215,6 +215,12 @@ def set_status(hospital_id: str, new_status: str, force: bool = False) -> Dict[s
         if new_status == HospitalStatus.APPROVED and hospital.approved_at is None:
             hospital.approved_at = utcnow()
         if new_status == HospitalStatus.APPROVED:
+            if application.status != ApplicationStatus.APPROVED:
+                # Two-step verification starts now (app/twofactor.py): every
+                # password-only session ends, and the next sign-in sets it up.
+                from app.twofactor import end_hospital_sessions
+
+                end_hospital_sessions(session, hospital.id)
             application.status = ApplicationStatus.APPROVED
         elif application.status != ApplicationStatus.APPROVED:
             # A suspended applicant gives its demo slot back.

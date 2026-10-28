@@ -328,6 +328,26 @@ def update_staff(user_id: str, body: StaffUpdate, staff: Staff = Depends(admin_o
         raise HTTPException(status_code=409, detail="The change conflicts with other data; reload and retry.") from exc
 
 
+@router.post("/staff/{user_id}/reset-2fa")
+def reset_staff_two_factor(user_id: str, staff: Staff = Depends(admin_only)) -> Dict[str, Any]:
+    """Forget a staff member's authenticator (a lost phone): their sessions
+    end and their next sign-in sets up a new one. Needs a fresh code from the
+    admin's own authenticator; never one's own (Endod's CLI does that)."""
+    from app import twofactor
+
+    twofactor.require_fresh(staff)
+    if user_id == staff.id:
+        raise HTTPException(status_code=400, detail="Ask another admin (or Endod) to reset your own two-step verification.")
+    with session_scope(staff.hospital_id) as session:
+        user = session.scalar(select(StaffUser).where(
+            StaffUser.id == user_id, StaffUser.hospital_id == staff.hospital_id).with_for_update())
+        if user is None:
+            raise HTTPException(status_code=404, detail="Staff member not found.")
+        twofactor.reset(session, user)
+        audit(session, staff.hospital_id, staff.id, "staff_2fa_reset", "staff", user.id)
+        return {"id": user.id, "two_factor_enrolled": False}
+
+
 @router.post("/staff/{user_id}/reset-password")
 def reset_staff_password(user_id: str, staff: Staff = Depends(admin_only)) -> Dict[str, Any]:
     """A new one-time password; the account's sessions end."""

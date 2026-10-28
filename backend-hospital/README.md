@@ -349,6 +349,35 @@ while anything is left: it never drops the keys while data needs them.
 
   Keep the master key: backups taken while encryption was on need it.
 
+## Two-step verification
+
+Every staff member of a hospital approved by Endod signs in with the password
+and a code from an authenticator app (TOTP: Google Authenticator or any
+other), as TenaCare does it (`app/twofactor.py`, `app/totp.py`):
+
+- **Set-up at the first sign-in** (after changing a temporary password): a QR
+  code, a first code, and 10 one-time recovery codes shown once (only keyed
+  hashes are kept). A hospital still applying keeps password-only sign-in;
+  approving it ends every session of its staff, so their next sign-in sets
+  the authenticator up.
+- **Codes:** one 30-second step either side of now, each code (and every
+  older one) accepted once. Secrets are encrypted at rest with the
+  hospital's data key.
+- **Throttles** on every code step, which never sign anyone out: per
+  address, per account and address, and an account-wide pause after 5 wrong
+  codes (30 s, doubling, at most 15 minutes).
+- **Re-authentication:** connecting a system and changing its credentials or
+  settings, and resetting someone's authenticator, need a code given in the
+  last 10 minutes (`POST /auth/reauth`).
+- **Lost phone:** a recovery code signs in once; an admin (with a fresh code)
+  resets another staff member's authenticator (`POST /staff/{id}/reset-2fa`),
+  or Endod does it for anyone: `docker compose exec api python -m app.cli
+  reset-2fa --email someone@hospital.example`. Their sessions end and they set
+  it up again at the next sign-in.
+
+Migration 0010 adds the columns and the `staff_recovery_codes` table (with
+row-level security); nobody is signed out by deploying it.
+
 ## Integration API (hospitals' own systems)
 
 Hospitals approved by Endod connect their own systems (EMR, LIS, RIS) in the
@@ -414,7 +443,7 @@ developers is [docs/integrations.md](../docs/integrations.md) (served from
 
 | Area | Endpoints |
 | --- | --- |
-| Sign-in | `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`, `POST /auth/password` |
+| Sign-in | `POST /auth/login`, `POST /auth/totp` (the code), `POST /auth/enroll/start|confirm` (setting up the authenticator), `POST /auth/reauth` (a fresh code), `POST /auth/logout`, `GET /auth/me`, `POST /auth/password`; `POST /staff/{id}/reset-2fa` (admin, fresh code) |
 | Hospital | `GET /hospital`, `PATCH /hospital` (admin) |
 | Departments, wards, clinics, dispensaries | `GET /departments?kind=`, `POST /departments`, `PATCH /departments/{id}` (admin) |
 | Staff accounts | `GET /staff`, `POST /staff`, `PATCH /staff/{id}`, `POST /staff/{id}/reset-password` (admin) |
@@ -425,7 +454,7 @@ developers is [docs/integrations.md](../docs/integrations.md) (served from
 | Queues | `GET /queue?day=`, `POST /queue/check-in`, `POST /queue/{doctor_id}/call-next`, `POST /queue/entries/{id}/done|skip|cancel` |
 | Shared with us | `GET /shared?patient_id=`, `GET /shared/{share_id}/files/{file_id}` |
 | Imports | `POST /imports/preview` (the file as the body), `POST /imports/{id}/confirm`, `GET /imports/template.csv` |
-| Connected systems (admins of approved hospitals; changes need the password) | `GET`/`POST /connections`, `GET /connections/{id}`, `POST /connections/{id}/disconnect|rotate-secret|ip-restriction|public-key|webhook`, `POST /connections/{id}/webhook/rotate-secret|test`, `GET /connections/{id}/requests|deliveries` |
+| Connected systems (admins of approved hospitals; changes need a fresh authenticator code) | `GET`/`POST /connections`, `GET /connections/{id}`, `POST /connections/{id}/disconnect|rotate-secret|ip-restriction|public-key|webhook`, `POST /connections/{id}/webhook/rotate-secret|test`, `GET /connections/{id}/requests|deliveries` |
 | Integration API (hospitals' systems, OAuth 2.0) | under `/integrations/v1`: `POST /oauth/token`, `GET /.well-known/jwks.json`, `POST /fhir`, `POST /fhir/{Type}`, `GET /bookings`, `GET /bookings/{id}` ([docs/integrations.md](../docs/integrations.md)) |
 | Joining Endod (a pending hospital's admin) | `POST /onboarding` (public: the account), `GET /onboarding/application`, `PATCH /onboarding/contact|facility|location|documents`, `POST`/`GET /onboarding/documents/{kind}` (one file as the body), `GET /onboarding/demo-slots`, `POST /onboarding/demo`, `POST /onboarding/submit` |
 | Endod platform only (`X-Platform-Key`) | `GET /platform/records/{record_id}/files/{file_id}`; `GET /platform/hospitals`, `POST /platform/hospitals/{id}/approve|suspend|reject`, `DELETE /platform/hospitals/{id}`; `GET /platform/applications?status=`, `GET /platform/applications/{hospital_id}`, `GET /platform/applications/{hospital_id}/documents/{kind}` |

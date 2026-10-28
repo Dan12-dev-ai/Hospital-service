@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import secrets
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, Optional
 
 from fastapi import Depends, Header, HTTPException, Request, status
@@ -16,7 +16,8 @@ from app import rls
 from app.config import get_settings
 from app.db import ensure_aware, session_scope, set_tenant, utcnow
 from app.models import (
-    ApplicationStatus, AuditEvent, Hospital, HospitalStatus, OnboardingApplication, StaffSession, StaffUser,
+    ApplicationStatus, AuditEvent, Hospital, HospitalStatus, OnboardingApplication, SessionStage, StaffSession,
+    StaffUser,
 )
 from app.security import hash_password, new_session_token, password_problem, token_hash, verify_password
 
@@ -24,6 +25,11 @@ INVALID_LOGIN = "Incorrect email or password."
 #: Every staff route but sign-in, onboarding and sign-out answers this (403)
 #: until Endod approves the hospital. The portal recognises the message.
 NOT_APPROVED = "Your hospital is not approved by Endod yet. Finish your application to continue."
+#: A sign-in half-way through (a code is next, or an authenticator must be set up).
+INCOMPLETE = "Finish signing in first."
+TEMPORARY_PASSWORD = "Change your temporary password to continue."
+#: A half-finished sign-in lasts this long (the code or the set-up must follow).
+PENDING_SESSION_SECONDS = 600
 
 
 class AuthError(Exception):
@@ -48,6 +54,12 @@ class Staff:
     #: The hospital's onboarding application is not approved: only the
     #: application (and sign-in, sign-out, the password) is open to it.
     locked: bool = False
+    #: The session's stage (app.models.SessionStage): only "full" reaches the portal.
+    stage: str = SessionStage.FULL
+    #: When this session last gave a fresh authenticator code (app.twofactor.require_fresh).
+    reauth_at: Optional[datetime] = None
+    #: An authenticator is set up for the account.
+    enrolled: bool = False
 
 
 def onboarding_locked(hospital_status: str, application_status: Optional[str]) -> bool:
@@ -83,6 +95,7 @@ def staff_payload(user: StaffUser, hospital: Optional[Hospital] = None) -> Dict[
         "active": user.active,
         "must_change_password": user.must_change_password,
         "last_login_at": ensure_aware(user.last_login_at).isoformat() if user.last_login_at else None,
+        "two_factor_enrolled": user.totp_secret is not None,
     }
     if hospital is not None:
         session = object_session(hospital)
@@ -157,25 +170,46 @@ def login(email: str, password: str, user_agent: Optional[str] = None) -> Dict[s
                 _record_failure(session, user, now, settings)
                 failure = AuthError(INVALID_LOGIN)
         if failure is None:
-            return _open_session(session, user, now, settings, user_agent)
+            user.failed_logins = 0
+            user.last_failed_at = None
+            user.locked_until = None
+            return open_session(session, user, now, user_agent, password_stage(session, user))
     raise failure
 
 
-def _open_session(session, user: StaffUser, now, settings, user_agent: Optional[str]) -> Dict[str, Any]:
+def password_stage(session, user: StaffUser) -> str:
+    """What follows a right password (app/twofactor.py): a code when an
+    authenticator is set up; else setting one up, for staff of a hospital that
+    Endod approved; else nothing (a hospital still applying: password only)."""
+    if user.totp_secret:
+        return SessionStage.TOTP
+    hospital = session.get(Hospital, user.hospital_id)
+    application = session.get(OnboardingApplication, user.hospital_id)
+    if onboarding_locked(hospital.status, application.status if application else None):
+        return SessionStage.FULL
+    return SessionStage.ENROLL
+
+
+def open_session(session, user: StaffUser, now, user_agent: Optional[str],
+                 stage: str = SessionStage.FULL) -> Dict[str, Any]:
+    """A new session of ``stage`` (a full one lasts a shift, a half-finished
+    sign-in 10 minutes). The answer carries its token once."""
+    settings = get_settings()
     token = new_session_token()
-    expires = now + timedelta(seconds=settings.SESSION_TTL_SECONDS)
-    session.add(StaffSession(token_hash=token_hash(token), user_id=user.id, expires_at=expires,
-                             user_agent=(user_agent or "")[:200] or None))
-    user.failed_logins = 0
-    user.last_failed_at = None
-    user.locked_until = None
-    user.last_login_at = now
-    audit(session, user.hospital_id, user.id, "staff_signed_in")
+    lifetime = settings.SESSION_TTL_SECONDS if stage == SessionStage.FULL else PENDING_SESSION_SECONDS
+    session.add(StaffSession(token_hash=token_hash(token), user_id=user.id, stage=stage,
+                             expires_at=now + timedelta(seconds=lifetime), user_agent=(user_agent or "")[:200] or None))
+    if stage == SessionStage.FULL:
+        user.last_login_at = now
+        audit(session, user.hospital_id, user.id, "staff_signed_in")
+    else:
+        audit(session, user.hospital_id, user.id, "staff_password_accepted", detail={"next": stage})
     hospital = session.get(Hospital, user.hospital_id)
     return {
         "access_token": token,
         "token_type": "Bearer",
-        "expires_in": settings.SESSION_TTL_SECONDS,
+        "expires_in": lifetime,
+        "stage": stage,
         "staff": staff_payload(user, hospital),
     }
 
@@ -212,11 +246,13 @@ def resolve_session(token: str) -> Staff:
             id=user.id, hospital_id=user.hospital_id, session_id=sess.id, email=user.email,
             full_name=user.full_name, role=user.role, must_change_password=user.must_change_password,
             hospital_status=hospital_status, locked=onboarding_locked(hospital_status, application_status),
+            stage=sess.stage, reauth_at=ensure_aware(sess.reauth_at), enrolled=user.totp_secret is not None,
         )
 
 
-def signed_in_staff(authorization: Optional[str] = Header(default=None)) -> Staff:
-    """Any signed-in staff member, even one who still has to change a temporary password."""
+def session_staff(authorization: Optional[str] = Header(default=None)) -> Staff:
+    """Any live session, even a sign-in half-way through (a code or an
+    authenticator set-up next): only the sign-in steps, /auth/me and sign-out use this."""
     token = _bearer(authorization)
     if not token:
         raise HTTPException(status_code=401, detail="Authentication required.")
@@ -224,6 +260,17 @@ def signed_in_staff(authorization: Optional[str] = Header(default=None)) -> Staf
         return resolve_session(token)
     except AuthError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+def signed_in_staff(staff: Staff = Depends(session_staff)) -> Staff:
+    """A signed-in staff member (the code given, where two-step verification
+    applies), even one who still has to change a temporary password."""
+    if staff.stage != SessionStage.FULL:
+        if staff.stage == SessionStage.ENROLL and staff.must_change_password:
+            # A temporary password is changed first, then the authenticator is set up.
+            raise HTTPException(status_code=403, detail=TEMPORARY_PASSWORD)
+        raise HTTPException(status_code=403, detail=INCOMPLETE)
+    return staff
 
 
 def current_staff(staff: Staff = Depends(signed_in_staff)) -> Staff:
@@ -237,7 +284,7 @@ def current_staff(staff: Staff = Depends(signed_in_staff)) -> Staff:
     if staff.locked:
         raise HTTPException(status_code=403, detail=NOT_APPROVED)
     if staff.must_change_password:
-        raise HTTPException(status_code=403, detail="Change your temporary password to continue.")
+        raise HTTPException(status_code=403, detail=TEMPORARY_PASSWORD)
     return staff
 
 
@@ -294,36 +341,6 @@ def change_password(staff: Staff, current: str, new: str) -> None:
             )
             audit(session, user.hospital_id, user.id, "staff_password_changed")
     # Raised after the commit, so a recorded failure is kept.
-    if failure is not None:
-        raise failure
-
-
-def confirm_identity(staff: Staff, password: Optional[str]) -> None:
-    """Re-authentication for a sensitive action (connecting a system, changing
-    or removing its credentials): the staff member types their password
-    again. A wrong one counts toward the lockout like a failed sign-in
-    (reaching it ends every session). Raises AuthError (400; 401 once locked
-    out), recorded before it is raised."""
-    settings = get_settings()
-    now = utcnow()
-    failure: Optional[AuthError] = None
-    with session_scope(staff.hospital_id) as session:
-        user = session.scalar(select(StaffUser).where(StaffUser.id == staff.id).with_for_update())
-        if user is None or not user.active:
-            raise AuthError("Authentication required.")
-        if user.locked_until and ensure_aware(user.locked_until) > now:
-            revoke_all_sessions(session, user.id)
-            failure = AuthError("Authentication required.")
-        elif not password or len(password) > 200 or not verify_password(password, user.password_hash):
-            if _record_failure(session, user, now, settings):
-                revoke_all_sessions(session, user.id)
-                failure = AuthError("Too many wrong passwords: you were signed out.")
-            else:
-                failure = AuthError("That password is not correct.", status.HTTP_400_BAD_REQUEST)
-            audit(session, user.hospital_id, user.id, "staff_reauth_failed")
-        else:
-            user.failed_logins = 0
-            user.last_failed_at = None
     if failure is not None:
         raise failure
 

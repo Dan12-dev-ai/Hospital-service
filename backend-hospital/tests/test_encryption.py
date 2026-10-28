@@ -615,9 +615,23 @@ def raw_count_keys(session):
     return session.execute(text("SELECT count(*) FROM hospital_keys")).scalar()
 
 
-def test_a_key_created_in_a_rolled_back_savepoint_is_never_used(client, hospital, patient):
+def _keyless_patient():
+    """A hospital nobody signed in to yet (signing in sets up an authenticator,
+    whose secret is encrypted: the hospital would have a key already)."""
+    from app.models import Patient
+
+    other = make_hospital(code="KEY", name="Keyless Hospital")
+    with platform_session() as session:
+        row = Patient(hospital_id=other, mrn="KEY-000001", full_name="Almaz", sex="female")
+        session.add(row)
+        session.flush()
+        return other, {"id": row.id}
+
+
+def test_a_key_created_in_a_rolled_back_savepoint_is_never_used(client):
     from app.models import PatientAlert
 
+    hospital, patient = _keyless_patient()
     with session_scope(hospital) as session:
         with pytest.raises(RuntimeError):
             with session.begin_nested():
@@ -633,17 +647,19 @@ def test_a_key_created_in_a_rolled_back_savepoint_is_never_used(client, hospital
         assert [a.label for a in session.scalars(select(PatientAlert))] == ["second"]
 
 
-def test_a_failed_flush_encrypts_again_with_the_key_of_the_next_flush(client, hospital, patient):
+def test_a_failed_flush_encrypts_again_with_the_key_of_the_next_flush(client):
     from sqlalchemy.exc import IntegrityError
 
     from app.models import Hospital, PatientAlert
+
+    hospital, patient = _keyless_patient()
 
     with platform_session() as session:
         alert = PatientAlert(hospital_id=hospital, patient_id=patient["id"], kind="allergy", label=f"{MARK} alert")
         with pytest.raises(IntegrityError):
             with session.begin_nested():
                 session.add(alert)
-                session.add(Hospital(code="SPH", name="Duplicate code", timezone="Africa/Addis_Ababa"))
+                session.add(Hospital(code="KEY", name="Duplicate code", timezone="Africa/Addis_Ababa"))
                 session.flush()  # encrypts the alert under a new key (in the savepoint), then fails
         assert alert.label == f"{MARK} alert"  # plain again, not ciphertext under a key that is gone
         assert raw_count_keys(session) == 0

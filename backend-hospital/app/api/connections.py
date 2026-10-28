@@ -4,9 +4,9 @@ only.
 
 Connecting a system, changing its credentials (rotating a secret, public
 keys), where it may call from, where its events go, and disconnecting it,
-each needs the admin's password again (app.auth.confirm_identity) and is
-audited (ids, names and scopes; never a secret). Secrets are shown once,
-in the answer that creates them.
+each needs a fresh code from the admin's authenticator (given within 10
+minutes: POST /auth/reauth, app/twofactor.py) and is audited (ids, names and
+scopes; never a secret). Secrets are shown once, in the answer that creates them.
 """
 
 from __future__ import annotations
@@ -17,7 +17,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 
-from app.auth import AuthError, Staff, audit, confirm_identity, require_roles
+from app import twofactor
+from app.auth import Staff, audit, require_roles
 from app.db import ensure_aware, session_scope, utcnow
 from app.integrations import clients, fhir, jose, scopes as S, tokens, webhooks
 from app.models import (
@@ -40,9 +41,13 @@ def approved_admin(staff: Staff = Depends(require_roles(Role.ADMIN))) -> Staff:
     return staff
 
 
+def fresh_admin(staff: Staff = Depends(approved_admin)) -> Staff:
+    """An approved hospital's admin who gave a fresh authenticator code (403 otherwise)."""
+    return twofactor.require_fresh(staff)
+
+
 class Confirmed(BaseModel):
-    #: The admin's password, typed again.
-    password: str = Field(default="", max_length=200)
+    """No fields: the change is confirmed by a fresh authenticator code (POST /auth/reauth)."""
 
 
 class NewConnection(Confirmed):
@@ -92,13 +97,6 @@ def _about(session, hospital_id: str) -> Dict[str, Any]:
             "mrn_system": fhir.mrn_system(session.get(Hospital, hospital_id)), "scopes": S.describe()}
 
 
-def _confirm(staff: Staff, password: str) -> None:
-    try:
-        confirm_identity(staff, password)
-    except AuthError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-
-
 def _client(session, staff: Staff, connection_id: str, lock: bool = True) -> IntegrationClient:
     query = select(IntegrationClient).where(IntegrationClient.id == connection_id,
                                             IntegrationClient.hospital_id == staff.hospital_id)
@@ -130,7 +128,7 @@ def list_connections(staff: Staff = Depends(approved_admin)) -> Dict[str, Any]:
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-def connect(body: NewConnection, staff: Staff = Depends(approved_admin)) -> Dict[str, Any]:
+def connect(body: NewConnection, staff: Staff = Depends(fresh_admin)) -> Dict[str, Any]:
     """A new connection. The answer holds the client secret (and the webhook
     secret, if any): shown this once, never again."""
     unknown = S.unknown(body.scopes)
@@ -144,7 +142,6 @@ def connect(body: NewConnection, staff: Staff = Depends(approved_admin)) -> Dict
         webhook_url = _webhook_url(body.webhook_url)
     elif body.webhook_url:
         raise HTTPException(status_code=400, detail="An address for notifications needs \"Get notified of bookings\".")
-    _confirm(staff, body.password)
     secret = clients.new_secret()
     webhook_secret = clients.new_webhook_secret() if webhook_url else None
     with session_scope(staff.hospital_id) as session:
@@ -176,9 +173,8 @@ def read_connection(connection_id: str, staff: Staff = Depends(approved_admin)) 
 
 
 @router.post("/{connection_id}/disconnect")
-def disconnect(connection_id: str, body: Confirmed, staff: Staff = Depends(approved_admin)) -> Dict[str, Any]:
+def disconnect(connection_id: str, body: Confirmed, staff: Staff = Depends(fresh_admin)) -> Dict[str, Any]:
     """Stops the system at once: no new tokens, and its current token is refused on the next call."""
-    _confirm(staff, body.password)
     with session_scope(staff.hospital_id) as session:
         client = _client(session, staff, connection_id)
         _live(client)
@@ -196,11 +192,10 @@ def disconnect(connection_id: str, body: Confirmed, staff: Staff = Depends(appro
 
 
 @router.post("/{connection_id}/rotate-secret")
-def rotate_secret(connection_id: str, body: Confirmed, staff: Staff = Depends(approved_admin)) -> Dict[str, Any]:
+def rotate_secret(connection_id: str, body: Confirmed, staff: Staff = Depends(fresh_admin)) -> Dict[str, Any]:
     """A new client secret (shown once); the old one, and tokens issued with it,
     stop working at once. On a connection using public keys, this switches it
     back to a secret."""
-    _confirm(staff, body.password)
     secret = clients.new_secret()
     with session_scope(staff.hospital_id) as session:
         client = _client(session, staff, connection_id)
@@ -215,12 +210,11 @@ def rotate_secret(connection_id: str, body: Confirmed, staff: Staff = Depends(ap
 
 
 @router.post("/{connection_id}/ip-restriction")
-def ip_restriction(connection_id: str, body: IpRestriction, staff: Staff = Depends(approved_admin)) -> Dict[str, Any]:
+def ip_restriction(connection_id: str, body: IpRestriction, staff: Staff = Depends(fresh_admin)) -> Dict[str, Any]:
     try:
         cidrs = clients.parse_cidrs(body.allowed_ips)
     except clients.CidrError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    _confirm(staff, body.password)
     with session_scope(staff.hospital_id) as session:
         client = _client(session, staff, connection_id)
         _live(client)
@@ -232,14 +226,13 @@ def ip_restriction(connection_id: str, body: IpRestriction, staff: Staff = Depen
 
 
 @router.post("/{connection_id}/public-key")
-def public_key(connection_id: str, body: PublicKeys, staff: Staff = Depends(approved_admin)) -> Dict[str, Any]:
+def public_key(connection_id: str, body: PublicKeys, staff: Staff = Depends(fresh_admin)) -> Dict[str, Any]:
     """Switch to public-key authentication (private_key_jwt), or replace the
     keys. The client secret stops working."""
     try:
         keys = jose.parse_jwks(body.jwks)
     except jose.JoseError as exc:
         raise HTTPException(status_code=400, detail=f"The public keys are not usable: {exc}.") from exc
-    _confirm(staff, body.password)
     with session_scope(staff.hospital_id) as session:
         client = _client(session, staff, connection_id)
         _live(client)
@@ -252,11 +245,10 @@ def public_key(connection_id: str, body: PublicKeys, staff: Staff = Depends(appr
 
 
 @router.post("/{connection_id}/webhook")
-def set_webhook(connection_id: str, body: Webhook, staff: Staff = Depends(approved_admin)) -> Dict[str, Any]:
+def set_webhook(connection_id: str, body: Webhook, staff: Staff = Depends(fresh_admin)) -> Dict[str, Any]:
     """Set (or remove, with null) where events go. A new webhook gets a signing
     secret, shown once."""
     url = _webhook_url(body.url) if body.url else None
-    _confirm(staff, body.password)
     with session_scope(staff.hospital_id) as session:
         client = _client(session, staff, connection_id)
         _live(client)
@@ -280,9 +272,8 @@ def set_webhook(connection_id: str, body: Webhook, staff: Staff = Depends(approv
 
 
 @router.post("/{connection_id}/webhook/rotate-secret")
-def rotate_webhook_secret(connection_id: str, body: Confirmed, staff: Staff = Depends(approved_admin)) \
+def rotate_webhook_secret(connection_id: str, body: Confirmed, staff: Staff = Depends(fresh_admin)) \
         -> Dict[str, Any]:
-    _confirm(staff, body.password)
     secret = clients.new_webhook_secret()
     with session_scope(staff.hospital_id) as session:
         client = _client(session, staff, connection_id)

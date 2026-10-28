@@ -42,7 +42,8 @@ clicks **Connect a system**:
 Under **Advanced** an administrator can limit the addresses the system may call
 from, switch it to public-key authentication, rotate the secret, set the webhook
 URL and its secret, send a test event, and see recent requests and webhook
-deliveries. Every change asks for the administrator's password again and is audited.
+deliveries. Every change asks for a fresh code from the administrator's authenticator app
+(two-step verification) and is audited.
 
 ## 2. Get an access token
 

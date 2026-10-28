@@ -54,6 +54,8 @@ SEALED: Dict[str, Tuple[str, ...]] = {
     "integration_clients": ("webhook_secret",),
     "integration_idempotency": ("response",),
     "webhook_deliveries": ("body",),
+    # Migration 0010: authenticator secrets.
+    "staff_users": ("totp_secret", "totp_pending_secret"),
 }
 
 #: Tables whose hospital is their parent row's: table -> (parent table, foreign key column).

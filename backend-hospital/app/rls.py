@@ -102,6 +102,8 @@ TENANT_TABLES: List[Tuple[str, str]] = [
     ("integration_resources", "hospital_id"),
     ("integration_idempotency", "hospital_id"),
     ("webhook_deliveries", "hospital_id"),
+    # Migration 0010: two-step verification.
+    ("staff_recovery_codes", "hospital_id"),
 ]
 
 #: Child tables without a hospital column: table -> (parent, foreign key column).
@@ -173,6 +175,8 @@ SAME_HOSPITAL_REFERENCES: List[Tuple[str, str, str, str]] = [
     ("integration_resources", "record_id", "clinical_records", "CASCADE"),
     ("integration_idempotency", "client_pk", "integration_clients", "CASCADE"),
     ("webhook_deliveries", "client_pk", "integration_clients", "CASCADE"),
+    # Migration 0010: two-step verification.
+    ("staff_recovery_codes", "user_id", "staff_users", "CASCADE"),
 ]
 
 TENANT_POLICY = "tenant_isolation"

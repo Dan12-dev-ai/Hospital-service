@@ -284,7 +284,29 @@ class StaffUser(Base):
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
+    # --- Two-step verification (app/twofactor.py; migration 0010) ---
+    #: The authenticator's TOTP secret, and one waiting for its first code (both encrypted at rest).
+    totp_secret: Mapped[Optional[str]] = mapped_column(Text)
+    totp_pending_secret: Mapped[Optional[str]] = mapped_column(Text)
+    #: The newest TOTP step used: that code, and every older one, never works again.
+    totp_last_step: Mapped[Optional[int]] = mapped_column(Integer)
+    totp_enrolled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    #: Wrong codes for this account from anywhere, and the pause they caused (no session ends).
+    code_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    code_last_failed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    code_backoff_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
     department: Mapped[Optional[Department]] = relationship()
+
+
+class SessionStage:
+    #: Signed in (password, and a code where two-step verification applies).
+    FULL = "full"
+    #: The password was right; a code from the authenticator (or a recovery code) is next.
+    TOTP = "totp"
+    #: The password was right; an authenticator must be set up first.
+    ENROLL = "enroll"
+    ALL = (FULL, TOTP, ENROLL)
 
 
 class StaffSession(Base):
@@ -299,6 +321,26 @@ class StaffSession(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     user_agent: Mapped[Optional[str]] = mapped_column(String(200))
+    #: SessionStage; sessions from before migration 0010 are full ones.
+    stage: Mapped[str] = mapped_column(String(8), nullable=False, default=SessionStage.FULL,
+                                       server_default=text("'full'"))
+    #: When the staff member last gave a fresh authenticator code in this session (re-authentication).
+    reauth_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class StaffRecoveryCode(Base):
+    """A one-time recovery code (only its keyed hash), ten per enrolment."""
+
+    __tablename__ = "staff_recovery_codes"
+    __table_args__ = (Index("ix_staff_recovery_codes_user", "user_id"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False,
+                                             index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("staff_users.id", ondelete="CASCADE"), nullable=False)
+    code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
 class AuditEvent(Base):

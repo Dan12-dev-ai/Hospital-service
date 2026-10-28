@@ -13,9 +13,9 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from sqlalchemy import func, select
 
-from conftest import PASSWORD, make_hospital, make_staff, sign_in
+from conftest import make_hospital, make_staff, reauth, sign_in
 
-from app import bookings
+from app import bookings, twofactor
 from app.db import platform_session
 from app.integrations import clients, jose, ratelimit, signing, tokens, webhooks
 from app.models import (
@@ -48,8 +48,8 @@ def make_patient(hospital_id, mrn="SPH-000001", dedan_id=None, name="Almaz Tefer
         return patient.id
 
 
-def connect(client, admin, scopes=None, mode="live", webhook_url=None, name="Lab system", password=PASSWORD):
-    body = {"name": name, "scopes": ALL_RECORDS if scopes is None else scopes, "mode": mode, "password": password}
+def connect(client, admin, scopes=None, mode="live", webhook_url=None, name="Lab system"):
+    body = {"name": name, "scopes": ALL_RECORDS if scopes is None else scopes, "mode": mode}
     if webhook_url:
         body["webhook_url"] = webhook_url
     return client.post("/connections", headers=admin, json=body)
@@ -133,6 +133,13 @@ def set_status(hospital_id, status=None, application=None):
 
 
 @pytest.fixture
+def admin(client, hospital):
+    """The hospital's admin, signed in with a fresh authenticator code (changes need one)."""
+    make_staff(hospital, "admin@sph.example", role="admin")
+    return sign_in(client, "admin@sph.example", fresh=True)
+
+
+@pytest.fixture
 def patient(hospital):
     return make_patient(hospital)
 
@@ -164,11 +171,24 @@ class TestConnections:
             row = session.get(IntegrationClient, connection["id"])
             assert row.secret_hash.startswith("$argon2id$") and secret not in row.secret_hash
 
-    def test_connecting_needs_the_password_again(self, client, admin):
-        resp = connect(client, admin, password="wrong-password")
-        assert resp.status_code == 400 and "password" in resp.json()["error"]
-        assert connect(client, admin, password="").status_code == 400
-        assert count(IntegrationClient) == 0
+    def test_changes_need_a_fresh_authenticator_code(self, client, hospital, monkeypatch):
+        make_staff(hospital, "it@sph.example", role="admin")
+        stale = sign_in(client, "it@sph.example")  # signed in, but no fresh code yet
+        resp = connect(client, stale)
+        assert resp.status_code == 403 and resp.json()["error"] == twofactor.REAUTH_REQUIRED
+        assert client.get("/connections", headers=stale).status_code == 200  # reading needs none
+        wrong = client.post("/auth/reauth", headers=stale, json={"code": "000000"})
+        assert wrong.status_code == 400
+        assert client.get("/connections", headers=stale).status_code == 200  # nobody is signed out
+        reauth(client, stale, "it@sph.example")
+        cid = connected(client, stale)["connection"]["id"]
+        # Fresh for 10 minutes only.
+        from app import db as dbmod
+        later = dbmod.utcnow() + timedelta(minutes=11)
+        monkeypatch.setattr(twofactor, "utcnow", lambda: later)
+        resp = client.post(f"/connections/{cid}/disconnect", headers=stale, json={})
+        assert resp.status_code == 403 and resp.json()["error"] == twofactor.REAUTH_REQUIRED
+        assert count(IntegrationClient) == 1
 
     def test_only_admins_of_approved_hospitals(self, client, admin, hospital):
         make_staff(hospital, "nurse@sph.example", role="nurse")
@@ -193,55 +213,41 @@ class TestConnections:
     def test_connect_rotate_and_disconnect_are_audited_without_secrets(self, client, admin, hospital):
         body = connected(client, admin)
         cid = body["connection"]["id"]
-        rotated = client.post(f"/connections/{cid}/rotate-secret", headers=admin, json={"password": PASSWORD})
+        rotated = client.post(f"/connections/{cid}/rotate-secret", headers=admin, json={})
         assert rotated.status_code == 200 and rotated.json()["client_secret"] != body["client_secret"]
         assert client.post(f"/connections/{cid}/disconnect", headers=admin,
-                           json={"password": "nope"}).status_code == 400
-        assert client.post(f"/connections/{cid}/disconnect", headers=admin,
-                           json={"password": PASSWORD}).status_code == 200
+                           json={}).status_code == 200
         assert client.get("/connections", headers=admin).json()["items"] == []
         assert client.post(f"/connections/{cid}/rotate-secret", headers=admin,
-                           json={"password": PASSWORD}).status_code == 409
+                           json={}).status_code == 409
         with platform_session() as session:
             rows = session.scalars(select(AuditEvent).where(AuditEvent.action.like("integration_%"))).all()
             actions = [r.action for r in rows]
             details = " ".join(r.detail or "" for r in rows)
         assert {"integration_connected", "integration_secret_rotated", "integration_disconnected"} <= set(actions)
         assert body["client_secret"] not in details and rotated.json()["client_secret"] not in details
-        assert "staff_reauth_failed" in self._actions()
-
-    @staticmethod
-    def _actions():
-        with platform_session() as session:
-            return [r.action for r in session.scalars(select(AuditEvent))]
-
-    def test_wrong_passwords_count_toward_the_lockout(self, client, admin, monkeypatch):
-        monkeypatch.setenv("HOSPITAL_LOGIN_LOCKOUT_ATTEMPTS", "2")
-        assert connect(client, admin, password="wrong-1").status_code == 400
-        assert connect(client, admin, password="wrong-2").status_code == 401  # locked out: signed out
-        assert client.get("/connections", headers=admin).status_code == 401
 
     def test_advanced_settings(self, client, admin):
         cid = connected(client, admin)["connection"]["id"]
         resp = client.post(f"/connections/{cid}/ip-restriction", headers=admin,
-                           json={"allowed_ips": ["203.0.113.7", "198.51.100.0/24"], "password": PASSWORD})
+                           json={"allowed_ips": ["203.0.113.7", "198.51.100.0/24"]})
         assert resp.json()["connection"]["allowed_ips"] == ["203.0.113.7/32", "198.51.100.0/24"]
         assert client.post(f"/connections/{cid}/ip-restriction", headers=admin,
-                           json={"allowed_ips": ["not-an-ip"], "password": PASSWORD}).status_code == 400
+                           json={"allowed_ips": ["not-an-ip"]}).status_code == 400
         hook = client.post(f"/connections/{cid}/webhook", headers=admin,
-                           json={"url": "https://hooks.example.com/endod", "password": PASSWORD}).json()
+                           json={"url": "https://hooks.example.com/endod"}).json()
         assert hook["webhook_secret"].startswith("whsec_") and "webhooks" in hook["connection"]["scopes"]
-        again = client.post(f"/connections/{cid}/webhook/rotate-secret", headers=admin, json={"password": PASSWORD})
+        again = client.post(f"/connections/{cid}/webhook/rotate-secret", headers=admin, json={})
         assert again.json()["webhook_secret"] != hook["webhook_secret"]
         test = client.post(f"/connections/{cid}/webhook/test", headers=admin, json={})
         assert test.status_code == 202
         deliveries = client.get(f"/connections/{cid}/deliveries", headers=admin).json()["items"]
         assert [d["event_type"] for d in deliveries] == ["endpoint.test"] and "body" not in deliveries[0]
-        removed = client.post(f"/connections/{cid}/webhook", headers=admin, json={"url": None, "password": PASSWORD})
+        removed = client.post(f"/connections/{cid}/webhook", headers=admin, json={"url": None})
         assert removed.json()["connection"]["webhook_url"] is None
         assert "webhooks" not in removed.json()["connection"]["scopes"]
         private = {"keys": [{"kty": "EC", "crv": "P-256", "x": "a" * 43, "y": "b" * 43, "d": "c" * 43}]}
-        refused = client.post(f"/connections/{cid}/public-key", headers=admin, json={"jwks": private, "password": PASSWORD})
+        refused = client.post(f"/connections/{cid}/public-key", headers=admin, json={"jwks": private})
         assert refused.status_code == 400 and "PRIVATE" in refused.json()["error"]
 
 
@@ -286,7 +292,7 @@ class TestTokens:
 
     def test_revoked_clients_stop_at_once(self, client, admin, conn, auth):
         assert client.get(f"{API}/bookings", headers=auth).status_code == 403  # no bookings.read: but valid
-        client.post(f"/connections/{conn['connection']['id']}/disconnect", headers=admin, json={"password": PASSWORD})
+        client.post(f"/connections/{conn['connection']['id']}/disconnect", headers=admin, json={})
         resp = token_request(client, headers=basic(conn["connection"]["client_id"], conn["client_secret"]))
         assert resp.status_code == 401 and resp.json()["error"] == "invalid_client"
         refused = post_bundle(client, auth, [entry(observation())])
@@ -294,7 +300,7 @@ class TestTokens:
 
     def test_a_rotated_secret_ends_older_tokens(self, client, admin, conn, auth):
         client.post(f"/connections/{conn['connection']['id']}/rotate-secret", headers=admin,
-                    json={"password": PASSWORD})
+                    json={})
         assert post_bundle(client, auth, [entry(observation())]).status_code == 401
         assert token_request(client, headers=basic(conn["connection"]["client_id"],
                                                    conn["client_secret"])).status_code == 401
@@ -302,7 +308,7 @@ class TestTokens:
     def test_ip_restriction(self, client, admin, conn, monkeypatch):
         monkeypatch.setenv("HOSPITAL_TRUSTED_PROXY_HOPS", "1")
         client.post(f"/connections/{conn['connection']['id']}/ip-restriction", headers=admin,
-                    json={"allowed_ips": ["203.0.113.0/24"], "password": PASSWORD})
+                    json={"allowed_ips": ["203.0.113.0/24"]})
         creds = basic(conn["connection"]["client_id"], conn["client_secret"])
         outside = token_request(client, headers={**creds, "X-Forwarded-For": "198.51.100.9"})
         assert outside.status_code == 401 and "address" in outside.json()["error_description"]
@@ -353,7 +359,7 @@ class KeyClient:
             jwk = jose.rsa_public_jwk(self.key.public_key(), kid="k1")
         self.kind = kind
         resp = client.post(f"/connections/{conn['connection']['id']}/public-key", headers=admin,
-                           json={"jwks": json.dumps({"keys": [jwk]}), "password": PASSWORD})
+                           json={"jwks": json.dumps({"keys": [jwk]})})
         assert resp.status_code == 200, resp.text
         assert resp.json()["connection"]["auth_method"] == "private_key_jwt"
 
@@ -637,12 +643,12 @@ class TestIsolation:
     def test_connections_are_the_hospitals_own(self, client, admin, conn):
         other = make_hospital(code="BET", name="Bethel Hospital")
         make_staff(other, "admin@bet.example", role="admin")
-        theirs = sign_in(client, "admin@bet.example")
+        theirs = sign_in(client, "admin@bet.example", fresh=True)
         cid = conn["connection"]["id"]
         assert client.get("/connections", headers=theirs).json()["items"] == []
         assert client.get(f"/connections/{cid}", headers=theirs).status_code == 404
         assert client.post(f"/connections/{cid}/disconnect", headers=theirs,
-                           json={"password": PASSWORD}).status_code == 404
+                           json={}).status_code == 404
 
 
 def book(hospital_id, mode="in_person"):
@@ -745,7 +751,7 @@ class TestWebhooks:
         set_status(hospital, status="suspended")
         webhooks.deliver_due()
         set_status(hospital, status="approved")
-        client.post(f"/connections/{conn['connection']['id']}/disconnect", headers=admin, json={"password": PASSWORD})
+        client.post(f"/connections/{conn['connection']['id']}/disconnect", headers=admin, json={})
         book(hospital)
         webhooks.deliver_due()
         with platform_session() as session:
