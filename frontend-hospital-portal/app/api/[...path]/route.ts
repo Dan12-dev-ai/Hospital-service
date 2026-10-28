@@ -31,6 +31,8 @@ const ALLOWED: RegExp[] = [
   /^queue(\/check-in|\/[A-Za-z0-9_-]+\/call-next|\/entries\/[A-Za-z0-9_-]+\/(done|skip|cancel))?$/,
   /^shared$/,
   /^imports\/[A-Za-z0-9_-]+\/confirm$/,
+  // "Connect your system": the hospital's own systems (admins of approved hospitals).
+  /^connections(\/[a-f0-9]{32}(\/(disconnect|rotate-secret|ip-restriction|public-key|webhook(\/(rotate-secret|test))?|requests|deliveries))?)?$/,
   // The onboarding application (its documents go through app/api/upload and app/api/download).
   /^onboarding\/(status|application|contact|facility|location|documents|demo-slots|demo|submit)$/,
 ];

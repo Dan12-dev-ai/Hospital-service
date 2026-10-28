@@ -41,5 +41,7 @@ export const backendEnv: Record<string, string> = {
   HOSPITAL_JITSI_APP_SECRET: "e2e-jitsi-secret",
   HOSPITAL_CORS_ORIGINS: `http://localhost:${PORTAL_PORT}`,
   HOSPITAL_FILES_DIR: process.env.E2E_FILES ?? path.join(os.tmpdir(), "hospital-e2e-files"),
+  // The integration API, as the hospital's systems reach it in these tests.
+  HOSPITAL_INTEGRATIONS_PUBLIC_URL: `${BACKEND_URL}/integrations/v1`,
 };
 

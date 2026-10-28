@@ -120,7 +120,11 @@ function SidebarBody({
   const session = useSession();
   const staff = session.status === "ready" ? session.staff : null;
   const hospital = session.status === "ready" ? session.hospital : null;
-  const items = navItems.filter((item) => !item.roles || (staff !== null && item.roles.includes(staff.role)));
+  const items = navItems.filter(
+    (item) =>
+      (!item.roles || (staff !== null && item.roles.includes(staff.role))) &&
+      (!item.approvedOnly || hospital?.status === "approved")
+  );
   const [signingOut, setSigningOut] = useState(false);
 
   return (
