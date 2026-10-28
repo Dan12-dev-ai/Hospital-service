@@ -206,7 +206,15 @@ database, a backup or the files volume alone reveals no clinical data.
   `development` or `test` (then a fixed, public development key is used:
   never for real data). At start they log the key's fingerprint
   (`master_key_loaded fingerprint=…`, a hash, not the key), so you can tell
-  which key a server runs with.
+  which key a server runs with. The database records which master key it
+  belongs to (an HMAC of a fixed label under it, in `encryption_state`) on
+  the first start; from then on a different key is refused at start and
+  before any data key is made, so a wrong key mounted by mistake can never
+  wrap keys nobody else can unwrap.
+- **Who may touch the keys.** The app role may only read data keys and add
+  a hospital's first one; only Endod (the CLI, as `hospital_platform`)
+  activates a new version, and nobody can change a wrapped key or delete
+  one (database grants, tested on PostgreSQL).
 - **Values** are stored as `enc:v1:<key version>:` + base64(nonce ‖
   ciphertext ‖ tag), AES-256-GCM with a random 12-byte nonce each time. The
   associated data names the table, column, row id, hospital and key version:
@@ -240,7 +248,10 @@ database, a backup or the files volume alone reveals no clinical data.
   dead-letter stream keeps only the event's id, type, source, time, the error
   (500 characters at most) and a redacted payload (field names, and the
   values of `*_id` fields; no clinical data, names or phones), about 10,000
-  entries at most.
+  entries at most. Errors stored there or logged are the exception's class
+  and first line only; for a database error, the driver's primary message
+  (never the statement, its parameters or a DETAIL line), and the engine
+  hides parameters in every error and traceback.
 
 | Encrypted | Not encrypted, and why |
 | --- | --- |
@@ -320,9 +331,12 @@ This code reads plain and encrypted values alike, so it can stay while
 anything is investigated. The 0007 code reads only plain text: to go back to
 it, stop everything that writes, decrypt everything with THIS image, then
 downgrade with THIS image's `migrate`, and only then deploy the old code.
-The downgrade refuses while any encrypted value is left; it cannot see the
-files, so never skip `decrypt-existing` (it does both, and lifts enforcement
-first).
+`decrypt-existing` refuses while the API or worker is still connected
+(another connection of the app's login that is not the CLI's), decrypts
+values and files, and lifts enforcement first. The downgrade then counts,
+acting for Endod so row-level security hides nothing, every value still
+encrypted and every file whose row says it is (`key_version`), and refuses
+while anything is left: it never drops the keys while data needs them.
 
   ```sh
   cd /opt/endod-hospital/deploy
