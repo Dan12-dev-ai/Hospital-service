@@ -285,9 +285,9 @@ class StaffUser(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
     # --- Two-step verification (app/twofactor.py; migration 0010) ---
-    #: The authenticator's TOTP secret, and one waiting for its first code (both encrypted at rest).
+    #: The authenticator's TOTP secret (encrypted at rest). One being set up
+    #: waits on its own sign-in session (StaffSession.totp_pending_secret).
     totp_secret: Mapped[Optional[str]] = mapped_column(Text)
-    totp_pending_secret: Mapped[Optional[str]] = mapped_column(Text)
     #: The newest TOTP step used: that code, and every older one, never works again.
     totp_last_step: Mapped[Optional[int]] = mapped_column(Integer)
     totp_enrolled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
@@ -326,6 +326,9 @@ class StaffSession(Base):
                                        server_default=text("'full'"))
     #: When the staff member last gave a fresh authenticator code in this session (re-authentication).
     reauth_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    #: An ``enroll`` session's own new TOTP secret, until its first code
+    #: confirms it (encrypted at rest): each set-up session has a fresh one.
+    totp_pending_secret: Mapped[Optional[str]] = mapped_column(Text)
 
 
 class StaffRecoveryCode(Base):

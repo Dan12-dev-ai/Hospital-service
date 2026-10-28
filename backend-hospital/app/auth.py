@@ -183,8 +183,13 @@ def password_stage(session, user: StaffUser) -> str:
     Endod approved; else nothing (a hospital still applying: password only)."""
     if user.totp_secret:
         return SessionStage.TOTP
-    hospital = session.get(Hospital, user.hospital_id)
-    application = session.get(OnboardingApplication, user.hospital_id)
+    # Read again with the hospital row locked: an approval (which locks it too,
+    # and ends every session) cannot slip between this and the new session, so
+    # a password-only session is never opened for an approved hospital.
+    hospital = session.scalar(select(Hospital).where(Hospital.id == user.hospital_id)
+                              .with_for_update().execution_options(populate_existing=True))
+    application = session.scalar(select(OnboardingApplication).where(
+        OnboardingApplication.hospital_id == user.hospital_id).execution_options(populate_existing=True))
     if onboarding_locked(hospital.status, application.status if application else None):
         return SessionStage.FULL
     return SessionStage.ENROLL

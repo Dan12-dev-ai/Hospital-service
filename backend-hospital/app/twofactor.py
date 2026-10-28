@@ -157,6 +157,13 @@ def _user(session, staff: Staff) -> StaffUser:
     return user
 
 
+def _pending_session(session, staff: Staff) -> StaffSession:
+    sess = session.scalar(select(StaffSession).where(StaffSession.id == staff.session_id).with_for_update())
+    if sess is None or sess.revoked_at is not None:
+        raise AuthError("Authentication required.")
+    return sess
+
+
 def _end(session, session_id: str, now: datetime) -> None:
     session.execute(update(StaffSession).where(StaffSession.id == session_id).values(revoked_at=now))
 
@@ -266,10 +273,14 @@ def enrolment_start(staff: Staff) -> Dict[str, Any]:
     def work(session, user: StaffUser, now: datetime):
         if user.must_change_password:
             return AuthError(CHANGE_PASSWORD_FIRST, 403)
-        if not user.totp_pending_secret:
-            user.totp_pending_secret = totp.new_secret()
+        # The secret belongs to this set-up session only (encrypted at rest):
+        # another sign-in (another device, or someone who knows the password)
+        # gets its own, and confirming one ends the others.
+        sess = _pending_session(session, staff)
+        if not sess.totp_pending_secret:
+            sess.totp_pending_secret = totp.new_secret()
             audit(session, user.hospital_id, user.id, "staff_2fa_setup_started")
-        secret = user.totp_pending_secret
+        secret = sess.totp_pending_secret
         return {"secret": secret, "otpauth_uri": totp.provisioning_uri(secret, user.email),
                 "issuer": totp.ISSUER, "account": user.email}
 
@@ -287,13 +298,18 @@ def enrolment_confirm(staff: Staff, code: str, ip: str, user_agent: Optional[str
         refused = _refused(user, ip, now)
         if refused is not None:
             return refused
-        if not user.totp_pending_secret:
+        sess = _pending_session(session, staff)
+        if user.totp_secret or not sess.totp_pending_secret:
             return AuthError("Start the set-up again: no authenticator is waiting for a code.", 409)
-        step = totp.verify(user.totp_pending_secret, code or "", None)
+        step = totp.verify(sess.totp_pending_secret, code or "", None)
         if step is None:
             _note_failure(session, user, ip, now, "setup")
             return AuthError(INVALID_CODE, 400)
-        user.totp_secret, user.totp_pending_secret = user.totp_pending_secret, None
+        user.totp_secret, sess.totp_pending_secret = sess.totp_pending_secret, None
+        # Every other set-up session of the account (and its secret) ends.
+        session.execute(update(StaffSession).where(
+            StaffSession.user_id == user.id, StaffSession.id != sess.id, StaffSession.stage == SessionStage.ENROLL,
+            StaffSession.revoked_at.is_(None)).values(revoked_at=now, totp_pending_secret=None))
         user.totp_last_step, user.totp_enrolled_at = step, now
         _clear_failures(user, ip)
         codes = _replace_recovery_codes(session, user, now)
@@ -343,11 +359,12 @@ def require_fresh(staff: Staff) -> Staff:
 def reset(session, user: StaffUser) -> None:
     """Forget the authenticator and recovery codes; end every session (the
     next sign-in sets up a new authenticator)."""
-    user.totp_secret = user.totp_pending_secret = None
+    user.totp_secret = None
     user.totp_last_step = user.totp_enrolled_at = None
     user.code_failures, user.code_last_failed_at, user.code_backoff_until = 0, None, None
     session.execute(delete(StaffRecoveryCode).where(StaffRecoveryCode.user_id == user.id))
     revoke_all_sessions(session, user.id)
+    session.execute(update(StaffSession).where(StaffSession.user_id == user.id).values(totp_pending_secret=None))
 
 
 def end_hospital_sessions(session, hospital_id: str) -> int:

@@ -65,12 +65,55 @@ class TestEnrolment:
     def test_secrets_are_encrypted_and_recovery_codes_hashed(self, client, nurse):
         _headers, codes = enrol(client, nurse)
         with get_engine().connect() as connection:
-            stored = connection.execute(text("SELECT totp_secret, totp_pending_secret FROM staff_users")).one()
+            stored = connection.execute(text("SELECT totp_secret FROM staff_users")).one()
+            pending = connection.execute(text("SELECT totp_pending_secret FROM staff_sessions")).scalars().all()
             hashes = connection.execute(text("SELECT code_hash FROM staff_recovery_codes")).scalars().all()
-        assert stored[0].startswith("enc:v1:") and stored[1] is None
+        assert stored[0].startswith("enc:v1:") and pending == [None, None]
         assert totp_secret(nurse) not in stored[0]
         assert len(hashes) == 10 and not set(codes) & set(hashes)
         assert all(c.replace("-", "") not in h for c in codes for h in hashes)
+
+    def test_each_set_up_session_has_its_own_secret(self, client, nurse):
+        """Someone who knows the password and starts a set-up first never learns
+        the secret the real staff member's authenticator will hold."""
+        attacker = login(client, nurse)
+        stolen = client.post("/auth/enroll/start", headers=bearer(attacker)).json()["secret"]
+        real = login(client, nurse)
+        started = client.post("/auth/enroll/start", headers=bearer(real)).json()
+        assert started["secret"] != stolen
+        with get_engine().connect() as connection:  # encrypted at rest, on the session
+            pending = connection.execute(text("SELECT totp_pending_secret FROM staff_sessions "
+                                              "WHERE totp_pending_secret IS NOT NULL")).scalars().all()
+        assert len(pending) == 2 and all(p.startswith("enc:v1:") for p in pending)
+        done = client.post("/auth/enroll/confirm", headers=bearer(real), json={"code": totp_code(started["secret"])})
+        assert done.status_code == 200
+        assert totp_secret(nurse) == started["secret"]
+        # The attacker's set-up ended with its secret; its codes never worked.
+        assert client.get("/auth/me", headers=bearer(attacker)).status_code == 401
+        pending = login(client, nurse)
+        stale = pyotp.TOTP(stolen).at(totp._clock())
+        assert client.post("/auth/totp", headers=bearer(pending), json={"code": stale}).status_code == 400
+
+    def test_the_stage_is_read_again_where_the_session_is_opened(self, client):
+        """Approval racing a sign-in: the stage is read with the hospital row
+        locked (FOR UPDATE, as approval locks it) and never from a stale copy,
+        so no password-only session is opened for an approved hospital."""
+        from app.auth import password_stage
+        from app.db import session_scope
+        from app.models import Hospital
+
+        applying = make_hospital(code="RACE", name="Racing Hospital")
+        with platform_session() as session:
+            session.add(OnboardingApplication(hospital_id=applying, status="submitted"))
+        user_id = make_staff(applying, "racer@race.example")
+        with session_scope(applying) as session:
+            user = session.get(StaffUser, user_id)
+            session.get(Hospital, applying)  # a copy read before the approval
+            session.get(OnboardingApplication, applying)
+            assert password_stage(session, user) == "full"
+            with platform_session() as other:  # approved meanwhile
+                other.get(OnboardingApplication, applying).status = "approved"
+            assert password_stage(session, user) == "enroll"
 
     def test_a_hospital_still_applying_signs_in_with_the_password_only(self, client):
         applying = make_hospital(code="NEW", name="New Clinic")
@@ -215,3 +258,41 @@ class TestResetAndReauth:
         with platform_session() as session:
             assert session.scalar(select(StaffSession).where(StaffSession.revoked_at.is_(None),
                                                              StaffSession.stage == "full")) is None
+
+
+def test_migration_0010_signs_out_approved_hospitals_and_its_downgrade_everyone(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+
+    from app import db as dbmod
+
+    monkeypatch.setenv("HOSPITAL_DATABASE_URL", f"sqlite:///{tmp_path / 'rollout.db'}")
+    dbmod.reset_engine()
+    root = Path(__file__).resolve().parents[1]
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "migrations"))
+    command.upgrade(config, "0009")
+    when = "'2026-01-01 00:00:00'"
+    with get_engine().begin() as connection:
+        for hid, code, status in (("h1", "OLD", "approved"), ("h2", "APP", "approved"), ("h3", "NEW", "pending")):
+            connection.execute(text(f"INSERT INTO hospitals (id, code, name, timezone, created_at, status) "
+                                    f"VALUES ('{hid}', '{code}', '{code}', 'Africa/Addis_Ababa', {when}, '{status}')"))
+        connection.execute(text(f"INSERT INTO onboarding_applications (hospital_id, status, created_at, updated_at) "
+                                f"VALUES ('h2', 'approved', {when}, {when}), ('h3', 'submitted', {when}, {when})"))
+        for n, hid in enumerate(("h1", "h2", "h3")):
+            connection.execute(text(
+                f"INSERT INTO staff_users (id, hospital_id, email, full_name, role, password_hash, "
+                f"must_change_password, active, failed_logins, created_at) VALUES ('u{n}', '{hid}', 'u{n}@x.example', "
+                f"'U', 'admin', 'x', 0, 1, 0, {when})"))
+            connection.execute(text(f"INSERT INTO staff_sessions (id, token_hash, user_id, created_at, expires_at) "
+                                    f"VALUES ('s{n}', 't{n}', 'u{n}', {when}, '2099-01-01 00:00:00')"))
+    command.upgrade(config, "0010")
+    with get_engine().connect() as connection:
+        live = connection.execute(text("SELECT id FROM staff_sessions WHERE revoked_at IS NULL")).scalars().all()
+    assert live == ["s2"]  # only the hospital still applying keeps its password-only session
+    command.downgrade(config, "0009")
+    with get_engine().connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM staff_sessions WHERE revoked_at IS NULL")).scalar() == 0
+    dbmod.reset_engine()

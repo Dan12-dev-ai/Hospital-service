@@ -14,8 +14,14 @@ from an authenticator app (app/twofactor.py). This revision only adds:
   ``tenant_isolation``, ``platform_access``, and a composite key to its staff
   member; frozen copies of app/rls.py, which tests/test_rls.py checks).
 
-Nobody is signed out by the migration: approved hospitals' staff set up their
-authenticator at their next sign-in. Downgrading drops what this added.
+Every live session of staff of an approved hospital (one whose onboarding
+application is approved, or, without an application, not pending) is
+revoked: they sign in again and set up their authenticator. Staff of
+hospitals still applying stay signed in (password-only until approval).
+Downgrading revokes every session (no session of a stage the old code does
+not know survives), then drops what this added. On PostgreSQL both act as
+``hospital_platform`` (row-level security would hide the sessions from a
+non-superuser owner).
 
 Revision ID: 0010
 Revises: 0009
@@ -39,13 +45,43 @@ TENANT = "current_setting('app.hospital_id', true)"
 
 USER_COLUMNS = [
     ("totp_secret", sa.Text(), None),
-    ("totp_pending_secret", sa.Text(), None),
     ("totp_last_step", sa.Integer(), None),
     ("totp_enrolled_at", sa.DateTime(timezone=True), None),
     ("code_failures", sa.Integer(), sa.text("0")),
     ("code_last_failed_at", sa.DateTime(timezone=True), None),
     ("code_backoff_until", sa.DateTime(timezone=True), None),
 ]
+
+
+#: The live sessions of staff of approved hospitals (app.auth.onboarding_locked is False).
+REVOKE_APPROVED = """UPDATE staff_sessions SET revoked_at = CURRENT_TIMESTAMP
+    WHERE revoked_at IS NULL AND user_id IN (
+        SELECT u.id FROM staff_users u JOIN hospitals h ON h.id = u.hospital_id
+        LEFT JOIN onboarding_applications a ON a.hospital_id = h.id
+        WHERE (a.hospital_id IS NOT NULL AND a.status = 'approved')
+           OR (a.hospital_id IS NULL AND h.status <> 'pending'))"""
+REVOKE_ALL = "UPDATE staff_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE revoked_at IS NULL"
+
+
+def _as_platform(bind, statement):
+    """Run ``statement`` seeing every hospital's rows: as hospital_platform on
+    PostgreSQL unless the login bypasses row-level security already."""
+    switched = False
+    if bind.dialect.name == "postgresql":
+        bypass = bind.execute(sa.text("SELECT rolsuper OR rolbypassrls FROM pg_roles "
+                                      "WHERE rolname = current_user")).scalar()
+        if not bypass:
+            if not bind.execute(sa.text("SELECT pg_has_role(current_user, :r, 'SET')"),
+                                {"r": PLATFORM_ROLE}).scalar():
+                raise RuntimeError(f"Cannot reach every hospital's sessions: {PLATFORM_ROLE} is not available to "
+                                   "this login. Run the migration as the database owner.")
+            bind.execute(sa.text(f"SET LOCAL ROLE {PLATFORM_ROLE}"))
+            switched = True
+    try:
+        bind.execute(sa.text(statement))
+    finally:
+        if switched:
+            bind.execute(sa.text("RESET ROLE"))
 
 
 def _fk(child, column):
@@ -93,6 +129,7 @@ def upgrade() -> None:
     op.add_column('staff_sessions', sa.Column('stage', sa.String(length=8), nullable=False,
                                               server_default=sa.text("'full'")))
     op.add_column('staff_sessions', sa.Column('reauth_at', sa.DateTime(timezone=True), nullable=True))
+    op.add_column('staff_sessions', sa.Column('totp_pending_secret', sa.Text(), nullable=True))
     op.create_table('staff_recovery_codes',
     sa.Column('id', sa.String(length=32), nullable=False),
     sa.Column('hospital_id', sa.String(length=32), nullable=False),
@@ -109,19 +146,24 @@ def upgrade() -> None:
     op.create_index(op.f('ix_staff_recovery_codes_hospital_id'), 'staff_recovery_codes', ['hospital_id'],
                     unique=False)
     op.create_index('ix_staff_recovery_codes_user', 'staff_recovery_codes', ['user_id'], unique=False)
-    if op.get_bind().dialect.name != "postgresql":
+    bind = op.get_bind()
+    # Two-step verification starts now for approved hospitals: their staff sign in again.
+    _as_platform(bind, REVOKE_APPROVED)
+    if bind.dialect.name != "postgresql":
         return
     for statement in install_statements():
         op.execute(statement)
 
 
 def downgrade() -> None:
+    _as_platform(op.get_bind(), REVOKE_ALL)
     if op.get_bind().dialect.name == "postgresql":
         for statement in drop_statements():
             op.execute(statement)
     op.drop_table('staff_recovery_codes')
     # A batch on SQLite rebuilds the tables (dropping a column).
     with op.batch_alter_table('staff_sessions') as batch:
+        batch.drop_column('totp_pending_secret')
         batch.drop_column('reauth_at')
         batch.drop_column('stage')
     with op.batch_alter_table('staff_users') as batch:

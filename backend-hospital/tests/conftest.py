@@ -122,7 +122,7 @@ def totp_secret(email):
 
     with platform_session() as session:
         user = session.scalar(select(StaffUser).where(StaffUser.email == email.lower()))
-        return user.totp_secret or user.totp_pending_secret
+        return user.totp_secret
 
 
 def totp_code(secret):
