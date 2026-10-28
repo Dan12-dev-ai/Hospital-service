@@ -876,7 +876,9 @@ def test_errors_in_redis_and_logs_carry_no_values(client, hospital, caplog):
             session.add(Hospital(code="SPH", name=f"{MARK} duplicate", timezone="Africa/Addis_Ababa"))
     assert MARK not in str(caught.value)  # the engine hides parameters, in errors and tracebacks
     message = safe_error(caught.value)
-    assert message.startswith("IntegrityError: ") and MARK not in message and "INSERT" not in message
+    # The driver's class (sqlite3 IntegrityError, psycopg UniqueViolation) and its primary message.
+    assert message.split(": ")[0] in ("IntegrityError", "UniqueViolation") and "unique" in message.lower()
+    assert MARK not in message and "INSERT" not in message and "DETAIL" not in message
     assert "\n" not in message and "[SQL" not in message
 
     class Diag:
