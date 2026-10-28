@@ -14,6 +14,9 @@ Delivery is at least once, and handling is exactly once:
   unsent rows to Redis, in order, from one publisher at a time (a database
   lock), and marks them sent only after Redis (and, when configured, a
   replica) has them. If Redis is down, events wait in the database.
+  Payloads carry clinical data in plain text (the platform needs it), so a
+  sent row is deleted after :data:`KEEP_PUBLISHED_FOR` (:func:`housekeeping`):
+  the outbox never becomes a plain copy of the encrypted records.
 * **Inbox.** Each received event's id is recorded in ``processed_events`` in
   the same transaction as its effect, so a redelivered event is skipped.
 * **Retries.** A failed event stays pending in the group and is claimed again
@@ -60,8 +63,10 @@ RETRY_AFTER_MS = 30_000
 MAX_DELIVERIES = 5
 #: Stream entries older than this are trimmed (well past any retry).
 KEEP_STREAM_FOR = timedelta(days=7)
-#: Sent outbox rows and handled-event ids are deleted after this.
+#: Handled-event ids are deleted after this.
 KEEP_RECORDS_FOR = timedelta(days=30)
+#: Sent outbox rows (plain clinical payloads) are deleted after this.
+KEEP_PUBLISHED_FOR = timedelta(hours=24)
 #: Postgres advisory lock id: one publisher at a time keeps events in order.
 _PUBLISH_LOCK = 0x45_4E_44_4F_44  # "ENDOD"
 
@@ -155,15 +160,22 @@ def publish_pending(client: redis.Redis, batch: int = 100) -> int:
         return len(rows)
 
 
+def purge_published(now=None) -> int:
+    """Delete outbox rows sent more than :data:`KEEP_PUBLISHED_FOR` ago (their
+    payloads are plain text). Unsent rows stay until sent. Returns how many."""
+    cutoff = (now or utcnow()) - KEEP_PUBLISHED_FOR
+    with platform_session() as session:
+        return session.execute(delete(OutboxEvent).where(OutboxEvent.published_at.is_not(None),
+                                                         OutboxEvent.published_at < cutoff)).rowcount or 0
+
+
 def housekeeping(client: redis.Redis) -> None:
     """Trim old stream entries and delete old records (run now and then)."""
     cutoff_ms = int((time.time() - KEEP_STREAM_FOR.total_seconds()) * 1000)
     client.xtrim(STREAM_OUT, minid=f"{cutoff_ms}-0", approximate=True)
-    cutoff = utcnow() - KEEP_RECORDS_FOR
+    purge_published()
     with platform_session() as session:
-        session.execute(delete(OutboxEvent).where(OutboxEvent.published_at.is_not(None),
-                                                  OutboxEvent.published_at < cutoff))
-        session.execute(delete(ProcessedEvent).where(ProcessedEvent.processed_at < cutoff))
+        session.execute(delete(ProcessedEvent).where(ProcessedEvent.processed_at < utcnow() - KEEP_RECORDS_FOR))
 
 
 # --- consuming ---------------------------------------------------------------------------
