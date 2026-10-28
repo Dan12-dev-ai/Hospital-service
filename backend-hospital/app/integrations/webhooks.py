@@ -3,13 +3,17 @@
 * **Events:** booking.created, booking.confirmed, booking.cancelled,
   patient.linked, patient.unlinked (and endpoint.test from "Send test
   event"), to every connection of the hospital with the ``webhooks`` scope
-  and a webhook URL. Bodies are thin: ids, statuses and times, never notes
+  and a webhook URL, Live connections only (a Test connection gets only
+  ``endpoint.test``: never an event about real bookings or patients). Bodies are thin: ids, statuses and times, never notes
   or clinical data (a connection with ``bookings.read`` fetches the rest).
 * **Signature:** ``Endod-Signature: t=<unix time>,v1=<hex HMAC-SHA256 of
   "<t>.<body>" under the connection's webhook secret>``.
 * **Delivery:** queued in ``webhook_deliveries`` in the transaction of the
-  change (the body encrypted at rest), sent by the worker
-  (:func:`deliver_due`) with retries and backoff for up to 24 hours. A 2xx
+  change (the body encrypted at rest), sent by the worker's own delivery
+  thread (:class:`Deliverer`, never the event-bus loop, so a slow endpoint
+  cannot delay bookings or links), at most ``WORKERS`` at a time, each within
+  ``DEADLINE_SECONDS`` all told (DNS included), with retries and backoff for
+  up to 24 hours. A 2xx
   answer is success; anything else (redirects included) is retried. Once
   delivered or given up, the body is deleted; status and attempts stay.
 * **SSRF:** https only; the host is resolved at every send and every address
@@ -30,7 +34,10 @@ import logging
 import secrets
 import socket
 import ssl
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -41,7 +48,7 @@ from sqlalchemy.orm import Session
 
 from app.db import ensure_aware, platform_session, utcnow
 from app.integrations import scopes as S
-from app.models import Booking, DeliveryStatus, IntegrationClient, Patient, WebhookDelivery
+from app.models import Booking, DeliveryStatus, IntegrationClient, IntegrationMode, Patient, WebhookDelivery
 
 logger = logging.getLogger("hospital.webhooks")
 
@@ -52,6 +59,11 @@ SIGNATURE_HEADER = "Endod-Signature"
 BACKOFF = (60, 300, 900, 1800, 3600, 7200, 14400, 21600)
 GIVE_UP_AFTER = timedelta(hours=24)
 TIMEOUT_SECONDS = 10
+#: One delivery, everything included (DNS, connecting, TLS, sending, the answer).
+DEADLINE_SECONDS = 15.0
+DNS_TIMEOUT_SECONDS = 5.0
+#: Deliveries in flight at once.
+WORKERS = 4
 #: A delivery being sent is not picked up again for this long.
 LEASE = timedelta(minutes=2)
 BATCH = 20
@@ -92,7 +104,7 @@ def _event(event_type: str, hospital_id: str, mode: str, data: Dict[str, Any]) -
 def _receivers(session: Session, hospital_id: str) -> List[IntegrationClient]:
     rows = session.scalars(select(IntegrationClient).where(
         IntegrationClient.hospital_id == hospital_id, IntegrationClient.revoked_at.is_(None),
-        IntegrationClient.webhook_url.is_not(None)))
+        IntegrationClient.webhook_url.is_not(None), IntegrationClient.mode == IntegrationMode.LIVE))
     return [c for c in rows if S.WEBHOOKS in S.parse(c.scopes)]
 
 
@@ -154,10 +166,18 @@ def public_address(ip: ipaddress._BaseAddress) -> bool:
                                        or ip.is_reserved or ip.is_unspecified)
 
 
-def resolve(host: str, port: int) -> List[str]:
-    """Every address ``host`` resolves to, now; Blocked unless all are public."""
+#: getaddrinfo has no timeout of its own: it runs here, and is waited for at most DNS_TIMEOUT_SECONDS.
+_dns = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="webhook-dns")
+
+
+def resolve(host: str, port: int, timeout: Optional[float] = None) -> List[str]:
+    """Every address ``host`` resolves to, now; Blocked unless all are public
+    (or if the lookup takes longer than ``timeout``)."""
+    future = _dns.submit(socket.getaddrinfo, host, port, type=socket.SOCK_STREAM)
     try:
-        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        infos = future.result(timeout=DNS_TIMEOUT_SECONDS if timeout is None else max(0.01, timeout))
+    except FutureTimeout:
+        raise Blocked("the host name did not resolve in time") from None
     except (socket.gaierror, UnicodeError, ValueError):
         raise Blocked("the host name does not resolve") from None
     addresses = list(dict.fromkeys(info[4][0] for info in infos))
@@ -173,14 +193,14 @@ def resolve(host: str, port: int) -> List[str]:
     return addresses
 
 
-def destination(url: str) -> Tuple[str, int, str, List[str]]:
+def destination(url: str, timeout: Optional[float] = None) -> Tuple[str, int, str, List[str]]:
     """(host, port, path with query, checked addresses). Raises Blocked."""
     parts = urlsplit(url)
     if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
         raise Blocked("only https addresses with a host are allowed")
     port = parts.port or 443
     path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
-    return parts.hostname, port, path, resolve(parts.hostname, port)
+    return parts.hostname, port, path, resolve(parts.hostname, port, timeout)
 
 
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
@@ -203,22 +223,37 @@ class Sent:
     error: Optional[str]
 
 
-def post(url: str, headers: Dict[str, str], body: bytes) -> Sent:
-    """POST ``body`` to ``url`` (SSRF-checked at this moment; no redirects)."""
+def post(url: str, headers: Dict[str, str], body: bytes, deadline: Optional[float] = None) -> Sent:
+    """POST ``body`` to ``url`` (SSRF-checked at this moment; no redirects),
+    by ``deadline`` (time.monotonic(); default DEADLINE_SECONDS from now)."""
+    deadline = time.monotonic() + DEADLINE_SECONDS if deadline is None else deadline
+
+    def left() -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("the delivery took too long")
+        return remaining
+
     try:
-        host, port, path, addresses = destination(url)
+        host, port, path, addresses = destination(url, min(DNS_TIMEOUT_SECONDS, deadline - time.monotonic()))
     except Blocked as exc:
         return Sent(False, None, f"blocked: {exc}")
-    connection = _PinnedHTTPSConnection(host, addresses[0], port, TIMEOUT_SECONDS, ssl.create_default_context())
+    connection = None
     try:
+        connection = _PinnedHTTPSConnection(host, addresses[0], port, min(TIMEOUT_SECONDS, left()),
+                                            ssl.create_default_context())
+        connection.connect()
+        connection.sock.settimeout(min(TIMEOUT_SECONDS, left()))
         connection.request("POST", path, body=body, headers=headers)
+        connection.sock.settimeout(min(TIMEOUT_SECONDS, left()))
         response = connection.getresponse()
         response.read(1024)  # never kept
         status = response.status
     except (OSError, http.client.HTTPException, ssl.SSLError) as exc:
         return Sent(False, None, f"{type(exc).__name__}: could not deliver")
     finally:
-        connection.close()
+        if connection is not None:
+            connection.close()
     if 200 <= status < 300:
         return Sent(True, status, None)
     if 300 <= status < 400:
@@ -271,14 +306,14 @@ def _claim(now: datetime, limit: int) -> List[_Job]:
     return jobs
 
 
-def _send(job: _Job) -> Sent:
+def _send(job: _Job, deadline: Optional[float] = None) -> Sent:
     body = job.body.encode("utf-8")
     headers = {
         "Content-Type": "application/json", "User-Agent": "Endod-Webhooks/1",
         SIGNATURE_HEADER: signature_header(job.secret, int(time.time()), body),
         "Endod-Event-Id": job.event_id, "Endod-Event-Type": job.event_type,
     }
-    return post(job.url, headers, body)
+    return post(job.url, headers, body, deadline)
 
 
 def _record(results: List[Tuple[_Job, Sent]], now: datetime) -> None:
@@ -300,18 +335,62 @@ def _record(results: List[Tuple[_Job, Sent]], now: datetime) -> None:
                 delivery.next_attempt_at = now + wait
 
 
-def deliver_due(limit: int = BATCH, now: Optional[datetime] = None) -> int:
-    """Send the deliveries that are due (the worker calls this every round). Returns how many were tried."""
+def _attempt(pool: Optional[ThreadPoolExecutor], jobs: List[_Job]) -> List[Tuple[_Job, Sent]]:
+    """Every job sent (in parallel on ``pool``); none waited for past DEADLINE_SECONDS."""
+    deadline = time.monotonic() + DEADLINE_SECONDS
+    if pool is None:
+        return [(job, _send(job, deadline)) for job in jobs]
+    futures = [(job, pool.submit(_send, job, deadline)) for job in jobs]
+    results = []
+    for job, future in futures:
+        try:
+            sent = future.result(timeout=max(0.0, deadline - time.monotonic()) + 1.0)
+        except FutureTimeout:
+            sent = Sent(False, None, "timed out")
+        except Exception as exc:  # noqa: BLE001 -- one bad delivery never stops the others
+            sent = Sent(False, None, f"{type(exc).__name__}: could not deliver")
+        results.append((job, sent))
+    return results
+
+
+def deliver_due(limit: int = BATCH, now: Optional[datetime] = None,
+                pool: Optional[ThreadPoolExecutor] = None) -> int:
+    """Send the deliveries that are due (at most ``limit``; in parallel on
+    ``pool``). Returns how many were tried."""
     given = now
     now = now or utcnow()
     jobs = _claim(now, limit)
     if not jobs:
         return 0
-    results = []
-    for job in jobs:
-        sent = _send(job)
+    results = _attempt(pool, jobs)
+    for job, sent in results:
         logger.info("webhook_attempt delivery=%s event=%s ok=%s status=%s", job.delivery_id, job.event_type,
                     sent.ok, sent.status_code)
-        results.append((job, sent))
     _record(results, given or utcnow())
     return len(jobs)
+
+
+class Deliverer(threading.Thread):
+    """The worker's webhook thread: its own loop and pool (at most ``workers``
+    deliveries at once), so the event bus never waits for a hospital's endpoint."""
+
+    def __init__(self, workers: int = WORKERS, idle_seconds: float = 1.0):
+        super().__init__(name="webhook-deliverer", daemon=True)
+        self.pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="webhook")
+        self.workers, self.idle_seconds = workers, idle_seconds
+        self._stopping = threading.Event()
+
+    def run(self) -> None:
+        while not self._stopping.is_set():
+            try:
+                done = deliver_due(limit=self.workers, pool=self.pool)
+            except Exception:  # noqa: BLE001 -- keep delivering; the deliveries are retried
+                logger.exception("webhook_round_failed")
+                done = 0
+            if not done:
+                self._stopping.wait(self.idle_seconds)
+
+    def stop(self, timeout: float = DEADLINE_SECONDS + 2) -> None:
+        self._stopping.set()
+        self.join(timeout)
+        self.pool.shutdown(wait=False, cancel_futures=True)

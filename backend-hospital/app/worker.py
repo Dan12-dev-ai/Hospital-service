@@ -52,8 +52,6 @@ def run_once(client: redis.Redis, now: float | None = None) -> int:
         work += chores.run()
         _last["expire"] = now
     work += eventbus.publish_pending(client)
-    # Events for hospitals' own systems (their webhooks), retried with backoff.
-    work += webhooks.deliver_due()
     work += eventbus.consume_once(client, handlers(), block_ms=1000)
     if now - _last["purge"] >= PURGE_EVERY:
         # Our events are plain text in Redis until every reader acknowledged them.
@@ -74,6 +72,9 @@ def main() -> int:
     check_master_key()
     check_connection_role()
     verify_master_key()  # this database's master key, or nothing starts
+    # Webhooks to hospitals' own systems: their own thread and pool, never this loop.
+    deliverer = webhooks.Deliverer()
+    deliverer.start()
     backoff = 1.0
     client = None
     while _running:
@@ -95,6 +96,7 @@ def main() -> int:
             logger.exception("worker_round_failed")
             time.sleep(backoff)
             backoff = min(backoff * 2, 30)
+    deliverer.stop()
     logger.info("worker_stopped")
     return 0
 
