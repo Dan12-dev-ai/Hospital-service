@@ -79,7 +79,7 @@ def _plan(staff: Staff, data: bytes, kind: str, filename: Optional[str]) -> Dict
                 stored.append(file_id)
                 session.add(RecordFile(id=file_id, hospital_id=staff.hospital_id, patient_id=item["patient_id"],
                                        filename=name, content_type=content_type, size=size, sha256=sha256,
-                                       uploaded_by=staff.id))
+                                       key_version=key.version, uploaded_by=staff.id))
                 item["file"]["file_id"] = file_id
             batch = ImportBatch(hospital_id=staff.hospital_id, created_by=staff.id, format=kind, filename=filename,
                                 plan=json.dumps({"items": planner.items, "skipped": planner.skipped},

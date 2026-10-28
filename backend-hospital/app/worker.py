@@ -15,7 +15,7 @@ import time
 import redis
 
 from app import bookings, chores, dispensing, eventbus, linking, sharing
-from app.crypto import check_master_key
+from app.crypto import check_master_key, verify_master_key
 from app.db import check_connection_role
 
 logger = logging.getLogger("hospital.worker")
@@ -70,6 +70,7 @@ def main() -> int:
     # without the master key (HOSPITAL_MASTER_KEY_FILE).
     check_master_key()
     check_connection_role()
+    verify_master_key()  # this database's master key, or nothing starts
     backoff = 1.0
     client = None
     while _running:

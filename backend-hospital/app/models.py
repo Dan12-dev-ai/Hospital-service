@@ -623,6 +623,11 @@ class RecordFile(Base):
     content_type: Mapped[str] = mapped_column(String(40), nullable=False)
     size: Mapped[int] = mapped_column(Integer, nullable=False)
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: The data key version the file on disk is encrypted with (None: plain
+    #: text, stored before encryption). Kept in step with the file by
+    #: app/rekey.py, so migration 0008's downgrade can see, without the files,
+    #: whether any file still needs the keys.
+    key_version: Mapped[Optional[int]] = mapped_column(Integer)
     uploaded_by: Mapped[Optional[str]] = mapped_column(ForeignKey("staff_users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
@@ -788,6 +793,11 @@ class OnboardingDocument(Base):
     content_type: Mapped[str] = mapped_column(String(40), nullable=False)
     size: Mapped[int] = mapped_column(Integer, nullable=False)
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: The data key version the file on disk is encrypted with (None: plain
+    #: text, stored before encryption). Kept in step with the file by
+    #: app/rekey.py, so migration 0008's downgrade can see, without the files,
+    #: whether any file still needs the keys.
+    key_version: Mapped[Optional[int]] = mapped_column(Integer)
     uploaded_by: Mapped[Optional[str]] = mapped_column(ForeignKey("staff_users.id", ondelete="SET NULL"))
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
@@ -875,6 +885,12 @@ class EncryptionState(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     #: Since when values and files not encrypted are refused (None: not enforced yet).
     enforced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    #: Which master key this database belongs to: an HMAC of a fixed label
+    #: under it (app/crypto.py, ``kek_check``), its fingerprint, and when it
+    #: was recorded (first start, or first data key). A different key is refused.
+    kek_check: Mapped[Optional[str]] = mapped_column(String(64))
+    kek_fingerprint: Mapped[Optional[str]] = mapped_column(String(16))
+    kek_recorded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
 # The encrypted columns are encrypted on flush and decrypted on load.

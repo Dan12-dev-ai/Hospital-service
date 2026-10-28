@@ -180,7 +180,8 @@ async def upload(patient_id: str, request: Request,
     def save() -> Dict[str, Any]:
         with session_scope(staff.hospital_id) as session:
             row = RecordFile(id=file_id, hospital_id=staff.hospital_id, patient_id=patient_id, filename=filename,
-                             content_type=content_type, size=size, sha256=sha256, uploaded_by=staff.id)
+                             content_type=content_type, size=size, sha256=sha256, key_version=key.version,
+                             uploaded_by=staff.id)
             session.add(row)
             return _file_payload(row)
 

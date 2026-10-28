@@ -15,7 +15,7 @@ from app.api import (
     admin, application, auth, bookings, doctors, history, imports, onboarding, patients, queue, shared,
 )
 from app.config import Settings, get_settings
-from app.crypto import check_master_key
+from app.crypto import check_master_key, verify_master_key
 from app.db import check_connection_role
 
 logger = logging.getLogger("hospital")
@@ -27,6 +27,8 @@ async def lifespan(_app: FastAPI):
     # nor without the master key that decrypts the health data.
     check_master_key()
     check_connection_role()
+    # ... and only with this database's master key (recorded on the first start).
+    verify_master_key()
     yield
 
 

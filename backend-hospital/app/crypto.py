@@ -16,6 +16,9 @@
   ``HOSPITAL_ENVIRONMENT`` is explicitly development or test; the key's
   fingerprint is logged at start.
 * **Enforcement.** After ``enforce-encryption``, plaintext is refused.
+* **The right master key.** ``encryption_state`` records an HMAC of a fixed
+  label under the master key; a different key is refused at start and
+  before any data key is made.
 * **Values** (app/sealing.py) are stored as ``enc:v1:<key version>:`` and the
   base64 of nonce, ciphertext and tag. The associated data binds each value
   to its table, column, row id and hospital: a value copied to another row,
@@ -34,6 +37,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import hmac
 import logging
 import os
 import struct
@@ -45,7 +49,7 @@ from typing import BinaryIO, Dict, Iterator, Optional, Tuple
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from sqlalchemy import event, select
+from sqlalchemy import event, select, update
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -215,6 +219,7 @@ def clear_cache() -> None:
         _dek_cache.clear()
     with _kek_lock:
         _kek_cache.clear()
+    _verified_keks.clear()
     clear_enforced_cache()
 
 
@@ -309,10 +314,12 @@ def add_key_version(session: Session, hospital_id: str, activate: bool = True, o
     highest). With ``only_if_none`` (the first key, created lazily), two
     transactions racing to create it end up with one key: the loser's
     insert is skipped on the unique (hospital_id, version)."""
-    from sqlalchemy import func, update
+    from sqlalchemy import func
 
     from app.db import new_id, utcnow
 
+    # Never wrap a key under a master key that is not this database's.
+    ensure_master_key_matches(session)
     keys = _keys_table()
     connection = session.connection()
     highest = connection.execute(select(func.max(keys.c.version)).where(keys.c.hospital_id == hospital_id)).scalar()
@@ -350,11 +357,13 @@ _enforced_cache: Dict[str, object] = {"value": None, "until": 0.0}
 
 
 def enforced(session: Session) -> bool:
-    if _enforced_cache["value"] is True:
-        return True
+    """Whether plaintext is refused. Re-read from the database at most every
+    :data:`ENFORCED_RECHECK_SECONDS`, whichever way it was: turning
+    enforcement on or off (``decrypt-existing``) reaches every running
+    process within that time, without a restart."""
     now = time.monotonic()
-    if _enforced_cache["value"] is False and _enforced_cache["until"] > now:
-        return False
+    if _enforced_cache["value"] is not None and _enforced_cache["until"] > now:
+        return bool(_enforced_cache["value"])
     from app.models import EncryptionState
 
     table = EncryptionState.__table__
@@ -378,6 +387,73 @@ def set_enforced(session: Session, on: bool) -> None:
     state.enforced_at = utcnow() if on else None
     session.flush()
     clear_enforced_cache()
+
+
+# --- the master key belongs to this database -------------------------------------------------------
+#
+# encryption_state records an HMAC of a fixed label under the master key (and
+# its fingerprint), the first time a process starts with it or a data key is
+# made. From then on a different master key is refused: at start (API, worker,
+# CLI), and before any new data key is wrapped, so a wrong key mounted by
+# mistake never wraps keys nobody else can unwrap.
+
+_KEK_CHECK_LABEL = b"endod-hospital|kek-check|v1"
+_verified_keks: set = set()
+
+
+def kek_check(kek: bytes) -> str:
+    return hmac.new(kek, _KEK_CHECK_LABEL, hashlib.sha256).hexdigest()
+
+
+def ensure_master_key_matches(session: Session) -> str:
+    """Compare the master key with the one recorded for this database, and
+    record it if none is (first start). Before recording, a data key already
+    stored (and visible here) must unwrap with it. Raises CryptoError on a
+    mismatch. Returns the fingerprint."""
+    kek = master_key()
+    printed = fingerprint(kek)
+    if _kek_id(kek) in _verified_keks:
+        return printed
+    from app.db import utcnow
+    from app.models import EncryptionState
+
+    state = EncryptionState.__table__
+    connection = session.connection()
+    recorded = connection.execute(select(state.c.kek_check, state.c.kek_fingerprint).where(state.c.id == 1)).first()
+    if recorded is None or recorded[0] is None:
+        keys = _keys_table()
+        sample = connection.execute(select(keys.c.hospital_id, keys.c.version, keys.c.wrapped_key).limit(1)).first()
+        if sample is not None:
+            unwrap(kek, sample[2], sample[0], sample[1])  # raises if the key is not the one they were wrapped under
+        values = {"kek_check": kek_check(kek), "kek_fingerprint": printed, "kek_recorded_at": utcnow()}
+        if recorded is None:
+            dialect = connection.dialect.name
+            if dialect == "postgresql":
+                from sqlalchemy.dialects.postgresql import insert
+            else:
+                from sqlalchemy.dialects.sqlite import insert
+            connection.execute(insert(state).values(id=1, **values).on_conflict_do_nothing(index_elements=["id"]))
+        else:
+            connection.execute(update(state).where(state.c.id == 1, state.c.kek_check.is_(None)).values(**values))
+        recorded = connection.execute(select(state.c.kek_check, state.c.kek_fingerprint)
+                                      .where(state.c.id == 1)).first()
+        if recorded[0] == kek_check(kek):
+            logger.info("master_key_recorded fingerprint=%s", printed)
+    if not hmac.compare_digest(recorded[0], kek_check(kek)):
+        raise CryptoError(f"The master key (fingerprint {printed}) is not the one this database was set up with "
+                          f"(fingerprint {recorded[1]}): check HOSPITAL_MASTER_KEY_FILE. Nothing was changed.")
+    _verified_keks.add(_kek_id(kek))
+    return printed
+
+
+def verify_master_key() -> str:
+    """At start (API, worker, CLI): the master key is usable and is this
+    database's (recorded on the first start). Returns its fingerprint."""
+    from app.db import platform_session
+
+    check_master_key()
+    with platform_session() as session:
+        return ensure_master_key_matches(session)
 
 
 def refuse_plaintext(where: str) -> CryptoError:

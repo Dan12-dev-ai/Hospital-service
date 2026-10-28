@@ -56,7 +56,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import redis
 from redis.sentinel import Sentinel
 from sqlalchemy import delete, select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -186,40 +186,52 @@ def purge_published(now=None) -> int:
                                                          OutboxEvent.published_at < cutoff)).rowcount or 0
 
 
-def _next_id(entry_id: str) -> str:
-    ms, _, seq = entry_id.partition("-")
-    return f"{ms}-{int(seq or 0) + 1}"
-
-
-def _id_key(entry_id: str) -> Tuple[int, int]:
-    ms, _, seq = entry_id.partition("-")
-    return int(ms), int(seq or 0)
+#: Deletes the entries every consumer group has acknowledged, in one atomic
+#: step: Redis runs a script alone, so no group can be created (or read, or
+#: acknowledge) between looking at the groups and trimming. For each group
+#: the boundary is its oldest pending entry, or else the entry after the last
+#: one delivered to it; everything older than the lowest boundary goes.
+_PURGE_SCRIPT = """
+local ok, groups = pcall(redis.call, 'XINFO', 'GROUPS', KEYS[1])
+if not ok or #groups == 0 then return 0 end
+-- Ids are compared as numbers but written back from their own digits (Lua
+-- 5.1 cannot format a 13-digit number with %d everywhere).
+local best_ms, best_seq, best_ms_text = nil, nil, nil
+for _, group in ipairs(groups) do
+  local info = {}
+  for i = 1, #group, 2 do info[group[i]] = group[i + 1] end
+  local ms_text, seq_text, seq
+  if tonumber(info['pending']) > 0 then
+    local summary = redis.call('XPENDING', KEYS[1], info['name'])
+    ms_text, seq_text = string.match(summary[2], '^(%d+)-(%d+)$')
+    seq = tonumber(seq_text)
+  else
+    ms_text, seq_text = string.match(info['last-delivered-id'], '^(%d+)-(%d+)$')
+    seq = tonumber(seq_text) + 1
+  end
+  local ms = tonumber(ms_text)
+  if best_ms == nil or ms < best_ms or (ms == best_ms and seq < best_seq) then
+    best_ms, best_seq, best_ms_text = ms, seq, ms_text
+  end
+end
+if best_ms == 0 and best_seq <= 1 then return 0 end
+return redis.call('XTRIM', KEYS[1], 'MINID', best_ms_text .. '-' .. string.format('%.0f', best_seq))
+"""
 
 
 def purge_acknowledged(client: redis.Redis, stream: str) -> int:
     """Delete the entries of ``stream`` that every consumer group on it has
-    acknowledged (read, and no longer pending). A stream without a group
-    keeps its entries (nobody has read them). Returns how many were deleted."""
-    try:
-        groups = client.xinfo_groups(stream)
-    except redis.ResponseError:
-        return 0  # no such stream (yet)
-    if not groups:
-        return 0
-    boundaries = []
-    for group in groups:
-        name = group["name"]
-        last = group.get("last-delivered-id") or "0-0"
-        if group.get("pending"):
-            summary = client.xpending(stream, name)
-            boundaries.append(summary["min"])  # the oldest still pending, and everything after it, stay
-        else:
-            boundaries.append(_next_id(last))  # everything up to the last delivered is acknowledged
-    boundary = min(boundaries, key=_id_key)
-    if _id_key(boundary) <= (0, 0):
-        return 0
-    # Exact: every entry older than the boundary goes, none at or after it.
-    return int(client.xtrim(stream, minid=boundary, approximate=False) or 0)
+    acknowledged (read, and no longer pending), atomically (a Lua script). A
+    stream without a group keeps its entries (nobody has read them). Returns
+    how many were deleted.
+
+    Assumptions (docs/events.md): an entry a consumer still holds is in its
+    group's pending list, so it is kept; consumers are never removed with
+    XGROUP DELCONSUMER while they hold entries (this service never removes
+    any: a dead process's entries are claimed with XAUTOCLAIM), since that
+    drops them from the pending list unacknowledged. A group created later
+    from ``0`` sees only what no group had finished with by then."""
+    return int(client.eval(_PURGE_SCRIPT, 1, stream) or 0)
 
 
 def housekeeping(client: redis.Redis) -> None:
@@ -291,6 +303,23 @@ def _already_processed(event_id: str) -> bool:
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 
 
+def safe_error(exc: BaseException) -> str:
+    """What failed, for Redis and logs: the exception's class and the first
+    line of its message. A database error gives only the driver's primary
+    message (``diag.message_primary``): never the statement, its parameters
+    or the DETAIL line (which can quote row values)."""
+    if isinstance(exc, DBAPIError):
+        orig = exc.orig
+        primary = getattr(getattr(orig, "diag", None), "message_primary", None)
+        if not primary:
+            primary = str(orig).strip().splitlines()[0] if str(orig).strip() else ""
+        message = f"{type(orig).__name__}: {primary}"
+    else:
+        text_ = str(exc).strip()
+        message = f"{type(exc).__name__}: {text_.splitlines()[0]}" if text_ else type(exc).__name__
+    return message[:DEAD_LETTER_ERROR_CHARS]
+
+
 def redacted_payload(raw: Optional[str]) -> str:
     """The payload's shape without its data: field names, with the values of
     identifier fields (``*_id``, short, id-like) and the type of everything
@@ -345,18 +374,21 @@ def _handle(client: redis.Redis, message_id: str, fields: Dict[str, str], handle
                 session.add(ProcessedEvent(id=event_id, type=event_type))
         client.xack(STREAM_IN, GROUP, message_id)
     except PermanentEventError as exc:
-        _dead_letter(client, message_id, fields, f"invalid: {exc}")
+        _dead_letter(client, message_id, fields, f"invalid: {safe_error(exc)}")
     except Exception as exc:  # noqa: BLE001 -- retried, then dead-lettered
         if isinstance(exc, IntegrityError) and _already_processed(event_id):
             # Another worker handled the same event at the same moment.
             client.xack(STREAM_IN, GROUP, message_id)
             return
         if isinstance(exc, RetryLater):
-            logger.info("event_deferred type=%s id=%s: %s", event_type, event_id, exc)
+            logger.info("event_deferred type=%s id=%s: %s", event_type, event_id, safe_error(exc))
+        elif isinstance(exc, DBAPIError):
+            # No traceback: a database error's text can carry a DETAIL with row values.
+            logger.error("event_failed type=%s id=%s error=%s", event_type, event_id, safe_error(exc))
         else:
-            logger.exception("event_failed type=%s id=%s", event_type, event_id)
+            logger.exception("event_failed type=%s id=%s error=%s", event_type, event_id, safe_error(exc))
         if _deliveries(client, message_id) >= MAX_DELIVERIES:
-            _dead_letter(client, message_id, fields, repr(exc))
+            _dead_letter(client, message_id, fields, safe_error(exc))
 
 
 def _deliveries(client: redis.Redis, message_id: str) -> int:

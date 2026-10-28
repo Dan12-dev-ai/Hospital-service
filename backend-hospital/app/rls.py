@@ -110,12 +110,17 @@ SHARED_TABLES = ("outbox_events", "processed_events", "encryption_state")
 #: payloads of every hospital, with no hospital column) is write-only for the
 #: app, which only emits events inside its transactions: reading, marking
 #: sent and cleaning up are the worker's, as hospital_platform.
-#: Data keys are added and deactivated (rotation), never deleted by the app:
-#: without its key, a hospital's data is lost.
-#: Whether encryption is enforced is read by the app, set only by Endod (the CLI).
+#: Data keys: the app only reads them and adds a hospital's first one; only
+#: Endod (the CLI, as hospital_platform) activates a new version on rotation,
+#: and nobody can change a wrapped key or delete one (without its key, a
+#: hospital's data is lost).
+#: encryption_state: whether encryption is enforced is set only by Endod; the
+#: app may record which master key the database belongs to (first start, or
+#: first data key), and the code only ever fills those columns while empty.
 APP_RIGHTS = {"audit_events": "SELECT, INSERT", "outbox_events": "INSERT",
-              "hospital_keys": "SELECT, INSERT, UPDATE", "encryption_state": "SELECT"}
-PLATFORM_RIGHTS = {"audit_events": "SELECT, INSERT", "hospital_keys": "SELECT, INSERT, UPDATE",
+              "hospital_keys": "SELECT, INSERT",
+              "encryption_state": "SELECT, INSERT, UPDATE (kek_check, kek_fingerprint, kek_recorded_at)"}
+PLATFORM_RIGHTS = {"audit_events": "SELECT, INSERT", "hospital_keys": "SELECT, INSERT, UPDATE (active)",
                    "encryption_state": "SELECT, INSERT, UPDATE"}
 APPEND_ONLY = ("audit_events",)
 

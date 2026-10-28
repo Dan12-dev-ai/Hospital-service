@@ -247,7 +247,7 @@ def seed_applicant(tag: str, complete: bool, submitted: bool) -> dict:
                 size, sha256, content_type = files.store_bytes(pdf, hospital.id, file_id, key)
                 session.add(OnboardingDocument(id=file_id, hospital_id=hospital.id, kind=kind, filename=f"{kind}.pdf",
                                                content_type=content_type, size=size, sha256=sha256,
-                                               uploaded_by=admin.id))
+                                               key_version=key.version, uploaded_by=admin.id))
         demo_at = None
         if submitted:
             taken = onboarding.taken_slots(session)

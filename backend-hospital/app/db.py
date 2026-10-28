@@ -64,13 +64,25 @@ def database_url() -> str:
     return url or DEV_DATABASE_URL
 
 
+#: The PostgreSQL application_name of this process's connections; the CLI
+#: sets :data:`CLI_APPLICATION_NAME` before it connects.
+APPLICATION_NAME = "hospital-app"
+CLI_APPLICATION_NAME = "hospital-cli"
+
+
 def get_engine() -> Engine:
     global _engine, _engine_url, _sessions
     url = database_url()
     if _engine is None or url != _engine_url:
-        kwargs = {"pool_pre_ping": True}
+        # Errors (and the tracebacks in logs) never show statement parameters:
+        # they may be health data.
+        kwargs = {"pool_pre_ping": True, "hide_parameters": True}
         if url.startswith("sqlite"):
             kwargs["connect_args"] = {"check_same_thread": False}
+        elif url.startswith("postgresql"):
+            # Names this process's connections (app/rekey.py tells the API and
+            # worker apart from the CLI by it).
+            kwargs["connect_args"] = {"application_name": APPLICATION_NAME}
         _engine = create_engine(url, **kwargs)
         if _engine.dialect.name == "postgresql":
             event.listen(_engine, "checkout", _clean_connection)

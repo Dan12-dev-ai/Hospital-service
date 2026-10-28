@@ -204,7 +204,10 @@ def encryption_command(args) -> int:
     from app import crypto, rekey
     from app.files import FileRejected
 
-    print(f"Master key fingerprint: {crypto.check_master_key()}")
+    try:
+        print(f"Master key fingerprint: {crypto.verify_master_key()}")
+    except crypto.CryptoError as exc:
+        raise SystemExit(str(exc)) from exc
     if args.command == "enforce-encryption":
         enforced, lines = rekey.enforce()
         print("\n".join(lines))
@@ -228,7 +231,10 @@ def encryption_command(args) -> int:
         if not args.yes:
             raise SystemExit("This writes health data back in plain text (to roll back migration 0008). "
                              "Run again with --yes.")
-        report = rekey.decrypt_existing()
+        try:
+            report = rekey.decrypt_existing()
+        except rekey.ServiceRunning as exc:
+            raise SystemExit(str(exc)) from exc
     elif args.command == "rotate-key":
         hospital_id = _hospital_id(args.hospital)
         version, report = rekey.rotate_key(hospital_id, batch=args.batch, new_key=not args.resume)
@@ -254,4 +260,8 @@ def _hospital_id(ref: str) -> str:
 
 
 if __name__ == "__main__":
+    from app import db
+
+    # The CLI's own connections are not "the API or worker still running".
+    db.APPLICATION_NAME = db.CLI_APPLICATION_NAME
     raise SystemExit(main())

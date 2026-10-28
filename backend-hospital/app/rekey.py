@@ -30,6 +30,7 @@ import hashlib
 import hmac
 import logging
 import os
+import tempfile
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterator, List, Optional, Tuple
 
@@ -165,12 +166,22 @@ def _file_rows(hospital_id: Optional[str] = None) -> Iterator[Tuple[str, str, st
             after = rows[-1][1]
 
 
-def _rewrite_file(session: Session, hospital_id: str, file_id: str, size: int, sha256: str,
+def _record_version(session: Session, table: str, file_id: str, version: Optional[int]) -> None:
+    """The file row's ``key_version`` (what migration 0008's downgrade counts)."""
+    rows = _table(table)
+    session.execute(update(rows).where(rows.c.id == file_id).values(key_version=version))
+
+
+def _rewrite_file(session: Session, table: str, hospital_id: str, file_id: str, size: int, sha256: str,
                   target: Optional[crypto.DataKey]) -> str:
     """Re-write a file encrypted with ``target`` (None: in plain text). It is
     read and checked against size and sha256 first (with the key retry of
     :func:`app.files.open_checked`), and the new file is read back before it
-    replaces the old one. Returns what was done."""
+    replaces the old one. Returns what was done.
+
+    The row's ``key_version`` errs towards "encrypted" if this stops half
+    way: it is committed before an encrypted file replaces the old one, and
+    only after a plain file has."""
     try:
         plain = files.open_checked(session, hospital_id, file_id, size, sha256)
     except files.FileRejected:
@@ -180,6 +191,7 @@ def _rewrite_file(session: Session, hospital_id: str, file_id: str, size: int, s
         return "sha256 mismatch (left as it was)"
     if (target is None and plain.version is None) or (target is not None and plain.version == target.version):
         plain.close()
+        _record_version(session, table, file_id, plain.version)  # in step with the file, whatever came before
         return "already plain" if target is None else "already encrypted"
     path = files.path_for(hospital_id, file_id)
     partial = path.with_name(path.name + ".rekey")
@@ -202,7 +214,12 @@ def _rewrite_file(session: Session, hospital_id: str, file_id: str, size: int, s
                 again.update(piece)
             if not hmac.compare_digest(again.hexdigest(), sha256):
                 raise crypto.CryptoError(f"File {file_id} does not read back.")
+        if target is not None:
+            _record_version(session, table, file_id, target.version)
+            session.commit()
         os.replace(partial, path)
+        if target is None:
+            _record_version(session, table, file_id, None)
         return "encrypted" if target is not None else "decrypted"
     except BaseException:
         plain.close()
@@ -212,9 +229,9 @@ def _rewrite_file(session: Session, hospital_id: str, file_id: str, size: int, s
 
 def _rewrite_files(report: Report, target_for: Callable[[Session, str], Optional[crypto.DataKey]],
                    hospital_id: Optional[str] = None) -> None:
-    for _name, hospital, file_id, size, sha256 in _file_rows(hospital_id):
+    for name, hospital, file_id, size, sha256 in _file_rows(hospital_id):
         with platform_session() as session:
-            outcome = _rewrite_file(session, hospital, file_id, size, sha256, target_for(session, hospital))
+            outcome = _rewrite_file(session, name, hospital, file_id, size, sha256, target_for(session, hospital))
         report.add("files", outcome)
 
 
@@ -249,9 +266,41 @@ def enforce() -> Tuple[bool, List[str]]:
     return clean, lines
 
 
-def decrypt_existing(batch: int = BATCH) -> Report:
+class ServiceRunning(RuntimeError):
+    """The API or worker is still connected to the database."""
+
+
+def other_app_connections(session: Session) -> List[str]:
+    """The application names of other connections of this database login
+    that are not the CLI's (PostgreSQL; none on SQLite). The API and worker
+    connect as the same login as the CLI, with another application_name."""
+    from app.db import CLI_APPLICATION_NAME
+
+    if session.connection().dialect.name != "postgresql":
+        return []
+    from sqlalchemy import text
+
+    return list(session.execute(text(
+        "SELECT coalesce(application_name, '') FROM pg_stat_activity "
+        "WHERE usename = session_user AND datname = current_database() AND pid <> pg_backend_pid() "
+        "AND coalesce(application_name, '') <> :cli"), {"cli": CLI_APPLICATION_NAME}).scalars())
+
+
+def require_services_stopped() -> None:
+    with platform_session() as session:
+        others = other_app_connections(session)
+    if others:
+        raise ServiceRunning(f"{len(others)} other connection(s) of the app are open "
+                             f"({', '.join(sorted(set(others)))}): stop the API and the worker first "
+                             "(they would write new data encrypted while this decrypts).")
+
+
+def decrypt_existing(batch: int = BATCH, require_stopped: bool = True) -> Report:
     """Turn every encrypted value and file back into plain text (only to roll
-    back). Lifts enforcement first, or the app would refuse what this writes."""
+    back). Refuses while the API or worker is connected (``require_stopped``),
+    and lifts enforcement first, or the app would refuse what this writes."""
+    if require_stopped:
+        require_services_stopped()
     with platform_session() as session:
         crypto.set_enforced(session, False)
     report = Report()
@@ -329,9 +378,20 @@ def check() -> Tuple[bool, List[str]]:
     return clean, lines
 
 
+def _place(partial: str, out_path: str) -> None:
+    """Move the finished file into place, never over an existing one."""
+    if os.name == "nt":
+        os.rename(partial, out_path)  # fails if out_path exists
+        return
+    os.link(partial, out_path)  # fails if out_path exists
+    os.unlink(partial)
+
+
 def export_file(file_id: str, out_path: str) -> str:
     """Write a stored file's plain bytes (checked) to ``out_path`` (0600), for
-    an operator: a record file or an onboarding document."""
+    an operator: a record file or an onboarding document. Written to a
+    temporary file beside it and moved into place only once complete; on any
+    failure nothing is left behind."""
     with platform_session() as session:
         for name in FILE_TABLES:
             table = _table(name)
@@ -339,10 +399,23 @@ def export_file(file_id: str, out_path: str) -> str:
                                   .where(table.c.id == file_id)).first()
             if row is None:
                 continue
+            if os.path.lexists(out_path):
+                raise FileExistsError(f"{out_path} exists already.")
             plain = files.open_checked(session, row[0], file_id, row[1], row[2])
-            fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(fd, "wb") as out:
-                for piece in plain:
-                    out.write(piece)
+            directory = os.path.dirname(os.path.abspath(out_path))
+            fd, partial = tempfile.mkstemp(prefix=".export-", suffix=".partial", dir=directory)
+            try:
+                os.chmod(partial, 0o600)
+                with os.fdopen(fd, "wb") as out:
+                    for piece in plain:
+                        out.write(piece)
+                    out.flush()
+                    os.fsync(out.fileno())
+                _place(partial, out_path)
+            except BaseException:
+                plain.close()
+                if os.path.exists(partial):
+                    os.unlink(partial)
+                raise
             return name
     raise LookupError(f"No file {file_id}.")

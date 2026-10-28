@@ -257,7 +257,7 @@ async def upload_document(kind: str, request: Request,
                 session.flush()  # the old row goes before the new one takes its kind
             session.add(OnboardingDocument(id=file_id, hospital_id=hospital.id, kind=kind, filename=filename,
                                            content_type=content_type, size=size, sha256=sha256,
-                                           uploaded_by=staff.id))
+                                           key_version=key.version, uploaded_by=staff.id))
             audit(session, hospital.id, staff.id, "onboarding_document_uploaded", "hospital", hospital.id,
                   {"kind": kind, "sha256": sha256, "replaced": bool(replaced)})
             session.flush()
