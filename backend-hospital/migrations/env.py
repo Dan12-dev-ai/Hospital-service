@@ -31,7 +31,8 @@ from app import rls
 from app.db import Base, get_engine
 
 if context.config.config_file_name is not None:
-    fileConfig(context.config.config_file_name)
+    # Keep the app's loggers (e.g. hospital.crypto) working when migrations run in-process.
+    fileConfig(context.config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

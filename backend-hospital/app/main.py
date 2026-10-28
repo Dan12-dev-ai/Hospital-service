@@ -42,8 +42,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     if "*" in settings.CORS_ORIGINS and settings.is_production:
         raise RuntimeError("HOSPITAL_CORS_ORIGINS must list exact origins in production.")
-    if settings.is_production:
-        check_master_key()  # HOSPITAL_MASTER_KEY_FILE: refuse to start without it
+    # Fail closed: no usable master key, no app (unless HOSPITAL_ENVIRONMENT is
+    # explicitly development or test). Logs the key's fingerprint.
+    check_master_key()
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.CORS_ORIGINS,

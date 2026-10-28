@@ -10,7 +10,10 @@ AES-256-GCM in 64 KiB chunks): encrypted as they arrive, decrypted as they
 are sent. Size, type and sha256 are those of the plain file; the sha256 is
 checked on every read, before the first byte is sent. A file stored before
 encryption (no header) is still read, and checked, as it is, until
-``python -m app.cli encrypt-existing`` encrypts it.
+``python -m app.cli encrypt-existing`` encrypts it, and refused once
+encryption is enforced (``enforce-encryption``). A file is encrypted with the
+key that is active when its upload starts; older key versions are kept, so a
+rotation never strands a file in the middle of an upload.
 """
 
 from __future__ import annotations
@@ -202,6 +205,8 @@ class PlainFile:
                  size: int):
         self._handle, self._key, self._header, self._file_id = handle, key, header, file_id
         self.size = size
+        #: The key version it is encrypted with (None: stored before encryption).
+        self.version = key.version if key is not None else None
 
     def __iter__(self) -> Iterator[bytes]:
         try:
@@ -225,6 +230,8 @@ def open_file(session, hospital_id: str, file_id: str) -> Tuple[BinaryIO, Option
     try:
         found = crypto.read_file_header(handle)
         if found is None:
+            if crypto.enforced(session):
+                raise crypto.refuse_plaintext(f"File {file_id}")
             return handle, None, None
         version, header = found
         return handle, crypto.data_key(session, hospital_id, version), header
@@ -238,18 +245,32 @@ def open_checked(session, hospital_id: str, file_id: str, size: int, sha256: str
     header names, looked up in ``session``) and checked against the stored
     size and sha256 of the plain file before anything is sent. Raises
     FileRejected (404) if it is missing, FileDamaged if it does not match."""
-    handle, key, header = open_file(session, hospital_id, file_id)
-    try:
-        digest, seen = hashlib.sha256(), 0
-        for piece in plain_pieces(handle, key, header, file_id):
-            digest.update(piece)
-            seen += len(piece)
-        if seen != size or not hmac.compare_digest(digest.hexdigest(), sha256):
-            raise FileDamaged(f"File {file_id} does not match its stored sha256.")
-        return PlainFile(handle, key, header, file_id, seen)
-    except BaseException:
-        handle.close()
-        raise
+    for attempt in (1, 2):
+        handle = None
+        try:
+            handle, key, header = open_file(session, hospital_id, file_id)
+            digest, seen = hashlib.sha256(), 0
+            for piece in plain_pieces(handle, key, header, file_id):
+                digest.update(piece)
+                seen += len(piece)
+            if seen != size or not hmac.compare_digest(digest.hexdigest(), sha256):
+                raise FileDamaged(f"File {file_id} does not match its stored sha256.")
+            return PlainFile(handle, key, header, file_id, seen)
+        except FileDamaged:
+            handle.close()
+            raise
+        except crypto.CryptoError:
+            if handle is not None:
+                handle.close()
+            if attempt == 2:
+                raise
+            # Perhaps a stale cached key: forget the hospital's keys and try once more.
+            crypto.evict(session, hospital_id)
+        except BaseException:
+            if handle is not None:
+                handle.close()
+            raise
+    raise AssertionError("unreachable")
 
 
 def streaming_response(plain: PlainFile, media_type: str, filename: str, sha256: str):

@@ -13,7 +13,9 @@ Encryption at rest (app/crypto.py; README, "Encryption at rest"):
 
     python -m app.cli encrypt-existing          # encrypt what is still plain text (idempotent)
     python -m app.cli check-encryption          # what is left in plain text (exit 1 if any)
+    python -m app.cli enforce-encryption        # from now on refuse plaintext (needs a clean check)
     python -m app.cli rotate-key --hospital SPH # a new data key; re-encrypt that hospital's data
+    python -m app.cli rotate-key --hospital SPH --resume   # finish: re-encrypt onto the active key
     python -m app.cli export-file --file <id> --out doc.pdf   # a stored file, decrypted
     python -m app.cli decrypt-existing --yes    # only to roll back migration 0008
 """
@@ -81,9 +83,12 @@ def main(argv: list[str] | None = None) -> int:
     enc = commands.add_parser("encrypt-existing", help="encrypt values and files stored before encryption")
     enc.add_argument("--batch", type=int, default=200, help="rows per transaction")
     commands.add_parser("check-encryption", help="count what is still plain text (exit 1 if any)")
+    commands.add_parser("enforce-encryption", help="refuse plaintext from now on (only after a clean check)")
     rotate = commands.add_parser("rotate-key", help="a new data key for one hospital, and its data re-encrypted")
     rotate.add_argument("--hospital", required=True, help="the hospital's id or code")
     rotate.add_argument("--batch", type=int, default=200, help="rows per transaction")
+    rotate.add_argument("--resume", action="store_true",
+                        help="no new key: re-encrypt what is on an older version with the active one")
     dec = commands.add_parser("decrypt-existing", help="decrypt everything (only to roll back migration 0008)")
     dec.add_argument("--yes", action="store_true", help="really write health data back in plain text")
     export = commands.add_parser("export-file", help="write a stored file (record file or document), decrypted")
@@ -91,7 +96,8 @@ def main(argv: list[str] | None = None) -> int:
     export.add_argument("--out", required=True, help="where to write it (must not exist; created 0600)")
     args = parser.parse_args(argv)
 
-    if args.command in ("encrypt-existing", "check-encryption", "rotate-key", "decrypt-existing", "export-file"):
+    if args.command in ("encrypt-existing", "check-encryption", "enforce-encryption", "rotate-key",
+                        "decrypt-existing", "export-file"):
         return encryption_command(args)
 
     if args.command == "applications":
@@ -198,7 +204,14 @@ def encryption_command(args) -> int:
     from app import crypto, rekey
     from app.files import FileRejected
 
-    crypto.check_master_key()
+    print(f"Master key fingerprint: {crypto.check_master_key()}")
+    if args.command == "enforce-encryption":
+        enforced, lines = rekey.enforce()
+        print("\n".join(lines))
+        if not enforced:
+            raise SystemExit("Not enforced: some data is still plain text. Run encrypt-existing, then try again.")
+        print("Enforced: values and files that are not encrypted are refused from now on.")
+        return 0
     if args.command == "check-encryption":
         clean, lines = rekey.check()
         print("\n".join(lines))
@@ -218,7 +231,7 @@ def encryption_command(args) -> int:
         report = rekey.decrypt_existing()
     elif args.command == "rotate-key":
         hospital_id = _hospital_id(args.hospital)
-        version, report = rekey.rotate_key(hospital_id, batch=args.batch)
+        version, report = rekey.rotate_key(hospital_id, batch=args.batch, new_key=not args.resume)
         print(f"Hospital {hospital_id}: data key version {version} is active.")
     else:
         report = rekey.encrypt_existing(batch=args.batch)

@@ -866,5 +866,16 @@ class HospitalKey(Base):
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
+class EncryptionState(Base):
+    """One row (id 1): whether plaintext is refused (``enforce-encryption``).
+    Belongs to no hospital; the app reads it, only Endod's CLI changes it."""
+
+    __tablename__ = "encryption_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    #: Since when values and files not encrypted are refused (None: not enforced yet).
+    enforced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
 # The encrypted columns are encrypted on flush and decrypted on load.
 from app import sealing  # noqa: E402,F401  (registers the ORM events)

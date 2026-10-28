@@ -2,6 +2,8 @@
 
 app/crypto.py explains the design. This revision:
 
+* creates ``encryption_state`` (one row: whether plaintext is refused, set
+  by ``python -m app.cli enforce-encryption``; it starts not enforced);
 * creates ``hospital_keys`` (each hospital's data keys, wrapped under the
   master key, by version), with row-level security like every hospital
   table (PostgreSQL: ENABLE, FORCE, ``tenant_isolation`` and
@@ -101,6 +103,11 @@ def upgrade() -> None:
     sa.UniqueConstraint('hospital_id', 'version', name='uq_hospital_keys_version')
     )
     op.create_index(op.f('ix_hospital_keys_hospital_id'), 'hospital_keys', ['hospital_id'], unique=False)
+    op.create_table('encryption_state',
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('enforced_at', sa.DateTime(timezone=True), nullable=True),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_encryption_state'))
+    )
     if op.get_bind().dialect.name != "postgresql":
         return
     for table, column, length in WIDENED:
@@ -125,5 +132,6 @@ def downgrade() -> None:
             op.execute(statement)
         for table, column, length in WIDENED:
             op.alter_column(table, column, type_=sa.String(length=length), existing_type=sa.Text())
+    op.drop_table('encryption_state')
     op.drop_index(op.f('ix_hospital_keys_hospital_id'), table_name='hospital_keys')
     op.drop_table('hospital_keys')

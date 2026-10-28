@@ -103,7 +103,7 @@ CHILD_TABLES: Dict[str, Tuple[str, str]] = {
 }
 
 #: Tables that belong to no hospital.
-SHARED_TABLES = ("outbox_events", "processed_events")
+SHARED_TABLES = ("outbox_events", "processed_events", "encryption_state")
 
 #: Table rights other than full read and write, per role. The audit log is
 #: append-only for both; the event outbox (patient names, phones, clinical
@@ -112,9 +112,11 @@ SHARED_TABLES = ("outbox_events", "processed_events")
 #: sent and cleaning up are the worker's, as hospital_platform.
 #: Data keys are added and deactivated (rotation), never deleted by the app:
 #: without its key, a hospital's data is lost.
+#: Whether encryption is enforced is read by the app, set only by Endod (the CLI).
 APP_RIGHTS = {"audit_events": "SELECT, INSERT", "outbox_events": "INSERT",
-              "hospital_keys": "SELECT, INSERT, UPDATE"}
-PLATFORM_RIGHTS = {"audit_events": "SELECT, INSERT", "hospital_keys": "SELECT, INSERT, UPDATE"}
+              "hospital_keys": "SELECT, INSERT, UPDATE", "encryption_state": "SELECT"}
+PLATFORM_RIGHTS = {"audit_events": "SELECT, INSERT", "hospital_keys": "SELECT, INSERT, UPDATE",
+                   "encryption_state": "SELECT, INSERT, UPDATE"}
 APPEND_ONLY = ("audit_events",)
 
 #: References between two rows of one hospital: (child, column, parent, on delete).

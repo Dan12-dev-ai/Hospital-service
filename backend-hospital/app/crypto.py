@@ -7,9 +7,15 @@
 * **Data keys (DEK).** Each hospital has its own 32-byte data key, kept in
   ``hospital_keys`` wrapped (AES-256-GCM) under the master key, with a
   version: rotating adds a version and re-encrypts (``python -m app.cli
-  rotate-key``). The table is under row-level security like the others, so
-  a transaction sees only its own hospital's keys. Unwrapped keys are kept
-  in this process's memory for :data:`CACHE_SECONDS` at most.
+  rotate-key``); old versions are kept. The table is under row-level
+  security like the others, so a transaction sees only its own hospital's
+  keys. Unwrapped keys are kept in this process's memory for
+  :data:`CACHE_SECONDS` at most, by the wrapped key's digest; a failed
+  decryption evicts and retries once.
+* **Fails closed.** No usable master key, no service, unless
+  ``HOSPITAL_ENVIRONMENT`` is explicitly development or test; the key's
+  fingerprint is logged at start.
+* **Enforcement.** After ``enforce-encryption``, plaintext is refused.
 * **Values** (app/sealing.py) are stored as ``enc:v1:<key version>:`` and the
   base64 of nonce, ciphertext and tag. The associated data binds each value
   to its table, column, row id and hospital: a value copied to another row,
@@ -39,7 +45,7 @@ from typing import BinaryIO, Dict, Iterator, Optional, Tuple
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -85,6 +91,10 @@ class DataKey:
 
 # --- the master key ------------------------------------------------------------------------
 
+#: The only environments that may run without a master key (with the public
+#: development key), and only when HOSPITAL_ENVIRONMENT names one explicitly.
+KEYLESS_ENVIRONMENTS = ("development", "test")
+
 _kek_lock = threading.Lock()
 _kek_cache: Dict[str, bytes] = {}
 _warned_development = False
@@ -107,6 +117,12 @@ def _parse_key_file(raw: bytes) -> bytes:
     raise CryptoError("HOSPITAL_MASTER_KEY_FILE must hold 32 random bytes (openssl rand -out master.key 32).")
 
 
+def _keyless_allowed(settings) -> bool:
+    """Only an environment set explicitly (variable or .env) to development or
+    test: a missing setting must never fall back to the public key."""
+    return settings.ENVIRONMENT in KEYLESS_ENVIRONMENTS and "ENVIRONMENT" in settings.model_fields_set
+
+
 def master_key() -> bytes:
     """The master key (KEK). Read once per file path, then kept in memory."""
     global _warned_development
@@ -122,19 +138,29 @@ def master_key() -> bytes:
                     raise CryptoError(f"The master key file {path} cannot be read ({exc.strerror}).") from None
                 key = _kek_cache[path] = _parse_key_file(raw)
             return key
-    if settings.ENVIRONMENT == "development":
+    if _keyless_allowed(settings):
         if not _warned_development:
             logger.warning("HOSPITAL_MASTER_KEY_FILE is not set: using the public development key "
-                           "(development only; never for real patient data)")
+                           "(HOSPITAL_ENVIRONMENT=%s only; never for real patient data)", settings.ENVIRONMENT)
             _warned_development = True
         return _DEVELOPMENT_KEY
-    raise CryptoError("HOSPITAL_MASTER_KEY_FILE is not set: the service needs its master key outside development "
-                      "(README, 'Encryption at rest').")
+    raise CryptoError("HOSPITAL_MASTER_KEY_FILE is not set: the service needs its master key unless "
+                      "HOSPITAL_ENVIRONMENT is explicitly development or test (README, 'Encryption at rest').")
 
 
-def check_master_key() -> None:
-    """Refuse to start without a usable master key (the API and worker call this)."""
-    master_key()
+def fingerprint(kek: bytes) -> str:
+    """Names a master key in logs (to tell which key a server runs with), without revealing it."""
+    return hashlib.sha256(b"endod-hospital master key fingerprint" + kek).hexdigest()[:16]
+
+
+def check_master_key() -> str:
+    """Refuse to start without a usable master key (the API, worker and CLI
+    call this); logs its fingerprint. Returns the fingerprint."""
+    kek = master_key()
+    printed = fingerprint(kek)
+    source = "development key (public)" if kek == _DEVELOPMENT_KEY else "HOSPITAL_MASTER_KEY_FILE"
+    logger.info("master_key_loaded fingerprint=%s source=%s", printed, source)
+    return printed
 
 
 def _kek_id(kek: bytes) -> bytes:
@@ -167,37 +193,68 @@ def unwrap(kek: bytes, wrapped: str, hospital_id: str, version: int) -> bytes:
 
 
 # --- data keys: looked up in hospital_keys, cached briefly ------------------------------------
+#
+# Two caches, both safe against a key row that is rolled back (a key created
+# lazily inside a savepoint or transaction that fails):
+#
+# * per process, unwrapped keys are cached by the WRAPPED key's digest (with
+#   the master key, hospital and version), never by (hospital, version) alone:
+#   a key row that was rolled back and replaced by another under the same
+#   version can never be served from the cache;
+# * per transaction (session.info), (hospital, version) -> key, forgotten at
+#   the end of every transaction and savepoint (committed or rolled back).
 
 _dek_lock = threading.Lock()
-_dek_cache: Dict[Tuple[bytes, str, int], Tuple[bytes, float]] = {}
+_dek_cache: Dict[Tuple[bytes, str, int, bytes], Tuple[bytes, float]] = {}
+_MEMO = "crypto.keys"
 
 
 def clear_cache() -> None:
-    """Forget unwrapped data keys and master keys (tests; after a rotation)."""
+    """Forget unwrapped data keys, master keys and the enforcement state (tests; after a rotation)."""
     with _dek_lock:
         _dek_cache.clear()
     with _kek_lock:
         _kek_cache.clear()
+    clear_enforced_cache()
 
 
-def _cached(kek: bytes, hospital_id: str, version: int) -> Optional[bytes]:
+def _cache_key(kek: bytes, hospital_id: str, version: int, wrapped: str) -> Tuple[bytes, str, int, bytes]:
+    return _kek_id(kek), hospital_id, version, hashlib.sha256(wrapped.encode("ascii")).digest()
+
+
+def _unwrap_cached(kek: bytes, wrapped: str, hospital_id: str, version: int) -> bytes:
+    key = _cache_key(kek, hospital_id, version, wrapped)
     now = time.monotonic()
     with _dek_lock:
-        hit = _dek_cache.get((_kek_id(kek), hospital_id, version))
-        if hit is None:
-            return None
-        if hit[1] <= now:
-            _dek_cache.pop((_kek_id(kek), hospital_id, version), None)
-            return None
-        return hit[0]
-
-
-def _remember(kek: bytes, hospital_id: str, version: int, dek: bytes) -> None:
-    now = time.monotonic()
+        hit = _dek_cache.get(key)
+        if hit is not None and hit[1] > now:
+            return hit[0]
+    dek = unwrap(kek, wrapped, hospital_id, version)
     with _dek_lock:
-        for key in [k for k, (_d, until) in _dek_cache.items() if until <= now]:
-            del _dek_cache[key]
-        _dek_cache[(_kek_id(kek), hospital_id, version)] = (dek, now + CACHE_SECONDS)
+        for stale in [k for k, (_d, until) in _dek_cache.items() if until <= now]:
+            del _dek_cache[stale]
+        _dek_cache[key] = (dek, now + CACHE_SECONDS)
+    return dek
+
+
+def evict(session: Optional[Session], hospital_id: str, version: Optional[int] = None) -> None:
+    """Forget a hospital's key version (None: all its versions) in this
+    transaction and this process (before a retry)."""
+    def matches(hospital: str, v: int) -> bool:
+        return hospital == hospital_id and (version is None or v == version)
+
+    if session is not None:
+        memo = session.info.get(_MEMO, {})
+        for stale in [k for k in memo if matches(*k)]:
+            del memo[stale]
+    with _dek_lock:
+        for stale in [k for k in _dek_cache if matches(k[1], k[2])]:
+            del _dek_cache[stale]
+
+
+@event.listens_for(Session, "after_transaction_end")
+def _forget_transaction_keys(session: Session, _transaction) -> None:
+    session.info.pop(_MEMO, None)
 
 
 def _keys_table():
@@ -209,18 +266,19 @@ def _keys_table():
 def data_key(session: Session, hospital_id: str, version: int) -> DataKey:
     """The hospital's data key of this version (to decrypt). The lookup runs
     in the session's transaction, so row-level security applies to it."""
-    kek = master_key()
-    dek = _cached(kek, hospital_id, version)
-    if dek is None:
-        keys = _keys_table()
-        wrapped = session.connection().execute(
-            select(keys.c.wrapped_key).where(keys.c.hospital_id == hospital_id, keys.c.version == version)).scalar()
-        if wrapped is None:
-            raise CryptoError(f"Hospital {hospital_id} has no data key version {version} (or it is not visible "
-                              "in this transaction).")
-        dek = unwrap(kek, wrapped, hospital_id, version)
-        _remember(kek, hospital_id, version, dek)
-    return DataKey(hospital_id, version, dek)
+    memo = session.info.setdefault(_MEMO, {})
+    found = memo.get((hospital_id, version))
+    if found is not None:
+        return found
+    keys = _keys_table()
+    wrapped = session.connection().execute(
+        select(keys.c.wrapped_key).where(keys.c.hospital_id == hospital_id, keys.c.version == version)).scalar()
+    if wrapped is None:
+        raise CryptoError(f"Hospital {hospital_id} has no data key version {version} (or it is not visible "
+                          "in this transaction).")
+    key = DataKey(hospital_id, version, _unwrap_cached(master_key(), wrapped, hospital_id, version))
+    session.info.setdefault(_MEMO, {})[(hospital_id, version)] = key
+    return key
 
 
 def _active_row(session: Session, hospital_id: str):
@@ -231,8 +289,9 @@ def _active_row(session: Session, hospital_id: str):
 
 
 def active_key(session: Session, hospital_id: str) -> DataKey:
-    """The hospital's current data key (to encrypt), created on first use."""
-    kek = master_key()
+    """The hospital's current data key (to encrypt), created on first use.
+    Always read from the database in this transaction: what is stored is
+    encrypted with the key that is active when it is stored."""
     row = _active_row(session, hospital_id)
     if row is None:
         add_key_version(session, hospital_id, activate=True, only_if_none=True)
@@ -240,11 +299,9 @@ def active_key(session: Session, hospital_id: str) -> DataKey:
         if row is None:
             raise CryptoError(f"Hospital {hospital_id} has no active data key.")
     version, wrapped = row
-    dek = _cached(kek, hospital_id, version)
-    if dek is None:
-        dek = unwrap(kek, wrapped, hospital_id, version)
-        _remember(kek, hospital_id, version, dek)
-    return DataKey(hospital_id, version, dek)
+    key = DataKey(hospital_id, version, _unwrap_cached(master_key(), wrapped, hospital_id, version))
+    session.info.setdefault(_MEMO, {})[(hospital_id, version)] = key
+    return key
 
 
 def add_key_version(session: Session, hospital_id: str, activate: bool = True, only_if_none: bool = False) -> int:
@@ -279,22 +336,90 @@ def add_key_version(session: Session, hospital_id: str, activate: bool = True, o
     return version
 
 
+# --- enforcement ---------------------------------------------------------------------------------
+#
+# Until ``python -m app.cli enforce-encryption`` (after encrypt-existing and a
+# clean check-encryption), a value or file stored before encryption is read as
+# it is. From then on, anything not encrypted is refused (logged by table,
+# column and row id, never the value): plaintext written behind the app's back
+# is not served as if it were the hospital's data.
+
+#: How long this process trusts "not enforced yet" (enforcement itself is kept).
+ENFORCED_RECHECK_SECONDS = 30
+_enforced_cache: Dict[str, object] = {"value": None, "until": 0.0}
+
+
+def enforced(session: Session) -> bool:
+    if _enforced_cache["value"] is True:
+        return True
+    now = time.monotonic()
+    if _enforced_cache["value"] is False and _enforced_cache["until"] > now:
+        return False
+    from app.models import EncryptionState
+
+    table = EncryptionState.__table__
+    at = session.connection().execute(select(table.c.enforced_at).where(table.c.id == 1)).scalar()
+    _enforced_cache.update(value=at is not None, until=now + ENFORCED_RECHECK_SECONDS)
+    return at is not None
+
+
+def clear_enforced_cache() -> None:
+    _enforced_cache.update(value=None, until=0.0)
+
+
+def set_enforced(session: Session, on: bool) -> None:
+    from app.db import utcnow
+    from app.models import EncryptionState
+
+    state = session.get(EncryptionState, 1)
+    if state is None:
+        state = EncryptionState(id=1)
+        session.add(state)
+    state.enforced_at = utcnow() if on else None
+    session.flush()
+    clear_enforced_cache()
+
+
+def refuse_plaintext(where: str) -> CryptoError:
+    logger.error("plaintext_refused %s (encryption is enforced)", where)
+    return CryptoError(f"{where} is not encrypted, and encryption is enforced.")
+
+
 # --- values -------------------------------------------------------------------------------------
 
 def field_aad(table: str, column: str, row_id: str, hospital_id: str, version: int) -> bytes:
     return f"endod-hospital|field|v1|{table}|{column}|{row_id}|{hospital_id}|{version}".encode()
 
 
+def parse_sealed(value: object) -> Optional[Tuple[int, bytes]]:
+    """(key version, nonce + ciphertext + tag) of a well-formed encrypted
+    value; None for anything else, including plain text that merely starts
+    with the prefix (legacy text such as "enc:v1: see notes")."""
+    if not isinstance(value, str) or not value.startswith(PREFIX):
+        return None
+    version, sep, body = value[len(PREFIX):].partition(":")
+    if not sep or not version.isdigit() or version != str(int(version)) or int(version) < 1:
+        return None
+    try:
+        blob = base64.b64decode(body, validate=True)
+    except (ValueError, binascii.Error):
+        return None
+    if len(blob) < NONCE_BYTES + TAG_BYTES:
+        return None
+    return int(version), blob
+
+
 def is_sealed(value: object) -> bool:
-    return isinstance(value, str) and value.startswith(PREFIX)
+    """A well-formed encrypted value (see :func:`parse_sealed`)."""
+    return parse_sealed(value) is not None
 
 
 def sealed_version(value: str) -> int:
     """The key version of an encrypted value."""
-    try:
-        return int(value[len(PREFIX):].split(":", 1)[0])
-    except ValueError:
-        raise CryptoError("An encrypted value is malformed.") from None
+    parsed = parse_sealed(value)
+    if parsed is None:
+        raise CryptoError("An encrypted value is malformed.")
+    return parsed[0]
 
 
 def seal(key: DataKey, plaintext: str, table: str, column: str, row_id: str) -> str:
@@ -306,17 +431,28 @@ def seal(key: DataKey, plaintext: str, table: str, column: str, row_id: str) -> 
 
 def unseal(key: DataKey, value: str, table: str, column: str, row_id: str) -> str:
     where = f"{table}.{column} of row {row_id}"
-    version = sealed_version(value)
+    parsed = parse_sealed(value)
+    if parsed is None:
+        raise CryptoError(f"{where} is not a well-formed encrypted value.")
+    version, blob = parsed
     if version != key.version:
         raise CryptoError(f"{where} is encrypted with key version {version}, not {key.version}.")
     try:
-        blob = base64.b64decode(value[len(PREFIX):].split(":", 1)[1], validate=True)
-        if len(blob) < NONCE_BYTES + TAG_BYTES:
-            raise ValueError("too short")
         aad = field_aad(table, column, row_id, key.hospital_id, key.version)
         return AESGCM(key.secret).decrypt(blob[:NONCE_BYTES], blob[NONCE_BYTES:], aad).decode("utf-8")
-    except (InvalidTag, ValueError, IndexError, binascii.Error, UnicodeDecodeError):
+    except (InvalidTag, UnicodeDecodeError):
         raise CryptoError(f"{where} does not decrypt (wrong key, or moved from another row or hospital).") from None
+
+
+def open_value(session: Session, hospital_id: str, value: str, table: str, column: str, row_id: str) -> str:
+    """Decrypt a stored value with the key version it names. On failure the
+    cached key is evicted and the lookup and decryption retried once."""
+    version = sealed_version(value)
+    try:
+        return unseal(data_key(session, hospital_id, version), value, table, column, row_id)
+    except CryptoError:
+        evict(session, hospital_id, version)
+    return unseal(data_key(session, hospital_id, version), value, table, column, row_id)
 
 
 # --- files ----------------------------------------------------------------------------------------

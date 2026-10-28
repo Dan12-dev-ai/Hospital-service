@@ -8,10 +8,15 @@ holds ciphertext (app/crypto.py has the format and the keys):
   its table, column, row id and hospital; once the rows are written
   (``after_flush_postexec``) the objects get their plain text back;
 * on load (``load`` and ``refresh``), each encrypted value is decrypted with
-  the key version it names. A value without the ``enc:v1:`` prefix is a
-  plaintext value stored before encryption and is read as it is
-  (``python -m app.cli encrypt-existing`` encrypts those; ``check-encryption``
-  counts what is left).
+  the key version it names (a failure evicts the cached key and retries
+  once). Anything that is not a well-formed encrypted value (no ``enc:v1:``
+  prefix, or plain text that merely starts with it) was stored before
+  encryption and is read as it is, until ``python -m app.cli
+  enforce-encryption``; from then on it is refused (app/crypto.py,
+  "enforcement").
+* if a flush fails (and its transaction or savepoint is rolled back), the
+  objects get their plain text back and the next flush encrypts again, with
+  the key that is active then: never with a key from a rolled-back savepoint.
 
 Only the ORM goes through here: a Core statement (``select(Model.column)``,
 ``update(...).values(column=...)``) on these columns would see or write
@@ -121,28 +126,50 @@ def _seal_on_flush(session: Session, _flush_context, _instances) -> None:
             plain.append((obj, column, value))
 
 
-def _give_back(session: Session) -> None:
-    """The objects hold plain text again (not a change to save)."""
+@event.listens_for(Session, "after_flush_postexec")
+def _after_flush(session: Session, _flush_context) -> None:
+    """Written: the objects hold plain text again (not a change to save)."""
     for obj, column, value in session.info.pop(_PLAIN, []):
         attributes.set_committed_value(obj, column, value)
 
 
-@event.listens_for(Session, "after_flush_postexec")
-def _after_flush(session: Session, _flush_context) -> None:
-    _give_back(session)
+def _undo_failed_flush(session: Session) -> None:
+    """A flush that encrypted values failed: forget that they were encrypted.
+    A new object gets its plain text back (the next flush encrypts it again,
+    with the key active then); a stored one is reloaded from the database."""
+    for obj, column, value in session.info.pop(_PLAIN, []):
+        state = inspect(obj)
+        if state.persistent and state.session_id == session.hash_key:
+            session.expire(obj, [column])
+        else:
+            obj.__dict__[column] = value
 
 
 @event.listens_for(Session, "after_soft_rollback")
 def _after_rollback(session: Session, _previous_transaction) -> None:
-    _give_back(session)
+    _undo_failed_flush(session)
+
+
+@event.listens_for(Session, "after_transaction_end")
+def _after_transaction_end(session: Session, _transaction) -> None:
+    # A successful flush has given its values back already; anything left is
+    # from a flush that failed (in a transaction or a savepoint now ended).
+    if session.info.get(_PLAIN):
+        _undo_failed_flush(session)
+
+
+def where(obj, column: str) -> str:
+    return f"{obj.__table__.name}.{column} of row {obj.id}"
 
 
 def unseal_value(session: Session, obj, column: str, value):
+    if value is None:
+        return None
     if not crypto.is_sealed(value):
-        return value  # None, or plain text stored before encryption
-    table = obj.__table__.name
-    key = crypto.data_key(session, hospital_of(session, obj), crypto.sealed_version(value))
-    return crypto.unseal(key, value, table, column, obj.id)
+        if crypto.enforced(session):
+            raise crypto.refuse_plaintext(where(obj, column))
+        return value  # plain text stored before encryption
+    return crypto.open_value(session, hospital_of(session, obj), value, obj.__table__.name, column, obj.id)
 
 
 def _unseal(obj, session: Optional[Session], only=None) -> None:
@@ -151,11 +178,12 @@ def _unseal(obj, session: Optional[Session], only=None) -> None:
         if only is not None and column not in only:
             continue
         value = obj.__dict__.get(column)
-        if crypto.is_sealed(value):
-            if session is None:
-                raise crypto.CryptoError(f"{obj.__table__.name}.{column} cannot be decrypted outside a session.")
-            # The loaded value itself: not a change to save.
-            obj.__dict__[column] = unseal_value(session, obj, column, value)
+        if value is None:
+            continue
+        if session is None:
+            raise crypto.CryptoError(f"{where(obj, column)} cannot be read outside a session.")
+        # The loaded value itself: not a change to save.
+        obj.__dict__[column] = unseal_value(session, obj, column, value)
 
 
 def _on_load(obj, context) -> None:
