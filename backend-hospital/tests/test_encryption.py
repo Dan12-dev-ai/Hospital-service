@@ -332,7 +332,7 @@ def _reads_back(client, doctor, patient, record, file_id):
 def test_encrypt_existing_encrypts_plain_rows_and_files_and_can_run_again(client, hospital, doctor, patient):
     record, file_id = _seed(client, hospital, doctor, patient)
     # As before encryption: everything in plain text (decrypt-existing, the rollback, gets there).
-    rekey.decrypt_existing()
+    rekey.decrypt_existing(require_stopped=False)
     state = _stored_state()
     assert state[("clinical_records", "title")] == [DIAGNOSIS["title"]]
     assert all(not crypto.is_sealed(v) for vs in state.values() for v in vs)
@@ -357,7 +357,7 @@ def test_encrypt_existing_encrypts_plain_rows_and_files_and_can_run_again(client
 
 def test_encrypt_existing_keeps_updated_at_and_leaves_rows_the_app_changed(client, hospital, doctor, patient):
     record, _file_id = _seed(client, hospital, doctor, patient)
-    rekey.decrypt_existing()
+    rekey.decrypt_existing(require_stopped=False)
     before = raw("SELECT updated_at FROM clinical_records")
     rekey.encrypt_existing()
     assert raw("SELECT updated_at FROM clinical_records") == before
@@ -365,7 +365,7 @@ def test_encrypt_existing_keeps_updated_at_and_leaves_rows_the_app_changed(clien
 
 def test_a_damaged_plain_file_is_left_alone(client, hospital, doctor, patient):
     _record, file_id = _seed(client, hospital, doctor, patient)
-    rekey.decrypt_existing()
+    rekey.decrypt_existing(require_stopped=False)
     files.path_for(hospital, file_id).write_bytes(PNG + b"changed on disk")
     report = rekey.encrypt_existing()
     assert report.files == {"sha256 mismatch (left as it was)": 1}
@@ -399,8 +399,10 @@ def test_rotate_key_re_encrypts_one_hospital(client, hospital, doctor, patient):
     _reads_back(client, doctor, patient, record, file_id)
 
 
-def test_the_cli_commands(client, hospital, doctor, patient, capsys, tmp_path):
+def test_the_cli_commands(client, hospital, doctor, patient, capsys, tmp_path, monkeypatch):
     from app import cli
+
+    monkeypatch.setattr(rekey, "other_app_connections", lambda _session: [])  # the API and worker are stopped
 
     _record, file_id = _seed(client, hospital, doctor, patient)
     assert cli.main(["check-encryption"]) == 0
@@ -437,14 +439,27 @@ def test_migration_0008_refuses_to_downgrade_over_ciphertext(tmp_path, monkeypat
         connection.execute(text(
             "INSERT INTO patients (id, hospital_id, mrn, full_name, sex, dob_estimated, payer, status, diagnosis, "
             "created_at, updated_at) VALUES ('p1', 'h1', 'SPH-000001', 'Almaz', 'female', 0, 'cash', 'opd', "
-            "'enc:v1:1:abc', '2026-01-01 00:00:00', '2026-01-01 00:00:00')"))
-    with pytest.raises(RuntimeError, match="decrypt-existing"):
+            "'enc:v1:1:' || :sealed, '2026-01-01 00:00:00', '2026-01-01 00:00:00')"),
+            {"sealed": "A" * 40})
+        connection.execute(text(
+            "INSERT INTO record_files (id, hospital_id, patient_id, filename, content_type, size, sha256, "
+            "key_version, created_at) VALUES ('f1', 'h1', 'p1', 'scan.png', 'image/png', 1, :sha, 1, "
+            "'2026-01-01 00:00:00')"), {"sha": "0" * 64})
+    with pytest.raises(RuntimeError, match="decrypt-existing") as caught:
         command.downgrade(config, "0007")
+    assert "patients.diagnosis: 1" in str(caught.value) and "record_files (files): 1" in str(caught.value)
     with get_engine().begin() as connection:
-        connection.execute(text("UPDATE patients SET diagnosis = 'Malaria'"))
+        # Legacy text that merely starts with the prefix is not ciphertext and does not block.
+        connection.execute(text("UPDATE patients SET diagnosis = 'enc:v1: see notes'"))
+    with pytest.raises(RuntimeError, match=r"record_files \(files\): 1"):  # a file still encrypted: keys stay
+        command.downgrade(config, "0007")
+    with get_engine().connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM hospital_keys")).scalar() == 0  # the table is still there
+    with get_engine().begin() as connection:
+        connection.execute(text("UPDATE record_files SET key_version = NULL"))
     command.downgrade(config, "0007")
     with get_engine().connect() as connection:
-        assert connection.execute(text("SELECT diagnosis FROM patients")).scalar() == "Malaria"
+        assert connection.execute(text("SELECT diagnosis FROM patients")).scalar() == "enc:v1: see notes"
     dbmod.reset_engine()
 
 
@@ -555,7 +570,7 @@ def test_a_legacy_value_that_starts_with_the_prefix_still_loads_and_is_encrypted
 def test_enforcement_refuses_plaintext_values_and_files(client, hospital, doctor, patient, caplog):
     file_id = upload(client, doctor, patient["id"], PNG, "scan.png").json()["id"]
     record = add(client, doctor, patient["id"], {**DIAGNOSIS, "file_ids": [file_id]})
-    rekey.decrypt_existing()
+    rekey.decrypt_existing(require_stopped=False)
     enforced, _lines = rekey.enforce()
     assert enforced is False and rekey.is_enforced() is False  # plain text left: refused to enforce
     rekey.encrypt_existing()
@@ -575,15 +590,17 @@ def test_enforcement_refuses_plaintext_values_and_files(client, hospital, doctor
         client.get(f"/records/{record['id']}/files/{file_id}", headers=doctor)
 
     # Rolling back lifts enforcement first.
-    rekey.decrypt_existing()
+    rekey.decrypt_existing(require_stopped=False)
     assert rekey.is_enforced() is False
 
 
-def test_the_enforce_command(client, hospital, doctor, patient, capsys):
+def test_the_enforce_command(client, hospital, doctor, patient, capsys, monkeypatch):
     from app import cli
 
+    monkeypatch.setattr(rekey, "other_app_connections", lambda _session: [])
+
     add(client, doctor, patient["id"])
-    rekey.decrypt_existing()
+    rekey.decrypt_existing(require_stopped=False)
     with pytest.raises(SystemExit, match="Not enforced"):
         cli.main(["enforce-encryption"])
     assert cli.main(["encrypt-existing"]) == 0
@@ -729,3 +746,185 @@ def test_dead_letters_keep_ids_and_the_error_but_no_clinical_data(client, hospit
     huge = eventbus.redacted_payload(json.dumps({f"k{i}_id": "x" * 64 for i in range(200)}))
     assert len(huge) <= eventbus.DEAD_LETTER_PAYLOAD_CHARS
     assert eventbus.redacted_payload("not json") == '{"unparseable_bytes": 8}'
+
+
+# --- review fixes: file key versions, stopping the services, enforcement, master key, errors, export ---
+
+def _file_versions():
+    return sorted(raw("SELECT key_version FROM record_files") + raw("SELECT key_version FROM onboarding_documents"),
+                  key=lambda r: (r[0] is None, r[0] or 0))
+
+
+def test_file_rows_say_which_key_their_file_needs(client, hospital, doctor, patient):
+    _record, _file_id = _seed(client, hospital, doctor, patient)
+    assert _file_versions() == [(1,)]
+    rekey.decrypt_existing(require_stopped=False)
+    assert _file_versions() == [(None,)]
+    rekey.encrypt_existing()
+    assert _file_versions() == [(1,)]
+    rekey.rotate_key(hospital)
+    assert _file_versions() == [(2,)]
+    # A row out of step with its file is put right by the next run.
+    with platform_session() as session:
+        session.execute(text("UPDATE record_files SET key_version = NULL"))
+    rekey.encrypt_existing()
+    assert _file_versions() == [(2,)]
+
+
+def test_decrypt_existing_refuses_while_the_api_or_worker_is_connected(client, hospital, doctor, patient,
+                                                                        monkeypatch):
+    from app import cli
+
+    add(client, doctor, patient["id"])
+    monkeypatch.setattr(rekey, "other_app_connections", lambda _session: ["hospital-app", "hospital-app"])
+    with pytest.raises(rekey.ServiceRunning, match="2 other connection"):
+        rekey.decrypt_existing()
+    with pytest.raises(SystemExit, match="stop the API and the worker first"):
+        cli.main(["decrypt-existing", "--yes"])
+    assert all(crypto.is_sealed(v) for (v,) in raw("SELECT title FROM clinical_records"))  # nothing touched
+
+
+def test_turning_enforcement_off_reaches_a_running_process(client, hospital, doctor, patient, monkeypatch):
+    record = add(client, doctor, patient["id"])
+    clock = [1000.0]
+    monkeypatch.setattr(crypto.time, "monotonic", lambda: clock[0])
+    crypto.clear_enforced_cache()
+    assert rekey.enforce()[0] is True
+    with platform_session() as session:
+        assert crypto.enforced(session) is True
+    # Another process (decrypt-existing) lifts it: this one sees it within the recheck interval.
+    with platform_session() as session:
+        session.execute(text("UPDATE encryption_state SET enforced_at = NULL"))
+    with platform_session() as session:
+        assert crypto.enforced(session) is True  # cached, for now
+    clock[0] += crypto.ENFORCED_RECHECK_SECONDS + 1
+    with platform_session() as session:
+        assert crypto.enforced(session) is False
+    _set_raw("clinical_records", "title", record["id"], "plain again")
+    got = client.get(f"/patients/{patient['id']}/records", headers=doctor).json()["items"][0]
+    assert got["title"] == "plain again"
+    # ... and turning it on again too.
+    with platform_session() as session:
+        session.execute(text("UPDATE encryption_state SET enforced_at = '2026-10-28 00:00:00'"))
+    clock[0] += crypto.ENFORCED_RECHECK_SECONDS + 1
+    with pytest.raises(crypto.CryptoError, match="encryption is enforced"):
+        client.get(f"/patients/{patient['id']}/records", headers=doctor)
+
+
+def _use_key(monkeypatch, tmp_path, name, kek):
+    path = tmp_path / name
+    path.write_bytes(kek)
+    monkeypatch.setenv("HOSPITAL_MASTER_KEY_FILE", str(path))
+    crypto.clear_cache()
+
+
+def test_the_master_key_must_be_this_databases(db, tmp_path, monkeypatch):
+    first, second = os.urandom(32), os.urandom(32)
+    _use_key(monkeypatch, tmp_path, "first.key", first)
+    assert crypto.verify_master_key() == crypto.fingerprint(first)  # first start: recorded
+    [(check, printed)] = raw("SELECT kek_check, kek_fingerprint FROM encryption_state")
+    assert printed == crypto.fingerprint(first) and check == crypto.kek_check(first) and first.hex() not in check
+    hospital = make_hospital()
+    key_for(hospital)  # a data key, wrapped under the first key
+    assert crypto.verify_master_key() == crypto.fingerprint(first)
+
+    _use_key(monkeypatch, tmp_path, "second.key", second)
+    with pytest.raises(crypto.CryptoError, match="not the one this database was set up with"):
+        crypto.verify_master_key()
+    other = make_hospital(code="TKH", name="Tikur Anbessa")
+    with pytest.raises(crypto.CryptoError, match="not the one this database was set up with"):
+        key_for(other)  # never wrap a data key under the wrong master key
+    assert raw("SELECT count(*) FROM hospital_keys WHERE hospital_id = :h", h=other) == [(0,)]
+
+
+def test_the_api_and_cli_refuse_to_start_with_another_master_key(client, hospital, doctor, patient, tmp_path,
+                                                                  monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app import cli
+    from app.main import create_app
+
+    add(client, doctor, patient["id"])  # the lifespan recorded this test's key
+    _use_key(monkeypatch, tmp_path, "other.key", os.urandom(32))
+    with pytest.raises(crypto.CryptoError, match="not the one this database was set up with"):
+        with TestClient(create_app()):
+            pass
+    with pytest.raises(SystemExit, match="not the one this database was set up with"):
+        cli.main(["check-encryption"])
+
+
+def test_a_first_start_with_a_key_that_does_not_unwrap_the_stored_keys_is_refused(db, tmp_path, monkeypatch):
+    _use_key(monkeypatch, tmp_path, "old.key", os.urandom(32))
+    hospital = make_hospital()
+    key_for(hospital)
+    with platform_session() as session:  # as if no key had been recorded yet (a database from before)
+        session.execute(text("UPDATE encryption_state SET kek_check = NULL, kek_fingerprint = NULL"))
+    _use_key(monkeypatch, tmp_path, "new.key", os.urandom(32))
+    with pytest.raises(crypto.CryptoError, match="does not unwrap"):
+        crypto.verify_master_key()
+    assert raw("SELECT kek_check FROM encryption_state") == [(None,)]  # nothing recorded
+
+
+def test_errors_in_redis_and_logs_carry_no_values(client, hospital, caplog):
+    from sqlalchemy.exc import IntegrityError
+
+    from app.eventbus import safe_error
+    from app.models import Hospital
+
+    with pytest.raises(IntegrityError) as caught:
+        with platform_session() as session:
+            session.add(Hospital(code="SPH", name=f"{MARK} duplicate", timezone="Africa/Addis_Ababa"))
+    assert MARK not in str(caught.value)  # the engine hides parameters, in errors and tracebacks
+    message = safe_error(caught.value)
+    assert message.startswith("IntegrityError: ") and MARK not in message and "INSERT" not in message
+    assert "\n" not in message and "[SQL" not in message
+
+    class Diag:
+        message_primary = "duplicate key value violates unique constraint \"uq_x\""
+
+    class FakePgError(Exception):
+        diag = Diag()
+
+        def __str__(self):
+            return 'duplicate key value violates unique constraint "uq_x"\nDETAIL:  Key (name)=(Quokkafever) exists.'
+
+    from sqlalchemy.exc import DBAPIError
+
+    wrapped = DBAPIError("INSERT INTO x VALUES (%(name)s)", {"name": MARK}, FakePgError(), hide_parameters=True)
+    message = safe_error(wrapped)
+    assert message == 'FakePgError: duplicate key value violates unique constraint "uq_x"'
+    assert len(safe_error(ValueError("x" * 5000))) <= 500
+
+
+def test_the_purge_keeps_entries_a_new_group_has_not_read(bus):
+    from app.eventbus import STREAM_OUT, purge_acknowledged
+
+    ids = [bus.xadd(STREAM_OUT, {"n": str(i)}) for i in range(3)]
+    bus.xgroup_create(STREAM_OUT, "platform", id="0")
+    bus.xreadgroup("platform", "p1", {STREAM_OUT: ">"})
+    bus.xack(STREAM_OUT, "platform", *ids)
+    bus.xgroup_create(STREAM_OUT, "late", id="0")  # created from the start: has read nothing yet
+    assert purge_acknowledged(bus, STREAM_OUT) == 0
+    assert [i for i, _f in bus.xrange(STREAM_OUT)] == ids
+
+
+def test_export_file_leaves_nothing_behind_on_failure(client, hospital, doctor, patient, tmp_path, monkeypatch):
+    _record, file_id = _seed(client, hospital, doctor, patient)
+    out = tmp_path / "out" / "exported.png"
+    out.parent.mkdir()
+
+    def broken(self):
+        yield PNG[:8]
+        raise OSError("disk full")
+
+    working = files.PlainFile.__iter__
+    monkeypatch.setattr(files.PlainFile, "__iter__", broken)
+    with pytest.raises(OSError, match="disk full"):
+        rekey.export_file(file_id, str(out))
+    assert list(out.parent.iterdir()) == []
+    monkeypatch.setattr(files.PlainFile, "__iter__", working)
+    assert rekey.export_file(file_id, str(out)) == "record_files"
+    assert out.read_bytes() == PNG and [p.name for p in out.parent.iterdir()] == ["exported.png"]
+    with pytest.raises(FileExistsError):
+        rekey.export_file(file_id, str(out))
+    assert out.read_bytes() == PNG

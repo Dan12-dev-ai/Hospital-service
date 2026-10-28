@@ -249,9 +249,12 @@ def test_tenant_cannot_insert_a_row_of_another_hospital(two_hospitals, table):
 def test_tenant_cannot_change_or_delete_another_hospitals_rows(two_hospitals, table):
     pk = PK[table]
     with session_scope(A) as session:
-        if "DELETE" in rls.APP_RIGHTS.get(table, "DELETE"):  # data keys are never deleted by the app
+        rights = rls.APP_RIGHTS.get(table, "DELETE, UPDATE")
+        if "DELETE" in rights:  # data keys are never deleted (nor changed) by the app
             assert session.execute(text(f"DELETE FROM {table} WHERE {pk} = :id"),
                                    {"id": seed_id(table, B)}).rowcount == 0
+        if "UPDATE" not in rights:
+            return
         assert session.execute(text(f"UPDATE {table} SET {pk} = {pk} WHERE {pk} = :id"),
                                {"id": seed_id(table, B)}).rowcount == 0
     with platform_session() as session:
@@ -647,3 +650,57 @@ def test_the_app_password_is_stored_as_a_scram_verifier(db):
     assert stored.startswith("SCRAM-SHA-256$4096:")
     with pytest.raises(RuntimeError, match="ASCII"):
         rls.scram_verifier("pässword")
+
+
+# --- encryption at rest -----------------------------------------------------------------------------
+
+@pg_only
+def test_data_keys_can_only_be_added_and_activated(two_hospitals):
+    key = seed_id("hospital_keys", A)
+    attempts = [(lambda: session_scope(A), "UPDATE hospital_keys SET wrapped_key = 'x' WHERE id = :id"),
+                (lambda: session_scope(A), "UPDATE hospital_keys SET active = false WHERE id = :id"),
+                (lambda: session_scope(A), "DELETE FROM hospital_keys WHERE id = :id"),
+                (platform_session, "UPDATE hospital_keys SET wrapped_key = 'x' WHERE id = :id"),
+                (platform_session, "UPDATE hospital_keys SET version = 9 WHERE id = :id"),
+                (platform_session, "DELETE FROM hospital_keys WHERE id = :id")]
+    for scope, statement in attempts:
+        with pytest.raises(DBAPIError) as caught:
+            with scope() as session:
+                session.execute(text(statement), {"id": key})
+        assert "permission denied" in str(caught.value.orig), statement
+    with platform_session() as session:  # Endod activates a version (rotation)
+        assert session.execute(text("UPDATE hospital_keys SET active = true WHERE id = :id"),
+                               {"id": key}).rowcount == 1
+    with session_scope(A) as session:  # the app adds a hospital's key
+        session.add(build("hospital_keys", A, 2))
+
+
+@pg_only
+def test_the_downgrade_counts_ciphertext_that_row_level_security_hides(two_hospitals):
+    """A login held by FORCE ROW LEVEL SECURITY sees no row; the downgrade
+    counts as hospital_platform and still finds them (and refuses)."""
+    migration = _migration("0008_encryption_at_rest.py")
+    with platform_session() as session:
+        session.execute(text("UPDATE record_files SET key_version = 1"))
+    with session_scope() as session:
+        connection = session.connection()
+        assert connection.execute(text("SELECT count(*) FROM clinical_records")).scalar() == 0
+        left = migration.encrypted_left(connection)
+        assert "clinical_records.title: 2" in left and "record_files (files): 2" in left
+        assert connection.execute(text("SELECT current_user")).scalar() == APP_ROLE  # role reset afterwards
+
+
+@pg_only
+def test_decrypt_existing_sees_the_api_still_connected(two_hospitals):
+    from app import rekey
+    from app.db import database_url, reset_engine
+
+    reset_engine()  # this test's own pooled connections are gone
+    rekey.require_services_stopped()
+    other = create_engine(database_url(), connect_args={"application_name": "hospital-app"})
+    try:
+        with other.connect():
+            with pytest.raises(rekey.ServiceRunning, match="hospital-app"):
+                rekey.require_services_stopped()
+    finally:
+        other.dispose()
