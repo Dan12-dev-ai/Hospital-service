@@ -8,6 +8,16 @@ creates a hospital and its first admin, and prints a one-time password.
     python -m app.cli applications              # hospitals applying to join Endod
     python -m app.cli application --code TASH   # one application, with its documents' paths
     python -m app.cli approve --code TASH
+
+Encryption at rest (app/crypto.py; README, "Encryption at rest"):
+
+    python -m app.cli encrypt-existing          # encrypt what is still plain text (idempotent)
+    python -m app.cli check-encryption          # what is left in plain text (exit 1 if any)
+    python -m app.cli enforce-encryption        # from now on refuse plaintext (needs a clean check)
+    python -m app.cli rotate-key --hospital SPH # a new data key; re-encrypt that hospital's data
+    python -m app.cli rotate-key --hospital SPH --resume   # finish: re-encrypt onto the active key
+    python -m app.cli export-file --file <id> --out doc.pdf   # a stored file, decrypted
+    python -m app.cli decrypt-existing --yes    # only to roll back migration 0008
 """
 
 from __future__ import annotations
@@ -70,7 +80,25 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("applications", help="list onboarding applications (status, submitted, demo)")
     detail = commands.add_parser("application", help="show one application and where its documents are")
     detail.add_argument("--code", required=True, help="the hospital's code, e.g. TASH")
+    enc = commands.add_parser("encrypt-existing", help="encrypt values and files stored before encryption")
+    enc.add_argument("--batch", type=int, default=200, help="rows per transaction")
+    commands.add_parser("check-encryption", help="count what is still plain text (exit 1 if any)")
+    commands.add_parser("enforce-encryption", help="refuse plaintext from now on (only after a clean check)")
+    rotate = commands.add_parser("rotate-key", help="a new data key for one hospital, and its data re-encrypted")
+    rotate.add_argument("--hospital", required=True, help="the hospital's id or code")
+    rotate.add_argument("--batch", type=int, default=200, help="rows per transaction")
+    rotate.add_argument("--resume", action="store_true",
+                        help="no new key: re-encrypt what is on an older version with the active one")
+    dec = commands.add_parser("decrypt-existing", help="decrypt everything (only to roll back migration 0008)")
+    dec.add_argument("--yes", action="store_true", help="really write health data back in plain text")
+    export = commands.add_parser("export-file", help="write a stored file (record file or document), decrypted")
+    export.add_argument("--file", required=True, help="the file's id")
+    export.add_argument("--out", required=True, help="where to write it (must not exist; created 0600)")
     args = parser.parse_args(argv)
+
+    if args.command in ("encrypt-existing", "check-encryption", "enforce-encryption", "rotate-key",
+                        "decrypt-existing", "export-file"):
+        return encryption_command(args)
 
     if args.command == "applications":
         return list_applications()
@@ -164,12 +192,76 @@ def show_application(code: str) -> int:
         for item in app["documents"]["items"]:
             doc = rows.get(item["kind"])
             where = (f"{files.path_for(hospital.id, doc.id)}  ({doc.filename}, {doc.content_type}, "
-                     f"{doc.size} bytes, sha256 {doc.sha256})") if doc else "MISSING"
+                     f"{doc.size} bytes, sha256 {doc.sha256}; encrypted: python -m app.cli export-file "
+                     f"--file {doc.id} --out <path>)") if doc else "MISSING"
             print(f"  {item['label']}: {where}")
         if app["next_step"] != "review":
             print(f"  still missing: {', '.join(f'{k}: {v}' for k, v in app['missing'].items() if v)}")
     return 0
 
 
+def encryption_command(args) -> int:
+    from app import crypto, rekey
+    from app.files import FileRejected
+
+    try:
+        print(f"Master key fingerprint: {crypto.verify_master_key()}")
+    except crypto.CryptoError as exc:
+        raise SystemExit(str(exc)) from exc
+    if args.command == "enforce-encryption":
+        enforced, lines = rekey.enforce()
+        print("\n".join(lines))
+        if not enforced:
+            raise SystemExit("Not enforced: some data is still plain text. Run encrypt-existing, then try again.")
+        print("Enforced: values and files that are not encrypted are refused from now on.")
+        return 0
+    if args.command == "check-encryption":
+        clean, lines = rekey.check()
+        print("\n".join(lines))
+        print("Everything is encrypted." if clean else "Some data is still plain text: run encrypt-existing.")
+        return 0 if clean else 1
+    if args.command == "export-file":
+        try:
+            kind = rekey.export_file(args.file.strip(), args.out)
+        except (LookupError, FileExistsError, FileRejected, crypto.CryptoError) as exc:
+            raise SystemExit(str(exc)) from exc
+        print(f"Wrote {args.out} ({kind}).")
+        return 0
+    if args.command == "decrypt-existing":
+        if not args.yes:
+            raise SystemExit("This writes health data back in plain text (to roll back migration 0008). "
+                             "Run again with --yes.")
+        try:
+            report = rekey.decrypt_existing()
+        except rekey.ServiceRunning as exc:
+            raise SystemExit(str(exc)) from exc
+    elif args.command == "rotate-key":
+        hospital_id = _hospital_id(args.hospital)
+        version, report = rekey.rotate_key(hospital_id, batch=args.batch, new_key=not args.resume)
+        print(f"Hospital {hospital_id}: data key version {version} is active.")
+    else:
+        report = rekey.encrypt_existing(batch=args.batch)
+    for what, n in sorted(report.values.items()):
+        print(f"{what}: {n}")
+    for what, n in sorted(report.files.items()):
+        print(f"files {what}: {n}")
+    clean, lines = rekey.check()
+    print("\n".join(lines))
+    return 0
+
+
+def _hospital_id(ref: str) -> str:
+    ref = ref.strip()
+    with platform_session() as session:
+        hospital = session.get(Hospital, ref) or session.scalar(select(Hospital).where(Hospital.code == ref.upper()))
+        if hospital is None:
+            raise SystemExit(f"No hospital {ref}.")
+        return hospital.id
+
+
 if __name__ == "__main__":
+    from app import db
+
+    # The CLI's own connections are not "the API or worker still running".
+    db.APPLICATION_NAME = db.CLI_APPLICATION_NAME
     raise SystemExit(main())

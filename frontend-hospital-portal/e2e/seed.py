@@ -214,7 +214,7 @@ def queue_yesterday(hospital_id: str, doctor_email: str, patient: str) -> dict:
 
 
 def seed_applicant(tag: str, complete: bool, submitted: bool) -> dict:
-    from app import files, onboarding
+    from app import crypto, files, onboarding
     from app.db import new_id
     from app.models import (
         ApplicationStatus, DemoBooking, DocumentKind, OnboardingApplication, OnboardingDocument, Role,
@@ -241,12 +241,13 @@ def seed_applicant(tag: str, complete: bool, submitted: bool) -> dict:
             hospital.address, hospital.latitude, hospital.longitude = "Main Street", 8.54, 39.27
             application.license_number = f"MOH/{code}/1"
             pdf = b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n"
+            key = crypto.active_key(session, hospital.id)  # documents are encrypted at rest
             for kind in DocumentKind.ALL:
                 file_id = new_id()
-                size, sha256, content_type = files.store_bytes(pdf, hospital.id, file_id)
+                size, sha256, content_type = files.store_bytes(pdf, hospital.id, file_id, key)
                 session.add(OnboardingDocument(id=file_id, hospital_id=hospital.id, kind=kind, filename=f"{kind}.pdf",
                                                content_type=content_type, size=size, sha256=sha256,
-                                               uploaded_by=admin.id))
+                                               key_version=key.version, uploaded_by=admin.id))
         demo_at = None
         if submitted:
             taken = onboarding.taken_slots(session)

@@ -64,6 +64,14 @@ class Settings(BaseSettings):
     #: patients share with this hospital (called with PLATFORM_ADMIN_KEY).
     PLATFORM_API_URL: Optional[str] = None
 
+    # --- Encryption of health data at rest (app/crypto.py) ---
+    #: A file holding the 32-byte master key (KEK) that wraps every hospital's
+    #: data key, e.g. /run/secrets/master.key (mounted read-only into the API
+    #: and worker only; never in the database or the repository). Required
+    #: everywhere but development, where a fixed, public development key is
+    #: used when it is not set.
+    MASTER_KEY_FILE: Optional[str] = None
+
     @field_validator("ENVIRONMENT", mode="before")
     @classmethod
     def _lower(cls, value):

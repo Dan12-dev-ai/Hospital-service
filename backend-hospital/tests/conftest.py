@@ -35,6 +35,7 @@ def db(tmp_path, monkeypatch):
     On PostgreSQL the tables are created as the owner (that URL), the policies
     and the app role are set up as the migrations do, and the app then
     connects as the app role."""
+    from app import crypto
     from app import db as dbmod
     from app import models  # noqa: F401  (registers the tables)
     from app import rls
@@ -44,6 +45,11 @@ def db(tmp_path, monkeypatch):
     monkeypatch.setenv("HOSPITAL_DATABASE_URL", url)
     monkeypatch.setenv("HOSPITAL_ENVIRONMENT", "development")
     monkeypatch.setenv("HOSPITAL_FILES_DIR", str(tmp_path / "files"))
+    # A fresh master key per test (as production's: 32 random bytes in a file).
+    key_file = tmp_path / "master.key"
+    key_file.write_bytes(os.urandom(32))
+    monkeypatch.setenv("HOSPITAL_MASTER_KEY_FILE", str(key_file))
+    crypto.clear_cache()
     dbmod.reset_engine()
     dbmod.Base.metadata.drop_all(dbmod.get_engine())
     dbmod.create_all()

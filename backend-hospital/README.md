@@ -185,6 +185,170 @@ Nothing is lost either way; the policies only filter.
   `hospital` again. The roles can stay, or for each of `hospital_app` and
   `hospital_platform`: `DROP OWNED BY <role>; DROP ROLE <role>;`.
 
+## Encryption at rest
+
+Health data is encrypted by the app before it reaches the database or the
+disk (`app/crypto.py`, `app/sealing.py`, migration 0008), so a copy of the
+database, a backup or the files volume alone reveals no clinical data.
+
+- **Envelope encryption.** A master key (KEK, 32 random bytes) lives in a
+  file (`HOSPITAL_MASTER_KEY_FILE`), mounted read-only into the API and the
+  worker only: never in the database, the repository, the `migrate` service
+  or a log. Each hospital has its own data key (DEK, 32 bytes) in
+  `hospital_keys`, wrapped with AES-256-GCM under the master key, by version
+  (one active). `hospital_keys` is under row-level security like every
+  hospital table. Unwrapped data keys are cached in memory for 5 minutes,
+  by the wrapped key's digest (a key row rolled back with its savepoint is
+  never served from the cache), and any failed decryption, of a value or a
+  file, evicts the cached key and retries once.
+  **Fails closed:** the API, the worker and the CLI refuse to start without a
+  usable master key unless `HOSPITAL_ENVIRONMENT` is *explicitly* set to
+  `development` or `test` (then a fixed, public development key is used:
+  never for real data). At start they log the key's fingerprint
+  (`master_key_loaded fingerprint=…`, a hash, not the key), so you can tell
+  which key a server runs with. The database records which master key it
+  belongs to (an HMAC of a fixed label under it, in `encryption_state`) on
+  the first start; from then on a different key is refused at start and
+  before any data key is made, so a wrong key mounted by mistake can never
+  wrap keys nobody else can unwrap.
+- **Who may touch the keys.** The app role may only read data keys and add
+  a hospital's first one; only Endod (the CLI, as `hospital_platform`)
+  activates a new version, and nobody can change a wrapped key or delete
+  one (database grants, tested on PostgreSQL).
+- **Values** are stored as `enc:v1:<key version>:` + base64(nonce ‖
+  ciphertext ‖ tag), AES-256-GCM with a random 12-byte nonce each time. The
+  associated data names the table, column, row id, hospital and key version:
+  a value copied to another row, column or hospital does not decrypt.
+  Encryption happens on flush and decryption on load, so the code above the
+  models is unchanged. If a flush fails, its objects get their plain text
+  back and are encrypted again, with the key active then, on the next one.
+- **Files** (record files, onboarding documents) are encrypted as they are
+  uploaded, in 64 KiB chunks, each with a random nonce and associated data
+  naming the hospital, file id, chunk index and whether it is the last (a
+  file cut short or reordered does not decrypt). The stored size and sha256
+  are the plain file's; every download is decrypted and checked against them
+  before the first byte is sent. Files shared by patients are fetched from
+  the platform on demand and held in memory only.
+- **Enforcement.** Until `python -m app.cli enforce-encryption` (which
+  refuses unless `check-encryption` is clean), a value or file stored before
+  encryption is read as it is; that includes legacy text that merely starts
+  with `enc:v1:` (only a well-formed value counts as encrypted, and
+  `encrypt-existing` encrypts the rest). Once enforced, anything not
+  encrypted is refused, and logged by table, column and row id (never the
+  value).
+- **The outbox.** Events to the platform carry clinical payloads in plain
+  text (the platform needs them) until they are sent; a sent row is deleted
+  after 24 hours (the worker's hourly housekeeping).
+- **Redis.** Events are plain text in Redis while in flight: from when they
+  are sent until every consumer group on the stream has acknowledged them.
+  Then they are deleted: the worker deletes the events it produced every 10
+  seconds, once every group on `endod:hospital` acknowledged them, and the
+  events it received right after acknowledging them (once every group on
+  `endod:patient` has). Events nobody reads are trimmed after 7 days. The
+  dead-letter stream keeps only the event's id, type, source, time, the error
+  (500 characters at most) and a redacted payload (field names, and the
+  values of `*_id` fields; no clinical data, names or phones), about 10,000
+  entries at most. Errors stored there or logged are the exception's class
+  and first line only; for a database error, the driver's primary message
+  (never the statement, its parameters or a DETAIL line), and the engine
+  hides parameters in every error and traceback.
+
+| Encrypted | Not encrypted, and why |
+| --- | --- |
+| Clinical records: `title` (it usually names the diagnosis: "Malaria", "HIV test") and `details` | Patients' names, Amharic names, phone numbers, MRNs and Endod IDs: staff search by them (`LIKE`), which ciphertext cannot serve |
+| Visits' follow-up notes; the working diagnosis on the patient; allergy and risk alerts' text | Dates, categories, statuses, wards and beds: filtered and sorted in SQL; they say little on their own |
+| Booking notes from the patient app (often symptoms) | A retraction's reason ("entered in error") and the audit log (ids, categories, never clinical text; alert labels are no longer written there) |
+| Records patients shared: title, details and file list | Pharmacies' dispense amounts (item indexes and counts) |
+| Record files' names and contents; onboarding documents' contents | Hospital, staff and onboarding details (not health data) |
+| Import previews (the parsed records; the uploaded file itself is never stored) | Events in flight in Redis, until every reader acknowledged them (see above; the bus is private) |
+
+### The master key
+
+Generate it once, on the server, as root:
+
+```sh
+install -d -m 0700 -o root -g root /opt/endod-hospital/deploy/keys
+openssl rand -out /opt/endod-hospital/deploy/keys/master.key 32
+chown 10002:10002 /opt/endod-hospital/deploy/keys/master.key   # the image's `hospital` user
+chmod 0400 /opt/endod-hospital/deploy/keys/master.key
+```
+
+Only root on the host can reach it (the `keys` directory is root's, 0700);
+the file is owned by uid 10002, which has no account on the host, because
+the containers run as that user and a root-owned 0400 file could not be read
+in them. `deploy/docker-compose.yml` mounts it read-only at
+`/run/secrets/master.key` into the API and the worker only (and refuses to
+start if it is missing, rather than creating a directory there).
+
+**Back it up OFFLINE now, together with the backup key** (e.g. printed
+`base64 master.key` and a USB stick in the safe, never in the same place as
+the backups). Losing the master key means losing every hospital's clinical
+data and files, in the database and in every backup; a stolen master key
+alone decrypts nothing without the database, and the database alone nothing
+without the key. Never rotate it by replacing the file: the data keys are
+wrapped under it.
+
+### Deploying it
+
+Production has 4 hospitals and no patients, so there is little to encrypt;
+the steps are the same with data.
+
+1. Create and back up the master key (above).
+2. `cd /opt/endod-hospital && git pull` (this branch, once merged), then
+   `cd deploy && docker compose --env-file .env up -d --build`. `migrate`
+   runs 0008 (the `hospital_keys` table, with its policies; TEXT for the
+   encrypted columns that were VARCHAR); the API and worker start with the key.
+3. Check the logs show the key's fingerprint (`docker compose logs api worker
+   | grep master_key_loaded`), and that it is the fingerprint of the key you
+   backed up (`python -m app.cli check-encryption` prints it too).
+4. Encrypt what was stored before (in batches; safe to stop and run again),
+   check, then enforce:
+
+   ```sh
+   docker compose exec api python -m app.cli encrypt-existing
+   docker compose exec api python -m app.cli check-encryption   # exit 0: nothing left in plain text
+   docker compose exec api python -m app.cli enforce-encryption # from now on plaintext is refused
+   ```
+
+5. Sign in to the portal, open a patient's records and a file.
+
+**Rotating a hospital's data key** (yearly, or if a key may have leaked):
+`docker compose exec api python -m app.cli rotate-key --hospital SPH`. It adds
+a new version, makes it active and re-encrypts that hospital's values and
+files; the old version stays, inactive, so backups taken before stay
+readable. Old versions are never purged, so nothing can be stranded: a file
+whose upload started before the rotation is stored with the key active when
+it started. `check-encryption` then counts it "on an older key", and
+`rotate-key --hospital SPH --resume` moves such stragglers to the active
+version without making another one.
+
+An operator who needs a stored file (an onboarding document, say) gets it
+decrypted with `python -m app.cli export-file --file <id> --out <path>`.
+
+### Rolling back
+
+This code reads plain and encrypted values alike, so it can stay while
+anything is investigated. The 0007 code reads only plain text: to go back to
+it, stop everything that writes, decrypt everything with THIS image, then
+downgrade with THIS image's `migrate`, and only then deploy the old code.
+`decrypt-existing` refuses while the API or worker is still connected
+(another connection of the app's login that is not the CLI's), decrypts
+values and files, and lifts enforcement first. The downgrade then counts,
+acting for Endod so row-level security hides nothing, every value still
+encrypted and every file whose row says it is (`key_version`), and refuses
+while anything is left: it never drops the keys while data needs them.
+
+  ```sh
+  cd /opt/endod-hospital/deploy
+  docker compose --env-file .env stop portal worker api
+  docker compose --env-file .env run --rm --no-deps api python -m app.cli decrypt-existing --yes
+  docker compose --env-file .env run --rm migrate alembic downgrade 0007
+  cd .. && git checkout ead871d          # the last commit before encryption at rest
+  cd deploy && docker compose --env-file .env up -d --build --remove-orphans
+  ```
+
+  Keep the master key: backups taken while encryption was on need it.
+
 ## What exists so far
 
 | Area | Endpoints |

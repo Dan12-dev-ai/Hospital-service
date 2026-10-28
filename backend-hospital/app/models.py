@@ -21,6 +21,16 @@ from app.validation import checked_dedan_id
 # (DE + 6 digits): see the ``_check_dedan`` validators below.
 
 
+def SealedText(length: int):  # noqa: N802 -- a column type factory
+    """A text column encrypted at rest (app/sealing.py lists them all).
+
+    The API still limits the plain text to ``length`` characters; the stored
+    ciphertext is longer, so on PostgreSQL the column is TEXT. SQLite never
+    enforces a VARCHAR's length, and keeps the original type (no table rebuild).
+    """
+    return String(length).with_variant(Text(), "postgresql")
+
+
 class Role:
     ADMIN = "admin"
     DOCTOR = "doctor"
@@ -370,8 +380,8 @@ class Patient(Base):
     bed: Mapped[Optional[str]] = mapped_column(String(16))
     attending_doctor_id: Mapped[Optional[str]] = mapped_column(
         ForeignKey("staff_users.id", ondelete="SET NULL"), index=True)
-    #: The working diagnosis shown in the directory.
-    diagnosis: Mapped[Optional[str]] = mapped_column(String(200))
+    #: The working diagnosis shown in the directory (encrypted at rest).
+    diagnosis: Mapped[Optional[str]] = mapped_column(SealedText(200))
     status_changed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     created_by: Mapped[Optional[str]] = mapped_column(ForeignKey("staff_users.id", ondelete="SET NULL"))
@@ -396,7 +406,8 @@ class PatientAlert(Base):
                                              index=True)
     patient_id: Mapped[str] = mapped_column(ForeignKey("patients.id", ondelete="CASCADE"), nullable=False, index=True)
     kind: Mapped[str] = mapped_column(String(12), nullable=False)
-    label: Mapped[str] = mapped_column(String(120), nullable=False)
+    #: Encrypted at rest (an allergy or risk is health data).
+    label: Mapped[str] = mapped_column(SealedText(120), nullable=False)
     created_by: Mapped[Optional[str]] = mapped_column(ForeignKey("staff_users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
@@ -423,6 +434,7 @@ class Booking(Base):
     service: Mapped[Optional[str]] = mapped_column(String(40))
     scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     duration_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    #: The patient's note when booking (often symptoms): encrypted at rest.
     notes: Mapped[Optional[str]] = mapped_column(Text)
     #: Santim the patient paid for the visit (Endod's fee is not included).
     price: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -531,7 +543,8 @@ class Visit(Base):
     booking_id: Mapped[Optional[str]] = mapped_column(ForeignKey("bookings.id", ondelete="SET NULL"))
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     follow_up_on: Mapped[Optional[date]] = mapped_column(Date)
-    follow_up_note: Mapped[Optional[str]] = mapped_column(String(500))
+    #: Encrypted at rest.
+    follow_up_note: Mapped[Optional[str]] = mapped_column(SealedText(500))
     #: The Endod ID the current follow-up was sent to (so its cancellation reaches the same account).
     follow_up_sent_to: Mapped[Optional[str]] = mapped_column(String(16))
     created_by: Mapped[Optional[str]] = mapped_column(ForeignKey("staff_users.id", ondelete="SET NULL"))
@@ -554,8 +567,9 @@ class ClinicalRecord(Base):
     patient_id: Mapped[str] = mapped_column(ForeignKey("patients.id", ondelete="CASCADE"), nullable=False)
     visit_id: Mapped[Optional[str]] = mapped_column(ForeignKey("visits.id", ondelete="SET NULL"))
     category: Mapped[str] = mapped_column(String(16), nullable=False)
-    title: Mapped[str] = mapped_column(String(200), nullable=False)
-    #: A JSON object, by category (docs/history-events.md, section 2).
+    #: Encrypted at rest, like ``details``: a title often names the diagnosis.
+    title: Mapped[str] = mapped_column(SealedText(200), nullable=False)
+    #: A JSON object, by category (docs/history-events.md, section 2). Encrypted at rest.
     details: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     #: The staff member who wrote it (none for an import).
@@ -604,10 +618,16 @@ class RecordFile(Base):
     hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False)
     patient_id: Mapped[str] = mapped_column(ForeignKey("patients.id", ondelete="CASCADE"), nullable=False)
     record_id: Mapped[Optional[str]] = mapped_column(ForeignKey("clinical_records.id", ondelete="CASCADE"))
-    filename: Mapped[str] = mapped_column(String(160), nullable=False)
+    #: Encrypted at rest ("hiv-test.pdf" says as much as the file); so is the file itself.
+    filename: Mapped[str] = mapped_column(SealedText(160), nullable=False)
     content_type: Mapped[str] = mapped_column(String(40), nullable=False)
     size: Mapped[int] = mapped_column(Integer, nullable=False)
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: The data key version the file on disk is encrypted with (None: plain
+    #: text, stored before encryption). Kept in step with the file by
+    #: app/rekey.py, so migration 0008's downgrade can see, without the files,
+    #: whether any file still needs the keys.
+    key_version: Mapped[Optional[int]] = mapped_column(Integer)
     uploaded_by: Mapped[Optional[str]] = mapped_column(ForeignKey("staff_users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
@@ -705,7 +725,8 @@ class SharedRecord(Base):
     record_id: Mapped[str] = mapped_column(String(32), nullable=False)
     origin: Mapped[str] = mapped_column(String(160), nullable=False)
     category: Mapped[str] = mapped_column(String(16), nullable=False)
-    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    #: The copy's title, details and file list are encrypted at rest.
+    title: Mapped[str] = mapped_column(SealedText(200), nullable=False)
     details: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     recorded_by: Mapped[Optional[str]] = mapped_column(String(160))
@@ -724,7 +745,8 @@ class ImportBatch(Base):
     #: "fhir" or "csv".
     format: Mapped[str] = mapped_column(String(8), nullable=False)
     filename: Mapped[Optional[str]] = mapped_column(String(160))
-    #: JSON: {"items": [...], "skipped": [...]}.
+    #: JSON: {"items": [...], "skipped": [...]} (the records to be, with their
+    #: details): encrypted at rest. The uploaded file itself is never stored.
     plan: Mapped[str] = mapped_column(Text, nullable=False)
     #: "previewed" or "imported".
     status: Mapped[str] = mapped_column(String(10), nullable=False, default="previewed")
@@ -771,6 +793,11 @@ class OnboardingDocument(Base):
     content_type: Mapped[str] = mapped_column(String(40), nullable=False)
     size: Mapped[int] = mapped_column(Integer, nullable=False)
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: The data key version the file on disk is encrypted with (None: plain
+    #: text, stored before encryption). Kept in step with the file by
+    #: app/rekey.py, so migration 0008's downgrade can see, without the files,
+    #: whether any file still needs the keys.
+    key_version: Mapped[Optional[int]] = mapped_column(Integer)
     uploaded_by: Mapped[Optional[str]] = mapped_column(ForeignKey("staff_users.id", ondelete="SET NULL"))
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
@@ -825,3 +852,46 @@ class PrescriptionDispense(Base):
     @validates("dedan_id")
     def _check_dedan(self, _key: str, value: Optional[str]) -> Optional[str]:
         return checked_dedan_id(value)
+
+
+# --- Encryption at rest (app/crypto.py, app/sealing.py) ---
+
+class HospitalKey(Base):
+    """A hospital's data key, wrapped (AES-256-GCM) under the master key.
+
+    One version is active (new data is encrypted with it); older versions
+    stay to read what was encrypted before a rotation, until re-encrypted.
+    """
+
+    __tablename__ = "hospital_keys"
+    __table_args__ = (UniqueConstraint("hospital_id", "version", name="uq_hospital_keys_version"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False,
+                                             index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: base64 of nonce, wrapped key and tag; the associated data names the hospital and version.
+    wrapped_key: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class EncryptionState(Base):
+    """One row (id 1): whether plaintext is refused (``enforce-encryption``).
+    Belongs to no hospital; the app reads it, only Endod's CLI changes it."""
+
+    __tablename__ = "encryption_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    #: Since when values and files not encrypted are refused (None: not enforced yet).
+    enforced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    #: Which master key this database belongs to: an HMAC of a fixed label
+    #: under it (app/crypto.py, ``kek_check``), its fingerprint, and when it
+    #: was recorded (first start, or first data key). A different key is refused.
+    kek_check: Mapped[Optional[str]] = mapped_column(String(64))
+    kek_fingerprint: Mapped[Optional[str]] = mapped_column(String(16))
+    kek_recorded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+# The encrypted columns are encrypted on flush and decrypted on load.
+from app import sealing  # noqa: E402,F401  (registers the ORM events)
