@@ -349,6 +349,67 @@ while anything is left: it never drops the keys while data needs them.
 
   Keep the master key: backups taken while encryption was on need it.
 
+## Integration API (hospitals' own systems)
+
+Hospitals approved by Endod connect their own systems (EMR, LIS, RIS) in the
+portal ("Connect your system", admins only): each connection is an OAuth 2.0
+client with the scopes chosen in plain words, Live or Test. The API is served
+under `/integrations/v1` (its own OpenAPI at `/integrations/v1/openapi.json`,
+docs at `/integrations/v1/docs`) and published by nginx at
+`HOSPITAL_INTEGRATIONS_PUBLIC_URL` (default
+`https://api.endod-health.com/hospital/v1`). The guide for the hospitals'
+developers is [docs/integrations.md](../docs/integrations.md) (served from
+`app/integrations/guide.md`, a copy a test keeps identical).
+
+- **Tokens:** `POST /oauth/token`, client secret (argon2id hash only, shown
+  once) or `private_key_jwt` (SMART Backend Services; `jti` single-use).
+  Access tokens: ES256 JWTs signed with the key in
+  `HOSPITAL_INTEGRATIONS_SIGNING_KEY_FILE`, 5 minutes, `kid` published at
+  `/.well-known/jwks.json`. Every call checks the client again in the
+  database: disconnecting, rotating or suspending the hospital stops it at once.
+- **Writes:** `POST /fhir` (transaction or batch) and `POST /fhir/{Type}`,
+  mapped by the import's mapping code (`app/imports.py`), patients by MRN or
+  Endod ID only (never created), corrections by resource id and versionId,
+  `Idempotency-Key`, test mode, 100 entries / 10 MB, 60 requests per minute.
+  Same encryption, row-level security, publishing and audit as the portal.
+- **Webhooks:** booking and patient-link events, signed
+  `Endod-Signature: t=..,v1=..` (HMAC-SHA256), sent by the worker with
+  retries for 24 hours, https and public addresses only (checked at every send).
+- **Logs:** method, path, status, client, time, duration and address, 30 days;
+  never a body.
+
+### Deploying it
+
+1. Migration 0009 creates the tables (with their row-level security) when
+   `migrate` runs.
+2. Create the signing key once, on the server, as root (like the master key):
+
+   ```sh
+   openssl ecparam -name prime256v1 -genkey -noout -out /opt/endod-hospital/deploy/keys/integrations-signing.pem
+   chown 10002:10002 /opt/endod-hospital/deploy/keys/integrations-signing.pem
+   chmod 0400 /opt/endod-hospital/deploy/keys/integrations-signing.pem
+   ```
+
+   `deploy/docker-compose.yml` mounts it read-only into the API and worker at
+   `/run/secrets/integrations-signing.pem`. Without it the integration API
+   answers 503 (outside development and test); the rest of the service runs.
+   Replacing it invalidates tokens issued before (they live 5 minutes).
+3. DNS: `api.endod-health.com` to the server (through Cloudflare, like the
+   portal: `HOSPITAL_TRUSTED_PROXY_HOPS` stays 2 so client addresses, used by
+   IP restrictions and the logs, are right).
+4. nginx (the shared edge): map only that prefix to the API, which joins the
+   edge network as `endod-hospital-integrations`:
+
+   ```nginx
+   location /hospital/v1/ {
+       proxy_pass http://endod-hospital-integrations:8000/integrations/v1/;
+       proxy_set_header Host $host;
+       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+       proxy_set_header X-Forwarded-Proto $scheme;
+       client_max_body_size 11m;
+   }
+   ```
+
 ## What exists so far
 
 | Area | Endpoints |
@@ -364,6 +425,8 @@ while anything is left: it never drops the keys while data needs them.
 | Queues | `GET /queue?day=`, `POST /queue/check-in`, `POST /queue/{doctor_id}/call-next`, `POST /queue/entries/{id}/done|skip|cancel` |
 | Shared with us | `GET /shared?patient_id=`, `GET /shared/{share_id}/files/{file_id}` |
 | Imports | `POST /imports/preview` (the file as the body), `POST /imports/{id}/confirm`, `GET /imports/template.csv` |
+| Connected systems (admins of approved hospitals; changes need the password) | `GET`/`POST /connections`, `GET /connections/{id}`, `POST /connections/{id}/disconnect|rotate-secret|ip-restriction|public-key|webhook`, `POST /connections/{id}/webhook/rotate-secret|test`, `GET /connections/{id}/requests|deliveries` |
+| Integration API (hospitals' systems, OAuth 2.0) | under `/integrations/v1`: `POST /oauth/token`, `GET /.well-known/jwks.json`, `POST /fhir`, `POST /fhir/{Type}`, `GET /bookings`, `GET /bookings/{id}` ([docs/integrations.md](../docs/integrations.md)) |
 | Joining Endod (a pending hospital's admin) | `POST /onboarding` (public: the account), `GET /onboarding/application`, `PATCH /onboarding/contact|facility|location|documents`, `POST`/`GET /onboarding/documents/{kind}` (one file as the body), `GET /onboarding/demo-slots`, `POST /onboarding/demo`, `POST /onboarding/submit` |
 | Endod platform only (`X-Platform-Key`) | `GET /platform/records/{record_id}/files/{file_id}`; `GET /platform/hospitals`, `POST /platform/hospitals/{id}/approve|suspend|reject`, `DELETE /platform/hospitals/{id}`; `GET /platform/applications?status=`, `GET /platform/applications/{hospital_id}`, `GET /platform/applications/{hospital_id}/documents/{kind}` |
 

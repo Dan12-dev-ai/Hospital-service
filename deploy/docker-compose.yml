@@ -46,6 +46,11 @@ x-api-env: &api-env
   HOSPITAL_PLATFORM_API_URL: http://endod-platform-api:8000
   # Encryption at rest: the master key, mounted below (API and worker only).
   HOSPITAL_MASTER_KEY_FILE: /run/secrets/master.key
+  # The integration API for hospitals' own systems (docs/integrations.md): the
+  # key that signs its access tokens (mounted below), and where nginx publishes
+  # it (api.endod-health.com/hospital/v1 -> api:8000/integrations/v1).
+  HOSPITAL_INTEGRATIONS_SIGNING_KEY_FILE: /run/secrets/integrations-signing.pem
+  HOSPITAL_INTEGRATIONS_PUBLIC_URL: ${INTEGRATIONS_PUBLIC_URL:-https://api.endod-health.com/hospital/v1}
 
 services:
   postgres:
@@ -94,11 +99,23 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      # The integration API's token signing key (backend-hospital/README.md,
+      # "Integration API"): read-only, never created if missing.
+      - type: bind
+        source: ${INTEGRATIONS_SIGNING_KEY_FILE:-/opt/endod-hospital/deploy/keys/integrations-signing.pem}
+        target: /run/secrets/integrations-signing.pem
+        read_only: true
+        bind:
+          create_host_path: false
     networks:
       default: {}
       # The platform downloads record files from here (never through the portal).
       bus:
         aliases: [endod-hospital-api]
+      # nginx publishes the integration API from here, and only its prefix
+      # (location /hospital/v1/ -> /integrations/v1/; backend-hospital/README.md).
+      shared_edge:
+        aliases: [endod-hospital-integrations]
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -115,6 +132,14 @@ services:
       - type: bind
         source: ${MASTER_KEY_FILE:-/opt/endod-hospital/deploy/keys/master.key}
         target: /run/secrets/master.key
+        read_only: true
+        bind:
+          create_host_path: false
+      # The integration API's token signing key (backend-hospital/README.md,
+      # "Integration API"): read-only, never created if missing.
+      - type: bind
+        source: ${INTEGRATIONS_SIGNING_KEY_FILE:-/opt/endod-hospital/deploy/keys/integrations-signing.pem}
+        target: /run/secrets/integrations-signing.pem
         read_only: true
         bind:
           create_host_path: false
