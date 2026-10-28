@@ -22,7 +22,10 @@ change that was rolled back. Delivery is at least once; each receiver records
 handled event ids in the same transaction as the effect, so handling is
 exactly once. A failing event is retried after 30 seconds, up to 5 times, then
 moved to the dead-letter stream; a malformed one (fails validation) goes there
-at once. An event that arrives before the one it depends on (a cancellation
+at once. A dead-letter entry keeps the event's id, type, source, time, the
+error and a redacted payload (field names and `*_id` values only), never its
+clinical data. Payloads are plain text in Redis while in flight: an entry is
+deleted once every consumer group on its stream has acknowledged it. An event that arrives before the one it depends on (a cancellation
 before its booking) is retried until that one has been handled.
 
 Every payload is validated by the receiver; times must carry their offset and

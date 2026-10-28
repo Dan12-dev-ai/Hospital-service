@@ -30,7 +30,9 @@ def _stop(*_args) -> None:
 #: Seconds between the slower chores.
 EXPIRE_EVERY = 60
 HOUSEKEEPING_EVERY = 3600
-_last = {"expire": 0.0, "housekeeping": 0.0}
+#: Seconds between deletions of the events every reader has acknowledged.
+PURGE_EVERY = 10
+_last = {"expire": 0.0, "housekeeping": 0.0, "purge": 0.0}
 
 
 def handlers() -> dict:
@@ -50,6 +52,10 @@ def run_once(client: redis.Redis, now: float | None = None) -> int:
         _last["expire"] = now
     work += eventbus.publish_pending(client)
     work += eventbus.consume_once(client, handlers(), block_ms=1000)
+    if now - _last["purge"] >= PURGE_EVERY:
+        # Our events are plain text in Redis until every reader acknowledged them.
+        eventbus.purge_acknowledged(client, eventbus.STREAM_OUT)
+        _last["purge"] = now
     if now - _last["housekeeping"] >= HOUSEKEEPING_EVERY:
         eventbus.housekeeping(client)
         _last["housekeeping"] = now

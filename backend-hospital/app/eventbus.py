@@ -22,7 +22,19 @@ Delivery is at least once, and handling is exactly once:
 * **Retries.** A failed event stays pending in the group and is claimed again
   after :data:`RETRY_AFTER_MS`; after :data:`MAX_DELIVERIES` attempts, or at
   once for a malformed event (:class:`PermanentEventError`), it goes to
-  ``endod:dead-letter`` for a person to look at.
+  ``endod:dead-letter`` for a person to look at: its id, type, source, time,
+  the error (at most :data:`DEAD_LETTER_ERROR_CHARS`) and a redacted payload
+  (field names, and the values of ``*_id`` fields only: no clinical data, no
+  names or phones), in a stream capped at :data:`DEAD_LETTER_MAXLEN` entries.
+
+**Plain text in Redis.** Events carry clinical data in plain text (the
+receiving side needs it), and Redis is not encrypted at rest. An event is
+plain text in Redis while it is in flight: from when it is sent until every
+consumer group on its stream has acknowledged it. Then it is deleted
+(:func:`purge_acknowledged`: on ``endod:hospital`` for the events this service
+produces, now and then; on ``endod:patient`` right after this service
+acknowledges, once every group there has). An event no group ever reads is
+trimmed after :data:`KEEP_STREAM_FOR` at the latest.
 
 Redis is reached through Sentinel when ``HOSPITAL_REDIS_SENTINELS`` is set (the
 current master is looked up on every connect, so a failover is followed), or
@@ -34,6 +46,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import secrets
 import socket
 import time
@@ -61,8 +74,12 @@ GROUP = "hospital-service"
 #: A pending event not acknowledged for this long is retried.
 RETRY_AFTER_MS = 30_000
 MAX_DELIVERIES = 5
-#: Stream entries older than this are trimmed (well past any retry).
+#: Stream entries older than this are trimmed (well past any retry), acknowledged or not.
 KEEP_STREAM_FOR = timedelta(days=7)
+#: The dead-letter stream keeps about this many entries.
+DEAD_LETTER_MAXLEN = 10_000
+DEAD_LETTER_ERROR_CHARS = 500
+DEAD_LETTER_PAYLOAD_CHARS = 2_000
 #: Handled-event ids are deleted after this.
 KEEP_RECORDS_FOR = timedelta(days=30)
 #: Sent outbox rows (plain clinical payloads) are deleted after this.
@@ -169,8 +186,46 @@ def purge_published(now=None) -> int:
                                                          OutboxEvent.published_at < cutoff)).rowcount or 0
 
 
+def _next_id(entry_id: str) -> str:
+    ms, _, seq = entry_id.partition("-")
+    return f"{ms}-{int(seq or 0) + 1}"
+
+
+def _id_key(entry_id: str) -> Tuple[int, int]:
+    ms, _, seq = entry_id.partition("-")
+    return int(ms), int(seq or 0)
+
+
+def purge_acknowledged(client: redis.Redis, stream: str) -> int:
+    """Delete the entries of ``stream`` that every consumer group on it has
+    acknowledged (read, and no longer pending). A stream without a group
+    keeps its entries (nobody has read them). Returns how many were deleted."""
+    try:
+        groups = client.xinfo_groups(stream)
+    except redis.ResponseError:
+        return 0  # no such stream (yet)
+    if not groups:
+        return 0
+    boundaries = []
+    for group in groups:
+        name = group["name"]
+        last = group.get("last-delivered-id") or "0-0"
+        if group.get("pending"):
+            summary = client.xpending(stream, name)
+            boundaries.append(summary["min"])  # the oldest still pending, and everything after it, stay
+        else:
+            boundaries.append(_next_id(last))  # everything up to the last delivered is acknowledged
+    boundary = min(boundaries, key=_id_key)
+    if _id_key(boundary) <= (0, 0):
+        return 0
+    # Exact: every entry older than the boundary goes, none at or after it.
+    return int(client.xtrim(stream, minid=boundary, approximate=False) or 0)
+
+
 def housekeeping(client: redis.Redis) -> None:
     """Trim old stream entries and delete old records (run now and then)."""
+    purge_acknowledged(client, STREAM_OUT)
+    purge_acknowledged(client, STREAM_IN)
     cutoff_ms = int((time.time() - KEEP_STREAM_FOR.total_seconds()) * 1000)
     client.xtrim(STREAM_OUT, minid=f"{cutoff_ms}-0", approximate=True)
     purge_published()
@@ -222,6 +277,9 @@ def consume_once(client: redis.Redis, handlers: Dict[str, Handler], consumer: Op
         messages.extend(entries)
     for message_id, fields in messages:
         _handle(client, message_id, fields, handlers)
+    if messages:
+        # Acknowledged: delete what every group on the stream is done with.
+        purge_acknowledged(client, STREAM_IN)
     return len(messages)
 
 
@@ -230,10 +288,38 @@ def _already_processed(event_id: str) -> bool:
         return session.get(ProcessedEvent, event_id) is not None
 
 
+_SAFE_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+
+
+def redacted_payload(raw: Optional[str]) -> str:
+    """The payload's shape without its data: field names, with the values of
+    identifier fields (``*_id``, short, id-like) and the type of everything
+    else. Nothing clinical, no names or phones."""
+    try:
+        payload = json.loads(raw or "{}")
+    except ValueError:
+        return json.dumps({"unparseable_bytes": len(raw or "")})
+    if not isinstance(payload, dict):
+        return json.dumps({"not_an_object": type(payload).__name__})
+    shown = {}
+    for key in sorted(payload)[:50]:
+        value = payload[key]
+        if (str(key).endswith("_id") or key == "id") and isinstance(value, str) and _SAFE_ID.match(value):
+            shown[str(key)[:64]] = value
+        else:
+            shown[str(key)[:64]] = f"<{type(value).__name__}>"
+    return json.dumps(shown)[:DEAD_LETTER_PAYLOAD_CHARS]
+
+
 def _dead_letter(client: redis.Redis, message_id: str, fields: Dict[str, str], why: str) -> None:
-    client.xadd(DEAD_LETTER, {**fields, "stream": STREAM_IN, "group": GROUP, "error": why[:500]})
+    """Keep what a person needs to find the event again, never its data."""
+    entry = {name: str(fields.get(name) or "")[:128] for name in ("id", "type", "source", "occurred_at")}
+    entry.update(stream=STREAM_IN, group=GROUP, message_id=message_id, error=why[:DEAD_LETTER_ERROR_CHARS],
+                 payload_redacted=redacted_payload(fields.get("payload")))
+    client.xadd(DEAD_LETTER, entry, maxlen=DEAD_LETTER_MAXLEN, approximate=True)
     client.xack(STREAM_IN, GROUP, message_id)
-    logger.error("event_dead_lettered type=%s id=%s error=%s", fields.get("type"), fields.get("id"), why)
+    logger.error("event_dead_lettered type=%s id=%s error=%s", entry["type"], entry["id"],
+                 why[:DEAD_LETTER_ERROR_CHARS])
 
 
 def _handle(client: redis.Redis, message_id: str, fields: Dict[str, str], handlers: Dict[str, Handler]) -> None:
