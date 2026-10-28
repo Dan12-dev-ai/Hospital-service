@@ -197,16 +197,23 @@ database, a backup or the files volume alone reveals no clinical data.
   or a log. Each hospital has its own data key (DEK, 32 bytes) in
   `hospital_keys`, wrapped with AES-256-GCM under the master key, by version
   (one active). `hospital_keys` is under row-level security like every
-  hospital table. Unwrapped data keys are cached in memory for 5 minutes.
-  Outside development the API and worker refuse to start without the master
-  key (in development a fixed, public development key is used when none is
-  set: never for real data).
+  hospital table. Unwrapped data keys are cached in memory for 5 minutes,
+  by the wrapped key's digest (a key row rolled back with its savepoint is
+  never served from the cache), and any failed decryption, of a value or a
+  file, evicts the cached key and retries once.
+  **Fails closed:** the API, the worker and the CLI refuse to start without a
+  usable master key unless `HOSPITAL_ENVIRONMENT` is *explicitly* set to
+  `development` or `test` (then a fixed, public development key is used:
+  never for real data). At start they log the key's fingerprint
+  (`master_key_loaded fingerprint=…`, a hash, not the key), so you can tell
+  which key a server runs with.
 - **Values** are stored as `enc:v1:<key version>:` + base64(nonce ‖
   ciphertext ‖ tag), AES-256-GCM with a random 12-byte nonce each time. The
   associated data names the table, column, row id, hospital and key version:
   a value copied to another row, column or hospital does not decrypt.
   Encryption happens on flush and decryption on load, so the code above the
-  models is unchanged.
+  models is unchanged. If a flush fails, its objects get their plain text
+  back and are encrypted again, with the key active then, on the next one.
 - **Files** (record files, onboarding documents) are encrypted as they are
   uploaded, in 64 KiB chunks, each with a random nonce and associated data
   naming the hospital, file id, chunk index and whether it is the last (a
@@ -214,9 +221,26 @@ database, a backup or the files volume alone reveals no clinical data.
   are the plain file's; every download is decrypted and checked against them
   before the first byte is sent. Files shared by patients are fetched from
   the platform on demand and held in memory only.
+- **Enforcement.** Until `python -m app.cli enforce-encryption` (which
+  refuses unless `check-encryption` is clean), a value or file stored before
+  encryption is read as it is; that includes legacy text that merely starts
+  with `enc:v1:` (only a well-formed value counts as encrypted, and
+  `encrypt-existing` encrypts the rest). Once enforced, anything not
+  encrypted is refused, and logged by table, column and row id (never the
+  value).
 - **The outbox.** Events to the platform carry clinical payloads in plain
   text (the platform needs them) until they are sent; a sent row is deleted
   after 24 hours (the worker's hourly housekeeping).
+- **Redis.** Events are plain text in Redis while in flight: from when they
+  are sent until every consumer group on the stream has acknowledged them.
+  Then they are deleted: the worker deletes the events it produced every 10
+  seconds, once every group on `endod:hospital` acknowledged them, and the
+  events it received right after acknowledging them (once every group on
+  `endod:patient` has). Events nobody reads are trimmed after 7 days. The
+  dead-letter stream keeps only the event's id, type, source, time, the error
+  (500 characters at most) and a redacted payload (field names, and the
+  values of `*_id` fields; no clinical data, names or phones), about 10,000
+  entries at most.
 
 | Encrypted | Not encrypted, and why |
 | --- | --- |
@@ -225,7 +249,7 @@ database, a backup or the files volume alone reveals no clinical data.
 | Booking notes from the patient app (often symptoms) | A retraction's reason ("entered in error") and the audit log (ids, categories, never clinical text; alert labels are no longer written there) |
 | Records patients shared: title, details and file list | Pharmacies' dispense amounts (item indexes and counts) |
 | Record files' names and contents; onboarding documents' contents | Hospital, staff and onboarding details (not health data) |
-| Import previews (the parsed records; the uploaded file itself is never stored) | Events in Redis (kept 7 days by the stream trim; the bus is private) |
+| Import previews (the parsed records; the uploaded file itself is never stored) | Events in flight in Redis, until every reader acknowledged them (see above; the bus is private) |
 
 ### The master key
 
@@ -263,21 +287,29 @@ the steps are the same with data.
    `cd deploy && docker compose --env-file .env up -d --build`. `migrate`
    runs 0008 (the `hospital_keys` table, with its policies; TEXT for the
    encrypted columns that were VARCHAR); the API and worker start with the key.
-3. Encrypt what was stored before (in batches; safe to stop and run again),
-   then check:
+3. Check the logs show the key's fingerprint (`docker compose logs api worker
+   | grep master_key_loaded`), and that it is the fingerprint of the key you
+   backed up (`python -m app.cli check-encryption` prints it too).
+4. Encrypt what was stored before (in batches; safe to stop and run again),
+   check, then enforce:
 
    ```sh
    docker compose exec api python -m app.cli encrypt-existing
    docker compose exec api python -m app.cli check-encryption   # exit 0: nothing left in plain text
+   docker compose exec api python -m app.cli enforce-encryption # from now on plaintext is refused
    ```
 
-4. Sign in to the portal, open a patient's records and a file.
+5. Sign in to the portal, open a patient's records and a file.
 
 **Rotating a hospital's data key** (yearly, or if a key may have leaked):
 `docker compose exec api python -m app.cli rotate-key --hospital SPH`. It adds
 a new version, makes it active and re-encrypts that hospital's values and
 files; the old version stays, inactive, so backups taken before stay
-readable.
+readable. Old versions are never purged, so nothing can be stranded: a file
+whose upload started before the rotation is stored with the key active when
+it started. `check-encryption` then counts it "on an older key", and
+`rotate-key --hospital SPH --resume` moves such stragglers to the active
+version without making another one.
 
 An operator who needs a stored file (an onboarding document, say) gets it
 decrypted with `python -m app.cli export-file --file <id> --out <path>`.
@@ -289,7 +321,8 @@ anything is investigated. The 0007 code reads only plain text: to go back to
 it, stop everything that writes, decrypt everything with THIS image, then
 downgrade with THIS image's `migrate`, and only then deploy the old code.
 The downgrade refuses while any encrypted value is left; it cannot see the
-files, so never skip `decrypt-existing` (it does both).
+files, so never skip `decrypt-existing` (it does both, and lifts enforcement
+first).
 
   ```sh
   cd /opt/endod-hospital/deploy

@@ -123,7 +123,9 @@ def visible(session, table):
     return set(session.scalars(text(f"SELECT {PK[table]} FROM {table}")))
 
 
-def refused(exc: DBAPIError) -> bool:
+def refused(exc) -> bool:
+    if isinstance(exc, crypto.CryptoError):  # the encryption layer refused first: the parent is not visible
+        return "is not visible" in str(exc)
     return "row-level security" in str(exc.orig)
 
 
@@ -226,7 +228,9 @@ def test_tenant_sees_only_its_own_rows(two_hospitals, table):
 @pg_only
 @pytest.mark.parametrize("table", POLICY_TABLES)
 def test_tenant_cannot_insert_a_row_of_another_hospital(two_hospitals, table):
-    with pytest.raises(DBAPIError) as caught:
+    # An encrypted child row whose parent is not visible is refused before the
+    # database is asked (its hospital, hence its key, cannot be known).
+    with pytest.raises((DBAPIError, crypto.CryptoError)) as caught:
         with session_scope(A) as session:
             session.add(build(table, B, 2))
             session.flush()
@@ -285,7 +289,7 @@ def test_moving_a_row_to_another_hospital_is_refused(two_hospitals):
 def test_no_tenant_sees_nothing_and_writes_nothing(two_hospitals, table):
     with session_scope() as session:
         assert visible(session, table) == set()
-    with pytest.raises(DBAPIError) as caught:
+    with pytest.raises((DBAPIError, crypto.CryptoError)) as caught:
         with session_scope() as session:
             session.add(build(table, A, 2))
             session.flush()

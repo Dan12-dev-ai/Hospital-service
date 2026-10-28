@@ -172,9 +172,29 @@ def test_the_master_key_is_required_outside_development(db, tmp_path, monkeypatc
     with pytest.raises(crypto.CryptoError, match="cannot be read"):
         create_app()
     hexed = tmp_path / "hex.key"
-    hexed.write_text(os.urandom(32).hex() + "\n")
+    kek = os.urandom(32)
+    hexed.write_text(kek.hex() + "\n")
     monkeypatch.setenv("HOSPITAL_MASTER_KEY_FILE", str(hexed))
     create_app()  # 64 hex characters (openssl rand -hex 32) are accepted too
+    assert crypto.check_master_key() == crypto.fingerprint(kek) and kek.hex()[:16] not in crypto.fingerprint(kek)
+
+
+@pytest.mark.parametrize("environment", [None, "staging", "dev", ""])
+def test_without_a_key_only_an_explicit_development_or_test_environment_starts(db, monkeypatch, environment):
+    from app.main import create_app
+
+    monkeypatch.delenv("HOSPITAL_MASTER_KEY_FILE")
+    if environment is None:
+        monkeypatch.delenv("HOSPITAL_ENVIRONMENT")  # the default is development, but not said explicitly
+    else:
+        monkeypatch.setenv("HOSPITAL_ENVIRONMENT", environment)
+    crypto.clear_cache()
+    with pytest.raises(crypto.CryptoError, match="HOSPITAL_MASTER_KEY_FILE is not set"):
+        create_app()
+    for explicit in ("development", "test", " Test "):
+        monkeypatch.setenv("HOSPITAL_ENVIRONMENT", explicit)
+        create_app()
+        assert crypto.master_key() == crypto._DEVELOPMENT_KEY
 
 
 def test_each_hospital_gets_its_own_key_once(db):
@@ -494,3 +514,218 @@ def test_shared_copies_and_import_plans_are_encrypted(client, hospital, doctor, 
     # The same record from another source row: found by its (decrypted) title and skipped.
     again = preview("worded differently")
     assert again["items"] == [] and again["skipped"][0]["reason"] == "already imported"
+
+
+# --- enforcement ---------------------------------------------------------------------------------------
+
+def _alert(client, hospital, patient, label="Penicillin"):
+    resp = client.post(f"/patients/{patient['id']}/alerts", headers=staff(client, hospital, "nurse"),
+                       json={"kind": "allergy", "label": label})
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+def _set_raw(table, column, row_id, value):
+    with platform_session() as session:
+        session.execute(text(f"UPDATE {table} SET {column} = :v WHERE id = :id"), {"v": value, "id": row_id})
+
+
+def test_a_legacy_value_that_starts_with_the_prefix_still_loads_and_is_encrypted(client, hospital, doctor, patient):
+    from app.models import PatientAlert
+
+    record = add(client, doctor, patient["id"])
+    legacy = "enc:v1: see the scanned allergy card"
+    for value in (legacy, "enc:v1:1:not base64!", "enc:v1:1:QUJD"):  # malformed: plain text from before
+        _set_raw("clinical_records", "title", record["id"], value)
+        got = client.get(f"/patients/{patient['id']}/records", headers=doctor).json()["items"][0]
+        assert got["title"] == value
+    assert not crypto.is_sealed(legacy) and not crypto.is_sealed("enc:v1:0:" + "A" * 40)
+    clean, lines = rekey.check()
+    assert not clean and "clinical_records.title: 1 values, 1 plain text, 0 on an older key" in lines
+    rekey.encrypt_existing()
+    [(stored,)] = raw("SELECT title FROM clinical_records")
+    assert crypto.is_sealed(stored) and rekey.check()[0]
+    got = client.get(f"/patients/{patient['id']}/records", headers=doctor).json()["items"][0]
+    assert got["title"] == "enc:v1:1:QUJD"
+    alert = _alert(client, hospital, patient)
+    with session_scope(hospital) as session:
+        assert session.get(PatientAlert, alert["id"]).label == "Penicillin"
+
+
+def test_enforcement_refuses_plaintext_values_and_files(client, hospital, doctor, patient, caplog):
+    file_id = upload(client, doctor, patient["id"], PNG, "scan.png").json()["id"]
+    record = add(client, doctor, patient["id"], {**DIAGNOSIS, "file_ids": [file_id]})
+    rekey.decrypt_existing()
+    enforced, _lines = rekey.enforce()
+    assert enforced is False and rekey.is_enforced() is False  # plain text left: refused to enforce
+    rekey.encrypt_existing()
+    assert rekey.enforce()[0] is True and rekey.is_enforced() is True
+    assert "enforced: yes" in rekey.check()[1]
+    _reads_back(client, doctor, patient, record, file_id)
+
+    # Plain text written behind the app's back is refused, and logged without the value.
+    _set_raw("clinical_records", "title", record["id"], f"{MARK} written in plain text")
+    with pytest.raises(crypto.CryptoError, match="not encrypted, and encryption is enforced"):
+        client.get(f"/patients/{patient['id']}/records", headers=doctor)
+    assert f"clinical_records.title of row {record['id']}" in caplog.text and MARK not in caplog.text
+    _set_raw("clinical_records", "title", record["id"], crypto.seal(
+        key_for(hospital), DIAGNOSIS["title"], "clinical_records", "title", record["id"]))
+    files.path_for(hospital, file_id).write_bytes(PNG)
+    with pytest.raises(crypto.CryptoError, match=f"File {file_id} is not encrypted"):
+        client.get(f"/records/{record['id']}/files/{file_id}", headers=doctor)
+
+    # Rolling back lifts enforcement first.
+    rekey.decrypt_existing()
+    assert rekey.is_enforced() is False
+
+
+def test_the_enforce_command(client, hospital, doctor, patient, capsys):
+    from app import cli
+
+    add(client, doctor, patient["id"])
+    rekey.decrypt_existing()
+    with pytest.raises(SystemExit, match="Not enforced"):
+        cli.main(["enforce-encryption"])
+    assert cli.main(["encrypt-existing"]) == 0
+    assert cli.main(["enforce-encryption"]) == 0
+    out = capsys.readouterr().out
+    assert "Master key fingerprint: " in out and "Enforced:" in out
+
+
+# --- keys: savepoints, failed flushes, stale caches -------------------------------------------------
+
+def raw_count_keys(session):
+    return session.execute(text("SELECT count(*) FROM hospital_keys")).scalar()
+
+
+def test_a_key_created_in_a_rolled_back_savepoint_is_never_used(client, hospital, patient):
+    from app.models import PatientAlert
+
+    with session_scope(hospital) as session:
+        with pytest.raises(RuntimeError):
+            with session.begin_nested():
+                session.add(PatientAlert(hospital_id=hospital, patient_id=patient["id"], kind="allergy",
+                                         label="first"))
+                session.flush()  # creates the hospital's first key, in the savepoint
+                assert raw_count_keys(session) == 1
+                raise RuntimeError("the savepoint fails")
+        assert raw_count_keys(session) == 0  # the key went with the savepoint
+        session.add(PatientAlert(hospital_id=hospital, patient_id=patient["id"], kind="allergy", label="second"))
+    crypto.clear_cache()  # as another process would: only the database counts
+    with session_scope(hospital) as session:
+        assert [a.label for a in session.scalars(select(PatientAlert))] == ["second"]
+
+
+def test_a_failed_flush_encrypts_again_with_the_key_of_the_next_flush(client, hospital, patient):
+    from sqlalchemy.exc import IntegrityError
+
+    from app.models import Hospital, PatientAlert
+
+    with platform_session() as session:
+        alert = PatientAlert(hospital_id=hospital, patient_id=patient["id"], kind="allergy", label=f"{MARK} alert")
+        with pytest.raises(IntegrityError):
+            with session.begin_nested():
+                session.add(alert)
+                session.add(Hospital(code="SPH", name="Duplicate code", timezone="Africa/Addis_Ababa"))
+                session.flush()  # encrypts the alert under a new key (in the savepoint), then fails
+        assert alert.label == f"{MARK} alert"  # plain again, not ciphertext under a key that is gone
+        assert raw_count_keys(session) == 0
+        session.add(alert)  # tried again, without the duplicate
+        alert_id = alert.id
+    crypto.clear_cache()
+    with session_scope(hospital) as session:
+        assert session.get(PatientAlert, alert_id).label == f"{MARK} alert"
+    [(stored,)] = raw("SELECT label FROM patient_alerts")
+    assert crypto.is_sealed(stored) and MARK not in stored
+    assert len(raw("SELECT id FROM hospital_keys")) == 1
+
+
+def _poison_cache():
+    """Every cached data key replaced by a wrong one (a stale cache)."""
+    with crypto._dek_lock:
+        for key, (_dek, until) in list(crypto._dek_cache.items()):
+            crypto._dek_cache[key] = (os.urandom(32), until)
+
+
+def test_a_stale_cached_key_is_evicted_and_the_read_retried(client, hospital, doctor, patient):
+    file_id = upload(client, doctor, patient["id"], PNG, "scan.png").json()["id"]
+    record = add(client, doctor, patient["id"], {**DIAGNOSIS, "file_ids": [file_id]})
+    assert crypto._dek_cache
+    _poison_cache()
+    got = client.get(f"/patients/{patient['id']}/records", headers=doctor).json()["items"][0]
+    assert got["details"]["notes"] == f"{MARK} notes"
+    _poison_cache()
+    download = client.get(f"/records/{record['id']}/files/{file_id}", headers=doctor)
+    assert download.status_code == 200 and download.content == PNG
+    _poison_cache()
+    version, report = rekey.rotate_key(hospital)  # the jobs read through the same retry
+    assert version == 2 and report.files == {"encrypted": 1}
+    _reads_back(client, doctor, patient, record, file_id)
+
+
+def test_rotate_resume_moves_stragglers_without_a_new_key(client, hospital, doctor, patient):
+    record, file_id = _seed(client, hospital, doctor, patient)
+    with platform_session() as session:
+        old = crypto.active_key(session, hospital)
+        crypto.add_key_version(session, hospital, activate=True)  # as if a rotation started
+    # An upload that started before: stored with the key active then (still kept, still readable).
+    late = upload(client, doctor, patient["id"], PNG, "late.png").json()["id"]
+    files.store_bytes(PNG, hospital, late, old)
+    _reads_back(client, doctor, patient, record, file_id)
+    version, report = rekey.rotate_key(hospital, new_key=False)
+    assert version == 2 and report.files.get("encrypted", 0) >= 2
+    assert raw("SELECT count(*) FROM hospital_keys")[0][0] == 2
+    assert rekey.check()[0] and all("0 on an older key" in line for line in rekey.check()[1] if "values" in line)
+
+
+# --- Redis -------------------------------------------------------------------------------------------
+
+def test_events_are_deleted_from_redis_once_every_group_acknowledged_them(bus):
+    from app.eventbus import STREAM_OUT, purge_acknowledged
+
+    ids = [bus.xadd(STREAM_OUT, {"n": str(i)}) for i in range(5)]
+    assert purge_acknowledged(bus, STREAM_OUT) == 0  # nobody has read them: kept
+    bus.xgroup_create(STREAM_OUT, "platform", id="0")
+    bus.xgroup_create(STREAM_OUT, "audit", id="0")
+    read = bus.xreadgroup("platform", "p1", {STREAM_OUT: ">"}, count=4)
+    platform_ids = [i for i, _f in read[0][1]]
+    bus.xack(STREAM_OUT, "platform", *platform_ids[:3])  # the 4th is still pending
+    bus.xreadgroup("audit", "a1", {STREAM_OUT: ">"}, count=2)
+    bus.xack(STREAM_OUT, "audit", ids[0], ids[1])
+    assert purge_acknowledged(bus, STREAM_OUT) == 2  # both groups are done with the first two only
+    assert [i for i, _f in bus.xrange(STREAM_OUT)] == ids[2:]
+    bus.xreadgroup("audit", "a1", {STREAM_OUT: ">"})
+    bus.xack(STREAM_OUT, "audit", *ids[2:])
+    bus.xack(STREAM_OUT, "platform", platform_ids[3])
+    assert purge_acknowledged(bus, STREAM_OUT) == 2  # the 5th was never delivered to "platform"
+    assert [i for i, _f in bus.xrange(STREAM_OUT)] == ids[4:]
+
+
+def test_incoming_events_are_deleted_after_they_are_acknowledged(client, hospital, bus):
+    from history_support import consume, send
+
+    send(bus, "unknown.event", {"note": MARK})
+    consume(bus)
+    assert bus.xrange("endod:patient") == []
+    assert bus.xpending("endod:patient", "hospital-service")["pending"] == 0
+
+
+def test_dead_letters_keep_ids_and_the_error_but_no_clinical_data(client, hospital, bus):
+    from history_support import consume, dead_letters, send
+
+    send(bus, "records.shared", {"share_id": "not valid", "hospital_id": hospital, "patient_name": "Almaz Tefera",
+                                 "records": [{"title": f"{MARK} shared"}], "phone": "+251911234567"},
+         event_id="e" * 32)
+    consume(bus)
+    [(_id, entry)] = dead_letters(bus)
+    assert entry["id"] == "e" * 32 and entry["type"] == "records.shared" and entry["error"]
+    assert "payload" not in entry and len(entry["error"]) <= eventbus.DEAD_LETTER_ERROR_CHARS
+    shown = json.loads(entry["payload_redacted"])
+    assert shown["hospital_id"] == hospital and shown["records"] == "<list>" and shown["phone"] == "<str>"
+    assert shown["patient_name"] == "<str>" and shown["share_id"] == "<str>"  # not id-like: not shown
+    flat = json.dumps(entry)
+    assert MARK not in flat and "Almaz" not in flat and "911234567" not in flat
+    assert bus.xrange("endod:patient") == []  # acknowledged, then deleted
+    huge = eventbus.redacted_payload(json.dumps({f"k{i}_id": "x" * 64 for i in range(200)}))
+    assert len(huge) <= eventbus.DEAD_LETTER_PAYLOAD_CHARS
+    assert eventbus.redacted_payload("not json") == '{"unparseable_bytes": 8}'

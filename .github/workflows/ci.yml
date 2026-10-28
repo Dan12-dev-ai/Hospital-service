@@ -70,6 +70,7 @@ jobs:
           export HOSPITAL_MASTER_KEY_FILE="$RUNNER_TEMP/master.key"
           python -m app.cli encrypt-existing
           python -m app.cli check-encryption
+          python -m app.cli enforce-encryption
 
   backend-image:
     name: Hospital backend image
