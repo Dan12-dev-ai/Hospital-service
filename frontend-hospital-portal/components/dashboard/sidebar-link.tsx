@@ -13,6 +13,7 @@ import {
   FolderOpen,
   LayoutGrid,
   ListOrdered,
+  Network,
   Pill,
   Receipt,
   Settings,
@@ -37,6 +38,7 @@ const NAV_ICONS: Record<string, ComponentType<{ className?: string }>> = {
   description: FileText,
   settings: Settings,
   receipt: Receipt,
+  hub: Network,
 };
 
 export function SidebarLink({

@@ -4,8 +4,6 @@ import { forwardRef } from "react";
 import { cn } from "cn";
 import { Icon } from "@/components/ui/icon";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-
-
 import { useDashboard } from "@/components/dashboard/dashboard-context";
 import type { Department, PatientStats } from "@/lib/api-types";
 import { PATIENT_TABS, type PatientTabKey } from "@/lib/patient-types";

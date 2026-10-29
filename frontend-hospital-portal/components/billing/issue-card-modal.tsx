@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { Icon } from "@/components/ui/icon";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-
 import { useDashboard } from "@/components/dashboard/dashboard-context";
 
 const CARD_TYPES = [
@@ -116,7 +115,6 @@ export function IssueCardModal({
                     <SelectItem value="Female">Female</SelectItem>
                   </SelectContent>
                 </Select>
-
               </div>
             </div>
           </div>
@@ -130,7 +128,7 @@ export function IssueCardModal({
             </label>
             <Select defaultValue="adult">
               <SelectTrigger id="issue-card-type" className="w-full cursor-pointer">
-                <SelectValue />
+                <SelectValue>{(v) => CARD_TYPES.find((type) => type.value === v)?.label ?? v}</SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {CARD_TYPES.map((type) => (
@@ -140,7 +138,6 @@ export function IssueCardModal({
                 ))}
               </SelectContent>
             </Select>
-
           </div>
 
           <div className="flex flex-col gap-1.5">

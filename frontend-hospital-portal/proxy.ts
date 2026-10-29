@@ -28,6 +28,10 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  // Pages only: not the BFF (it answers 401 itself), Next's assets or public files.
-  matcher: ["/((?!api/|_next/static|_next/image|favicon\.ico|sw\.js|service-worker\.js|manifest\.json|manifest\.webmanifest|.*\.(?:svg|png|jpg|jpeg|gif|webp|ico|json|js)$).*)"],
+  // Pages only: not the BFF (it answers 401 itself), Next's assets or public
+  // files. The PWA's files (service worker, manifest, icons) must load signed
+  // out too, so they are named one by one rather than by extension.
+  matcher: [
+    "/((?!api/|_next/static|_next/image|favicon\\.ico$|sw\\.js$|service-worker\\.js$|manifest\\.json$|apple-touch-icon\\.png$|icons/|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
+  ],
 };

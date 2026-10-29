@@ -11,7 +11,6 @@ import {
 } from "@/components/common/states";
 import { ApiError, apiFetch } from "@/lib/api";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-
 import type { ApiPatient } from "@/lib/api-types";
 
 type Payer = "cash" | "cbhi" | "private" | "credit";
@@ -131,7 +130,6 @@ export function RegisterPatientModal({
                 <SelectItem value="male">Male (ወንድ)</SelectItem>
               </SelectContent>
             </Select>
-
           </div>
           <div>
             <label htmlFor="patient-birth" className={labelClass}>Birth</label>
@@ -144,7 +142,6 @@ export function RegisterPatientModal({
                 <SelectItem value="age">Only the age is known</SelectItem>
               </SelectContent>
             </Select>
-
           </div>
         </div>
         {form.birth === "dob" ? (
@@ -183,7 +180,6 @@ export function RegisterPatientModal({
                 ))}
               </SelectContent>
             </Select>
-
           </div>
           <div>
             <label htmlFor="patient-payer-number" className={labelClass}>Membership / policy no.</label>

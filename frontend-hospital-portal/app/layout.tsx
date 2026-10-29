@@ -1,15 +1,23 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
+import { Inter } from "next/font/google";
 import "./globals.css";
 import { ServiceWorkerRegistrar } from "@/components/pwa/service-worker-registrar";
-import { InstallPwaButton } from "@/components/pwa/install-button";
-import { FontLoader } from "@/components/pwa/font-loader";
+
+// Self-hosted at build time by next/font: the browser never asks Google for
+// fonts (no third-party request from a portal that shows patient data). The
+// icons are lucide SVGs (components/ui/icon.tsx), so no icon font is loaded.
+const inter = Inter({
+  subsets: ["latin"],
+  weight: ["300", "400", "500", "600", "700"],
+  display: "swap",
+  variable: "--font-inter",
+});
 
 export const metadata: Metadata = {
   title: "Dedan Health OS • Hospital Portal",
   description:
     "The Endod hospital portal: Endod bookings and video visits, patients, doctors and hospital settings.",
   manifest: "/manifest.json",
-  themeColor: "#0f172a",
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
@@ -24,19 +32,14 @@ export const metadata: Metadata = {
   },
 };
 
+export const viewport: Viewport = {
+  themeColor: "#0f172a",
+};
+
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en" className="h-full antialiased">
-      <head>
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link
-          rel="preconnect"
-          href="https://fonts.gstatic.com"
-          crossOrigin="anonymous"
-        />
-      </head>
+    <html lang="en" className={`${inter.variable} h-full antialiased`}>
       <body className="min-h-screen bg-app-bg font-sans text-body-text antialiased">
-        <FontLoader />
         <ServiceWorkerRegistrar />
         {children}
       </body>

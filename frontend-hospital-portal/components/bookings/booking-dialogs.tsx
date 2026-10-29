@@ -12,7 +12,6 @@ import {
 } from "@/components/common/states";
 import { useApi } from "@/lib/api";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-
 import type { Booking, DoctorList } from "@/lib/api-types";
 
 export type ReasonAction = "reject" | "cancel";

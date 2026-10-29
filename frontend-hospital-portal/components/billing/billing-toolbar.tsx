@@ -3,7 +3,6 @@
 import { cn } from "cn";
 import { Icon } from "@/components/ui/icon";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-
 import {
   billingClinics,
   billingPaymentMethods,

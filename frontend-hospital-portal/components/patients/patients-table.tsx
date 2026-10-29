@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { Icon } from "@/components/ui/icon";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-
 import { EmptyState } from "@/components/common/states";
 import type { PatientStatus } from "@/lib/api-types";
 import { initialsOf } from "@/lib/format";
@@ -124,7 +123,6 @@ export function PatientsTable({
                 ))}
               </SelectContent>
             </Select>
-
           </div>
         </div>
         <div className="flex items-center gap-1 self-end sm:self-auto">

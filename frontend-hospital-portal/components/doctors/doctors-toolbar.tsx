@@ -4,7 +4,6 @@ import { forwardRef } from "react";
 import { cn } from "cn";
 import { Icon } from "@/components/ui/icon";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-
 import type { Department, DoctorList } from "@/lib/api-types";
 import { RANK_OPTIONS, type DoctorStatusFilter } from "@/lib/doctor-types";
 

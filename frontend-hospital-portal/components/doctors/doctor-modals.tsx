@@ -12,7 +12,6 @@ import {
 } from "@/components/common/states";
 import { ApiError, apiFetch } from "@/lib/api";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-
 import type { ApiDoctor, Department, DoctorRank, DutyStatus, Staff } from "@/lib/api-types";
 import { DUTY_LABELS, RANK_OPTIONS, type Doctor } from "@/lib/doctor-types";
 
@@ -124,8 +123,6 @@ export function AddDoctorModal({
               ))}
             </SelectContent>
           </Select>
-
-
         </div>
       </div>
       <FormError message={error} />
@@ -183,7 +180,6 @@ export function DutyModal({ doctor, onClose, onSaved }: { doctor: Doctor; onClos
             ))}
           </SelectContent>
         </Select>
-
       </div>
       {status !== "off-duty" && (
         <div>
@@ -283,7 +279,6 @@ export function ProfileModal({ doctor, onClose, onSaved }: { doctor: Doctor; onC
               ))}
             </SelectContent>
           </Select>
-
         </div>
         <div>
           <label htmlFor="profile-extension" className={labelClass}>Extension</label>

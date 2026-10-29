@@ -3,7 +3,6 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { Icon } from "@/components/ui/icon";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-
 import { useDashboard } from "@/components/dashboard/dashboard-context";
 import { RoleGate, FormError, inputClass, labelClass, primaryButtonClass, secondaryButtonClass } from "@/components/common/states";
 import { useSession } from "@/components/session/session-context";
@@ -242,7 +241,6 @@ function SettingsForm({ hospital }: { hospital: Hospital }) {
             </SelectContent>
           </Select>
         </Field>
-
         <Field label="City" htmlFor="h-city">
           <input id="h-city" maxLength={100} value={form.city} onChange={(e) => set("city", e.target.value)} className={inputClass} />
         </Field>

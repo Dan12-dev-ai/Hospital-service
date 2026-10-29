@@ -1,12 +1,20 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { Icon } from "@/components/ui/icon";
 
 type BeforeInstallPromptEvent = Event & {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
 };
+
+const STANDALONE = "(display-mode: standalone)";
+
+function subscribeStandalone(onChange: () => void) {
+  const query = window.matchMedia(STANDALONE);
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
+}
 
 /**
  * Shows an "Install app" button. When the browser offers a native install
@@ -17,15 +25,14 @@ export function InstallPwaButton() {
   const [deferred, setDeferred] = useState<BeforeInstallPromptEvent | null>(null);
   const [installed, setInstalled] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  // Already running as the installed app (false while rendering on the server).
+  const standalone = useSyncExternalStore(
+    subscribeStandalone,
+    () => window.matchMedia(STANDALONE).matches,
+    () => false
+  );
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    if (window.matchMedia("(display-mode: standalone)").matches) {
-      setInstalled(true);
-      return;
-    }
-
     function onBeforeInstallPrompt(event: Event) {
       event.preventDefault();
       setDeferred(event as BeforeInstallPromptEvent);
@@ -45,7 +52,7 @@ export function InstallPwaButton() {
     };
   }, []);
 
-  if (installed) return null;
+  if (installed || standalone) return null;
 
   const handleClick = async () => {
     if (deferred) {
