@@ -40,6 +40,7 @@ def build(table, h, n):
     seeded rows, n=1); ``n`` keeps unique columns unique."""
     m = models
     staff, patient, record = _id(h, "staff", 1), _id(h, "patient", 1), _id(h, "record", 1)
+    client = _id(h, "client", 1)
     rows = {
         "hospitals": lambda: m.Hospital(id=h if n == 1 else _id(h, "hospital", n), code=f"{h[-1]}{n}".upper(),
                                         name=f"Hospital {h} {n}"),
@@ -90,6 +91,27 @@ def build(table, h, n):
         "hospital_keys": lambda: m.HospitalKey(
             id=_id(h, "key", n), hospital_id=h, version=n, active=n == 1,
             wrapped_key=crypto.wrap(crypto.master_key(), os.urandom(32), h, n)),
+        # The integration API (migration 0009).
+        "integration_clients": lambda: m.IntegrationClient(
+            id=_id(h, "client", n), hospital_id=h, client_id=_id(h, "client-id", n), name="Lab system",
+            scopes="records.labs.write webhooks", mode="live", auth_method="client_secret", secret_hash="x",
+            webhook_url="https://hooks.example.com/x", webhook_secret="whsec_x", created_by=staff),
+        "integration_assertions": lambda: m.IntegrationAssertion(
+            id=_id(h, "jti", n), hospital_id=h, client_pk=client, jti=f"jti-{n}", expires_at=NOW),
+        "integration_requests": lambda: m.IntegrationRequest(
+            id=_id(h, "request", n), hospital_id=h, client_pk=client, method="POST", path="/fhir", status=200,
+            duration_ms=5, ip="203.0.113.1", at=NOW),
+        "integration_resources": lambda: m.IntegrationResource(
+            id=_id(h, "resource", n), hospital_id=h, client_pk=client, resource_type="Observation",
+            resource_id=f"obs-{n}", content_hash="0" * 64, record_id=record),
+        "integration_idempotency": lambda: m.IntegrationIdempotency(
+            id=_id(h, "idem", n), hospital_id=h, client_pk=client, key=f"key-{n}", request_hash="0" * 64,
+            status_code=200, response="{}"),
+        "staff_recovery_codes": lambda: m.StaffRecoveryCode(
+            id=_id(h, "recovery", n), hospital_id=h, user_id=staff, code_hash=f"{n}" * 64),
+        "webhook_deliveries": lambda: m.WebhookDelivery(
+            id=_id(h, "delivery", n), hospital_id=h, client_pk=client, event_id=f"evt-{n}",
+            event_type="booking.created", body="{}", status="pending", attempts=0),
     }
     return rows[table]()
 
@@ -98,7 +120,9 @@ def build(table, h, n):
 SEED_ORDER = ["hospitals", "hospital_keys", "departments", "staff_users", "staff_sessions", "audit_events", "doctor_profiles",
               "patients", "patient_alerts", "bookings", "patient_link_requests", "visits", "clinical_records",
               "record_files", "queue_days", "queue_entries", "record_shares", "shared_records", "import_batches",
-              "onboarding_applications", "onboarding_documents", "demo_bookings", "prescription_dispenses"]
+              "onboarding_applications", "onboarding_documents", "demo_bookings", "prescription_dispenses",
+              "integration_clients", "integration_assertions", "integration_requests", "integration_resources",
+              "integration_idempotency", "webhook_deliveries", "staff_recovery_codes"]
 
 
 #: A second row for the same hospital is not possible (or not a new hospital's).
@@ -154,15 +178,22 @@ def _migration(name="0007_row_level_security.py"):
 
 
 def test_migration_installs_what_app_rls_describes():
-    """0007 installed everything but the policies of hospital_keys, which 0008 adds."""
+    """0007 installed everything but the policies of hospital_keys, which 0008
+    adds, and the integration API's tables and lookup, which 0009 adds."""
     migration, keys = _migration(), _migration("0008_encryption_at_rest.py")
-    assert migration.TENANT_TABLES + keys.TENANT_TABLES == rls.TENANT_TABLES
+    integrations = _migration("0009_integration_api.py")
+    two_step = _migration("0010_two_step_verification.py")
+    assert migration.TENANT_TABLES + keys.TENANT_TABLES + integrations.TENANT_TABLES + two_step.TENANT_TABLES         == rls.TENANT_TABLES
     assert migration.CHILD_TABLES == rls.CHILD_TABLES
-    assert migration.SAME_HOSPITAL_REFERENCES == rls.SAME_HOSPITAL_REFERENCES
-    assert migration.FUNCTIONS == rls.FUNCTIONS
-    assert keys.PLATFORM_ROLE == rls.PLATFORM_ROLE and keys.TENANT == rls.TENANT
-    assert sorted(migration.install_statements() + keys.policy_statements()) == sorted(rls.install_statements())
-    assert sorted(migration.drop_statements() + keys.drop_statements()) == sorted(rls.drop_statements())
+    assert migration.SAME_HOSPITAL_REFERENCES + integrations.SAME_HOSPITAL_REFERENCES         + two_step.SAME_HOSPITAL_REFERENCES == rls.SAME_HOSPITAL_REFERENCES
+    assert migration.FUNCTIONS + integrations.FUNCTIONS == rls.FUNCTIONS
+    for later in (keys, integrations, two_step):
+        assert later.PLATFORM_ROLE == rls.PLATFORM_ROLE and later.TENANT == rls.TENANT
+    assert set(migration._parents()) | set(integrations.NEW_PARENTS) == set(rls.parents())
+    assert sorted(migration.install_statements() + keys.policy_statements() + integrations.install_statements()
+                  + two_step.install_statements()) == sorted(rls.install_statements())
+    assert sorted(migration.drop_statements() + keys.drop_statements() + integrations.drop_statements()
+                  + two_step.drop_statements()) == sorted(rls.drop_statements())
 
 
 def test_every_reference_between_two_rows_of_a_hospital_is_a_composite_key():
@@ -617,7 +648,10 @@ def test_a_session_level_role_or_setting_never_reaches_the_next_checkout(db):
 # --- migration safety -------------------------------------------------------------------------------
 
 def test_the_migration_checks_the_same_rows_as_app_rls():
-    assert _migration().cross_hospital_queries() == rls.cross_hospital_queries()
+    # 0009's tables are new (empty) when their composite keys are added: nothing to check there.
+    new = {child for name in ("0009_integration_api.py", "0010_two_step_verification.py")
+           for child, *_rest in _migration(name).SAME_HOSPITAL_REFERENCES}
+    assert _migration().cross_hospital_queries() == [q for q in rls.cross_hospital_queries() if q[0] not in new]
 
 
 @pg_only

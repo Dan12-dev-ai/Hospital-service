@@ -5,7 +5,9 @@ import {
   clearSessionCookie,
   errorResponse,
   forwardedHeaders,
+  isRecord,
   rejectCrossSite,
+  setSessionCookie,
 } from "@/lib/server/backend";
 
 /**
@@ -17,9 +19,12 @@ import {
 const ALLOWED: RegExp[] = [
   /^auth\/me$/,
   /^auth\/password$/,
+  // Two-step verification: the code after the password, setting up the
+  // authenticator, and a fresh code for sensitive actions.
+  /^auth\/(totp|reauth|enroll\/(start|confirm))$/,
   /^hospital$/,
   /^departments(\/[A-Za-z0-9_-]+)?$/,
-  /^staff(\/[A-Za-z0-9_-]+(\/reset-password)?)?$/,
+  /^staff(\/[A-Za-z0-9_-]+(\/(reset-password|reset-2fa))?)?$/,
   /^patients(\/stats|\/[A-Za-z0-9_-]+(\/alerts(\/[A-Za-z0-9_-]+)?)?)?$/,
   /^doctors(\/[A-Za-z0-9_-]+(\/(profile|duty))?)?$/,
   /^bookings(\/[A-Za-z0-9_-]+(\/(approve|reject|cancel|complete|video))?)?$/,
@@ -31,9 +36,14 @@ const ALLOWED: RegExp[] = [
   /^queue(\/check-in|\/[A-Za-z0-9_-]+\/call-next|\/entries\/[A-Za-z0-9_-]+\/(done|skip|cancel))?$/,
   /^shared$/,
   /^imports\/[A-Za-z0-9_-]+\/confirm$/,
+  // "Connect your system": the hospital's own systems (admins of approved hospitals).
+  /^connections(\/[a-f0-9]{32}(\/(disconnect|rotate-secret|ip-restriction|public-key|webhook(\/(rotate-secret|test))?|requests|deliveries))?)?$/,
   // The onboarding application (its documents go through app/api/upload and app/api/download).
   /^onboarding\/(status|application|contact|facility|location|documents|demo-slots|demo|submit)$/,
 ];
+
+/** The sign-in steps whose answer carries a new session's token. */
+const SIGN_IN_STEPS = new Set(["auth/totp", "auth/enroll/confirm"]);
 
 async function handle(request: NextRequest, ctx: RouteContext<"/api/[...path]">) {
   const { path } = await ctx.params;
@@ -57,10 +67,21 @@ async function handle(request: NextRequest, ctx: RouteContext<"/api/[...path]">)
     headers,
     body,
   });
+  // A sign-in step that opens a new session (the code, or the authenticator's
+  // set-up): its token goes into the httpOnly cookie, never to the page.
+  let renewed: { token: string; maxAge: number } | null = null;
+  let payload = result.body;
+  if (SIGN_IN_STEPS.has(joined) && result.status === 200 && isRecord(payload) && typeof payload.access_token === "string") {
+    const { access_token: token, expires_in: expiresIn, token_type: _type, ...rest } = payload;
+    void _type;
+    renewed = { token: token as string, maxAge: typeof expiresIn === "number" ? expiresIn : 43200 };
+    payload = rest;
+  }
   const response =
     result.status === 204
       ? new NextResponse(null, { status: 204 })
-      : NextResponse.json(result.body, { status: result.status });
+      : NextResponse.json(payload, { status: result.status });
+  if (renewed) setSessionCookie(response, renewed.token, renewed.maxAge);
   response.headers.set("Cache-Control", "no-store");
   // The session ended (expired, revoked, signed out elsewhere): forget it.
   if (result.status === 401) clearSessionCookie(response);

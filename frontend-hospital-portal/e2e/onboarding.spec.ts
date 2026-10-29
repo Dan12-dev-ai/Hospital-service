@@ -7,6 +7,7 @@ import {
   seedHospital,
   signIn,
   signInThroughForm,
+  totpFromSecret,
   uniqueTag,
 } from "./helpers";
 
@@ -191,9 +192,19 @@ test("a clinic applies step by step, resumes after a reload, and waits for Endod
   await page.getByRole("button", { name: "Resubmit application" }).click();
   await expect(page.getByTestId("under-review")).toHaveAttribute("data-status", "submitted");
 
-  // Approved: the whole portal, as for any hospital.
+  // Approved: the password-only session ends; the next sign-in sets up the
+  // authenticator app (two-step verification), then the whole portal.
   await platform(request, "POST", `/platform/hospitals/${mine!.hospital_id}/approve`);
   await page.goto("/under-review");
+  await expect(page).toHaveURL(/\/login/);
+  await signInThroughForm(page, `admin@${tag}.example`, "Signup-password-1");
+  await expect(page).toHaveURL(/\/enroll$/);
+  const secret = ((await page.getByTestId("totp-secret").textContent()) ?? "").replace(/\s/g, "");
+  await page.getByLabel("Code from the app").fill(totpFromSecret(secret));
+  await page.getByRole("button", { name: "Confirm and continue" }).click();
+  await expect(page.getByTestId("recovery-code")).toHaveCount(10);
+  await page.getByLabel("I have saved my recovery codes").check();
+  await page.getByRole("button", { name: "Continue to the portal" }).click();
   await expect(page).toHaveURL(/\/$/);
   await expect(page.getByTestId("hospital-status-banner")).toHaveAttribute("data-status", "unlisted");
   expect((await page.request.get("/api/hospital")).status()).toBe(200);

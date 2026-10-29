@@ -2,6 +2,7 @@
 
 import { hardNavigate } from "@/lib/navigation";
 import { useState, type FormEvent } from "react";
+import { CodeStep } from "@/components/auth/code-step";
 import Link from "next/link";
 import { ApiError, apiFetch } from "@/lib/api";
 import type { Staff } from "@/lib/api-types";
@@ -24,31 +25,58 @@ export function safeNext(value: string | null, origin = "https://portal.invalid"
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
+type Stage = "full" | "totp" | "enroll";
+
+/** Where a signed-in staff member goes next. */
+function goOn(staff: Staff, stage: Stage) {
+  // A temporary password first, then the authenticator's set-up.
+  if (staff.must_change_password) return hardNavigate("/account/password");
+  if (stage === "enroll") return hardNavigate("/enroll");
+  const next = safeNext(new URLSearchParams(window.location.search).get("next"));
+  // A hospital still applying goes back to its application (or its status).
+  hardNavigate(staff.hospital?.locked ? "/onboarding" : next);
+}
+
 export function LoginForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [codeStep, setCodeStep] = useState(false);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      const { staff } = await apiFetch<{ staff: Staff }>("auth/login", {
+      const { staff, stage } = await apiFetch<{ staff: Staff; stage: Stage }>("auth/login", {
         method: "POST",
         body: { email: email.trim(), password },
         redirectOn401: false,
       });
-      const next = safeNext(new URLSearchParams(window.location.search).get("next"));
-      // A hospital still applying goes back to its application.
-      if (staff.must_change_password) return hardNavigate("/account/password");
-      // A hospital still applying goes back to its application (or its status).
-      hardNavigate(staff.hospital?.locked ? "/onboarding" : next);
+      setPassword("");
+      if (stage === "totp") {
+        setCodeStep(true);
+        setBusy(false);
+        return;
+      }
+      goOn(staff, stage);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Sign-in failed.");
       setBusy(false);
     }
+  }
+
+  if (codeStep) {
+    return (
+      <CodeStep
+        onDone={(staff) => goOn(staff, "full")}
+        onRestart={() => {
+          setCodeStep(false);
+          setError(null);
+        }}
+      />
+    );
   }
 
   return (

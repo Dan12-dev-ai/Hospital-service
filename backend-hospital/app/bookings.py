@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import eventbus, jitsi
+from app.integrations import webhooks
 from app.db import ensure_aware, platform_session, utcnow
 from app.eventbus import PermanentEventError, RetryLater
 from app.models import Booking, BookingStatus, Hospital, HospitalStatus, Service, StaffUser, VisitMode
@@ -107,8 +108,10 @@ def on_requested(session: Session, payload: Dict[str, Any]) -> None:
     )
     session.add(booking)
     session.flush()
+    webhooks.booking_event(session, booking, "booking.created")
     if booking.status == BookingStatus.CONFIRMED:
         eventbus.emit(session, "appointment.confirmed", _decision(booking))
+        webhooks.booking_event(session, booking, "booking.confirmed")
 
 
 def on_patient_cancelled(session: Session, payload: Dict[str, Any]) -> None:
@@ -125,6 +128,7 @@ def on_patient_cancelled(session: Session, payload: Dict[str, Any]) -> None:
     booking.reason = ("Cancelled by Endod: not answered in time; the patient was refunded."
                       if ref.by == "endod" else "Cancelled by the patient.")
     booking.decided_at = utcnow()
+    webhooks.booking_event(session, booking, "booking.cancelled")
 
 
 HANDLERS = {
@@ -162,6 +166,7 @@ def approve_video(session: Session, booking: Booking, doctor: StaffUser, decided
     booking.meeting_room = jitsi.new_room()
     booking.decided_by, booking.decided_at = decided_by, utcnow()
     eventbus.emit(session, "appointment.confirmed", _decision(booking, doctor.full_name))
+    webhooks.booking_event(session, booking, "booking.confirmed")
 
 
 def reject(session: Session, booking: Booking, reason: str, decided_by: str) -> None:
@@ -171,6 +176,7 @@ def reject(session: Session, booking: Booking, reason: str, decided_by: str) -> 
     booking.reason = reason
     booking.decided_by, booking.decided_at = decided_by, utcnow()
     eventbus.emit(session, "appointment.rejected", _decision(booking))
+    webhooks.booking_event(session, booking, "booking.cancelled")
 
 
 def cancel(session: Session, booking: Booking, reason: str, decided_by: str) -> None:
@@ -184,6 +190,7 @@ def cancel(session: Session, booking: Booking, reason: str, decided_by: str) -> 
     booking.reason = reason
     booking.decided_by, booking.decided_at = decided_by, utcnow()
     eventbus.emit(session, "appointment.cancelled", {**_decision(booking), "by": "hospital"})
+    webhooks.booking_event(session, booking, "booking.cancelled")
 
 
 def complete(session: Session, booking: Booking, decided_by: str) -> None:
@@ -214,5 +221,6 @@ def expire_unapproved() -> int:
             booking.reason = "No doctor approved this visit in time."
             booking.decided_at = utcnow()
             eventbus.emit(session, "appointment.rejected", _decision(booking))
+            webhooks.booking_event(session, booking, "booking.cancelled")
             expired += 1
     return expired

@@ -135,6 +135,9 @@ class TestApprovalAndListing:
         approved = client.post(f"/platform/hospitals/{hid}/approve", headers=key).json()
         assert approved["status"] == "approved" and approved["listed"] is False
         assert set(approved["missing_for_listing"]) == {"price_in_person", "location"}
+        # Approval ends the password-only sessions: the next sign-in sets up the authenticator.
+        assert client.get("/hospital", headers=admin).status_code == 401
+        admin = sign_in(client, SIGNUP["admin_email"], SIGNUP["password"])
 
         hospital = listed_hospital(client, admin)
         assert hospital["listed"] is True and hospital["price_video"] == "120.50"
