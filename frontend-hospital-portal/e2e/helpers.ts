@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHmac } from "node:crypto";
 import path from "node:path";
-import { expect, type APIRequestContext, type Page } from "@playwright/test";
+import { expect, type APIRequestContext, type Locator, type Page } from "@playwright/test";
 import { BACKEND_URL, PLATFORM_KEY, backendDir, backendEnv, python } from "./env";
 
 export type Account = { email: string; name: string };
@@ -180,4 +180,16 @@ export async function platform(request: APIRequestContext, method: "GET" | "POST
 
 export function bookingRow(page: Page, patientName: string) {
   return page.getByTestId("booking-row").filter({ hasText: patientName });
+}
+
+/**
+ * Picks an option in one of the portal's selects (Base UI comboboxes, not
+ * native <select>s): opens the combobox by its role, then clicks the option
+ * by its accessible name. A string matches the whole name.
+ */
+export async function chooseOption(combobox: Locator, option: string | RegExp) {
+  const page = combobox.page();
+  await combobox.click();
+  await page.getByRole("option", { name: option, exact: typeof option === "string" }).click();
+  await expect(page.getByRole("option")).toHaveCount(0);
 }

@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { JITSI_DOMAIN } from "./env";
-import { bookingRow, seedBooking, seedHospital, signIn, type SeededHospital } from "./helpers";
+import { bookingRow, chooseOption, seedBooking, seedHospital, signIn, type SeededHospital } from "./helpers";
 
 let hospital: SeededHospital;
 
@@ -87,7 +87,7 @@ test("an admin approves on behalf of a chosen doctor", async ({ page }) => {
   const row = bookingRow(page, "Tigist Admin");
   await row.getByRole("button", { name: "Approve" }).click();
   const dialog = page.getByRole("dialog", { name: "Approve video visit" });
-  await dialog.getByLabel("Doctor").selectOption({ label: hospital.accounts.doctor2.name });
+  await chooseOption(dialog.getByRole("combobox", { name: "Doctor" }), hospital.accounts.doctor2.name);
   await dialog.getByRole("button", { name: "Approve" }).click();
   await expect(row.getByTestId("booking-status")).toHaveText("Confirmed");
   await expect(row).toContainText(hospital.accounts.doctor2.name);
