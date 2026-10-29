@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Icon } from "@/components/ui/icon";
+import { ChevronDown } from "lucide-react";
+
 import {
   ChartLegend,
   PeriodToggle,
@@ -18,7 +19,7 @@ export function RevenueChart() {
       <div className="mb-2 flex items-center justify-between">
         <div className="flex cursor-pointer items-center gap-1.5">
           <span className="text-sm font-bold text-slate-800">Revenue</span>
-          <Icon name="expand_more" className="text-[16px] text-slate-500" />
+          <ChevronDown className="text-[16px] text-slate-500" />
         </div>
         <PeriodToggle value={period} onChange={setPeriod} />
       </div>

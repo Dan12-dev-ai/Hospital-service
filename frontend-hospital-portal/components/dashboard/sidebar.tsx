@@ -4,7 +4,10 @@ import { useEffect, useState } from "react";
 import { useSidebarMobile } from "@/components/dashboard/sidebar-mobile-context";
 import Link from "next/link";
 import { cn } from "cn";
-import { Icon } from "@/components/ui/icon";
+import { Building2, LogOut, Menu, PanelLeftClose, PanelRightOpen, X } from "lucide-react";
+
+
+
 import { useSession } from "@/components/session/session-context";
 import { navItems } from "@/lib/dashboard-data";
 import { initialsOf } from "@/lib/format";
@@ -44,7 +47,7 @@ export function Sidebar() {
           onClick={() => setMobileOpen(true)}
           className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-50 text-slate-600 transition-colors hover:bg-slate-100"
         >
-          <Icon name="menu" className="text-[22px]" />
+          <Menu className="text-[22px]" />
         </button>
         <Link href="/" className="flex min-w-0 items-center gap-3">
           <Image
@@ -158,7 +161,7 @@ function SidebarBody({
                 onClick={onClose}
                 className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-50 hover:text-slate-700"
               >
-                <Icon name="close" className="text-[18px]" />
+                <X className="text-[18px]" />
               </button>
             )}
             {onToggleCollapse && (
@@ -169,10 +172,7 @@ function SidebarBody({
                 onClick={onToggleCollapse}
                 className="hidden h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-50 hover:text-slate-700 xl:flex"
               >
-                <Icon
-                  name={collapsed ? "right_panel_open" : "left_panel_close"}
-                  className="text-[18px]"
-                />
+                {collapsed ? <PanelRightOpen className="text-[18px]" /> : <PanelLeftClose className="text-[18px]" />}
               </button>
             )}
           </div>
@@ -182,7 +182,7 @@ function SidebarBody({
         {!collapsed && (
           <div className="mb-4 flex items-center gap-2.5 rounded-2xl border border-slate-100 bg-slate-50/80 p-2.5">
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-neutral-50 text-black">
-              <Icon name="domain" className="text-[18px]" />
+              <Building2 className="text-[18px]" />
             </div>
             <div className="flex min-w-0 flex-col">
               <span className="truncate text-[11px] font-semibold text-slate-800">
@@ -243,7 +243,7 @@ function SidebarBody({
             collapsed && "px-0"
           )}
         >
-          <Icon name="logout" className="text-[16px]" />
+          <LogOut className="text-[16px]" />
           {!collapsed && <span>Sign Out</span>}
         </button>
       </div>

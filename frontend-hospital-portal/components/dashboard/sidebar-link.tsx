@@ -1,10 +1,43 @@
 "use client";
 
+import type { ComponentType } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Icon } from "@/components/ui/icon";
 import { cn } from "cn";
+import {
+  Activity,
+  Building2,
+  Calendar,
+  CalendarClock,
+  FileText,
+  FolderOpen,
+  LayoutGrid,
+  ListOrdered,
+  Pill,
+  Receipt,
+  Settings,
+  Stethoscope,
+  Upload,
+  User,
+} from "lucide-react";
 import type { NavItem } from "@/lib/dashboard-types";
+
+const NAV_ICONS: Record<string, ComponentType<{ className?: string }>> = {
+  grid_view: LayoutGrid,
+  person: User,
+  stethoscope: Stethoscope,
+  calendar_month: Calendar,
+  format_list_numbered: ListOrdered,
+  folder_shared: FolderOpen,
+  upload_file: Upload,
+  receipt_long: Receipt,
+  event_repeat: CalendarClock,
+  medical_services: Activity,
+  medication: Pill,
+  description: FileText,
+  settings: Settings,
+  receipt: Receipt,
+};
 
 export function SidebarLink({
   item,
@@ -31,10 +64,10 @@ export function SidebarLink({
       )}
     >
       <span className={cn("flex items-center gap-3", collapsed && "gap-0")}>
-        <Icon
-          name={item.icon}
-          className={cn("text-[20px]", isActive ? "text-white" : "text-slate-400")}
-        />
+        {(() => {
+          const IconComp = NAV_ICONS[item.icon];
+          return IconComp ? <IconComp className={cn("size-5", isActive ? "text-white" : "text-slate-400")} /> : null;
+        })()}
         {!collapsed && <span>{item.label}</span>}
       </span>
       {!collapsed && item.badge && (

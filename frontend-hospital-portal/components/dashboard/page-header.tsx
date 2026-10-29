@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { Icon } from "@/components/ui/icon";
+import { Calendar, User } from "lucide-react";
+
 import { useSignedIn } from "@/components/session/session-context";
 import { BOOKING_VIEWERS } from "@/lib/booking-rules";
 
@@ -24,7 +25,7 @@ export function PageHeader() {
             href="/appointments"
             className="flex items-center gap-1.5 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 shadow-sm transition-colors hover:bg-slate-50"
           >
-            <Icon name="calendar_month" className="text-[18px]" />
+            <Calendar className="text-[18px]" />
             <span>Bookings</span>
           </Link>
         )}
@@ -32,7 +33,7 @@ export function PageHeader() {
           href="/patients"
           className="flex items-center gap-1.5 rounded-2xl bg-black px-4 py-2 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-[#1f2937]"
         >
-          <Icon name="person" className="text-[18px]" />
+          <User className="text-[18px]" />
           <span>Patients</span>
         </Link>
       </div>

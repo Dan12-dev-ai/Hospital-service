@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Icon } from "@/components/ui/icon";
+import { ChevronDown } from "lucide-react";
+
 import {
   ChartLegend,
   PeriodToggle,
@@ -35,7 +36,7 @@ export function PatientOverviewChart() {
           <span className="text-sm font-bold text-slate-800">
             Patient Overview
           </span>
-          <Icon name="expand_more" className="text-[16px] text-slate-500" />
+          <ChevronDown className="text-[16px] text-slate-500" />
         </div>
         <PeriodToggle value={period} onChange={setPeriod} />
       </div>

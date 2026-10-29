@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Icon } from "@/components/ui/icon";
+import { Key, Languages, LogOut, Search } from "lucide-react";
+
 import { useDashboard } from "@/components/dashboard/dashboard-context";
 import { useSession } from "@/components/session/session-context";
 import { InstallPwaButton } from "@/components/pwa/install-button";
@@ -20,7 +21,7 @@ function ProfileChip() {
         aria-label="Change password"
         className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-50 text-slate-600 transition-colors hover:bg-slate-100"
       >
-        <Icon name="key" className="text-[19px]" />
+        <Key className="text-[19px]" />
       </Link>
       <button
         type="button"
@@ -31,7 +32,7 @@ function ProfileChip() {
         }}
         className="flex items-center gap-1.5 rounded-full border border-red-200/80 bg-red-50/40 px-3 py-1.5 text-[11px] font-semibold text-rose-600 transition-colors hover:bg-red-50 disabled:opacity-60"
       >
-        <Icon name="logout" className="text-[16px]" />
+        <LogOut className="text-[16px]" />
         <span>{signingOut ? "Signing out…" : "Sign out"}</span>
       </button>
     </div>
@@ -45,10 +46,7 @@ export function TopBar() {
     <header data-testid="top-bar" className="flex flex-col items-center justify-between gap-4 rounded-3xl border border-card-border/80 bg-white px-6 py-3.5 shadow-soft md:flex-row">
       {/* Search Input */}
       <div className="relative flex w-full items-center md:w-96">
-        <Icon
-          name="search"
-          className="absolute left-3.5 text-[18px] text-slate-400"
-        />
+        <Search className="absolute left-3.5 text-[18px] text-slate-400" />
         <input
           type="text"
           value={searchQuery}
@@ -67,7 +65,7 @@ export function TopBar() {
           onClick={() => showToast("Switching portal language to አማርኛ...")}
           className="flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100"
         >
-          <Icon name="translate" className="text-[16px] text-black" />
+          <Languages className="text-[16px] text-black" />
           <span className="text-[11px] font-semibold">EN | አማርኛ</span>
         </button>
 

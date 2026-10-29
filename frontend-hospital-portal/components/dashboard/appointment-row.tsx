@@ -2,7 +2,8 @@
 
 import { useEffect, useRef } from "react";
 import Image from "next/image";
-import { Icon } from "@/components/ui/icon";
+import { Play, Clock } from "lucide-react";
+
 import { useDashboard } from "@/components/dashboard/dashboard-context";
 import type { Appointment } from "@/lib/dashboard-types";
 
@@ -46,7 +47,7 @@ function RowAction({ appointment }: { appointment: Appointment }) {
           onClick={() => showToast(appointment.actionMessage)}
           className="flex h-8 items-center gap-1 rounded-full bg-neutral-600 px-3 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-neutral-700"
         >
-          <Icon name="play_arrow" className="text-[14px]" />
+          <Play className="text-[14px]" />
           Start Visit
         </button>
       );
@@ -110,7 +111,7 @@ export function AppointmentRow({ appointment }: { appointment: Appointment }) {
       </div>
       <div className="flex items-center justify-between gap-3 sm:justify-end">
         <div className="flex items-center gap-1.5 text-xs text-slate-500">
-          <Icon name="schedule" className="text-[15px] text-slate-400" />
+          <Clock className="text-[15px] text-slate-400" />
           <span className="text-[11px] font-medium">{appointment.time}</span>
         </div>
         <span

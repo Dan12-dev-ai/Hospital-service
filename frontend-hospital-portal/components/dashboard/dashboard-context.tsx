@@ -9,7 +9,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { Icon } from "@/components/ui/icon";
+import { CheckCircle2 } from "lucide-react";
+
 
 type ToastState = { id: number; message: string; visible: boolean } | null;
 
@@ -89,7 +90,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
                 : "translate-y-2 opacity-0"
             }`}
           >
-            <Icon name="verified" className="text-[18px] text-neutral-300" />
+            <CheckCircle2 className="text-[18px] text-neutral-300" />
             <span>{toast.message}</span>
           </div>
         )}

@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Icon } from "@/components/ui/icon";
+import { Video, X } from "lucide-react";
+
 import { useSignedIn } from "@/components/session/session-context";
 import { useApi } from "@/lib/api";
 import type { BookingList } from "@/lib/api-types";
@@ -26,7 +27,7 @@ export function AlertBanner() {
     >
       <div className="flex min-w-0 items-center gap-3">
         <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-white/20">
-          <Icon name="video_call" className="text-[18px] text-neutral-200" />
+          <Video className="text-[18px] text-neutral-200" />
         </div>
         <div className="truncate text-xs">
           <span className="font-bold text-neutral-200">
@@ -51,7 +52,7 @@ export function AlertBanner() {
           onClick={() => setDismissed(true)}
           className="text-neutral-200 transition-colors hover:text-white"
         >
-          <Icon name="close" className="text-[18px]" />
+          <X className="text-[18px]" />
         </button>
       </div>
     </div>

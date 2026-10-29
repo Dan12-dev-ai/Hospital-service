@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Icon } from "@/components/ui/icon";
+import { ChevronLeft, ChevronRight } from "lucide-react";
+
 
 const WEEKDAYS = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
 
@@ -71,7 +72,7 @@ export function MiniCalendar() {
           onClick={() => shiftMonth(-1)}
           className="flex h-7 w-7 items-center justify-center rounded-full text-slate-400 hover:bg-slate-100"
         >
-          <Icon name="chevron_left" className="text-[16px]" />
+          <ChevronLeft className="text-[16px]" />
         </button>
         <span className="text-sm font-bold text-slate-800">
           {monthLabel} / {GREGORIAN_TO_ETHIOPIC[month]} {ethiopicYear(monthDate)}
@@ -82,7 +83,7 @@ export function MiniCalendar() {
           onClick={() => shiftMonth(1)}
           className="flex h-7 w-7 items-center justify-center rounded-full text-slate-400 hover:bg-slate-100"
         >
-          <Icon name="chevron_right" className="text-[16px]" />
+          <ChevronRight className="text-[16px]" />
         </button>
       </div>
 

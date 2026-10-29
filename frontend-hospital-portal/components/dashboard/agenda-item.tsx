@@ -2,7 +2,8 @@
 
 import Image from "next/image";
 import { useState } from "react";
-import { Icon } from "@/components/ui/icon";
+import { Check, X } from "lucide-react";
+
 import { useDashboard } from "@/components/dashboard/dashboard-context";
 import type { AgendaEvent } from "@/lib/dashboard-types";
 
@@ -61,7 +62,7 @@ export function AgendaItem({ event }: { event: AgendaEvent }) {
                   title="Decline"
                   className="flex h-6 w-6 items-center justify-center rounded-lg bg-white/20 text-white hover:bg-white/30"
                 >
-                  <Icon name="close" className="text-[14px]" />
+                  <X className="text-[14px]" />
                 </button>
                 <button
                   type="button"
@@ -70,7 +71,7 @@ export function AgendaItem({ event }: { event: AgendaEvent }) {
                   title="Accept"
                   className="flex h-6 w-6 items-center justify-center rounded-lg bg-white font-bold text-black hover:bg-neutral-50"
                 >
-                  <Icon name="check" className="text-[14px]" />
+                  <Check className="text-[14px]" />
                 </button>
               </>
             )}
