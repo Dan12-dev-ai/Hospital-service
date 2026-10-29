@@ -7,7 +7,7 @@ import type { DispenseItem, Dispensing } from "@/lib/history-types";
 const STATUS: Record<Dispensing["status"], { label: string; className: string }> = {
   not_dispensed: { label: "Not dispensed", className: "bg-slate-100 text-slate-700" },
   partly: { label: "Partly dispensed", className: "bg-amber-50 text-amber-800" },
-  fully: { label: "Fully dispensed", className: "bg-emerald-50 text-emerald-800" },
+  fully: { label: "Fully dispensed", className: "bg-neutral-50 text-neutral-800" },
 };
 
 const ITEM_STATUS: Record<DispenseItem["status"], string> = {
@@ -32,7 +32,7 @@ export function DispensingPanel({ dispensing, timeZone }: { dispensing: Dispensi
   return (
     <section data-testid="dispensing" className="flex flex-col gap-2 rounded-xl bg-surface-container-low px-3 py-2">
       <div className="flex flex-wrap items-center gap-2">
-        <Icon name="local_pharmacy" className="text-[16px] text-pine-green" />
+        <Icon name="local_pharmacy" className="text-[16px] text-black" />
         <span className="text-xs font-bold text-slate-700">Dispensed</span>
         <span data-testid="dispensing-status" className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${status.className}`}>
           {status.label}

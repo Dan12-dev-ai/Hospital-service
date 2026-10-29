@@ -22,7 +22,7 @@ export function PeriodToggle({
           className={cn(
             "rounded-full px-2.5 py-0.5 font-medium transition-colors",
             value === period
-              ? "bg-pine-green text-white"
+              ? "bg-black text-white"
               : "text-slate-500 hover:text-slate-800"
           )}
         >

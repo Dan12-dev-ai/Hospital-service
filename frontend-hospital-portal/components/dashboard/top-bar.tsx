@@ -54,7 +54,7 @@ export function TopBar() {
           value={searchQuery}
           onChange={(event) => setSearchQuery(event.target.value)}
           placeholder="Search Patient by Name, MRN or Digital Health ID..."
-          className="w-full rounded-full border border-transparent bg-slate-50 py-2 pl-10 pr-4 text-xs text-slate-700 placeholder-slate-400 transition-all focus:border-pine-green focus:bg-white focus:outline-none"
+          className="w-full rounded-full border border-transparent bg-slate-50 py-2 pl-10 pr-4 text-xs text-slate-700 placeholder-slate-400 transition-all focus:border-black focus:bg-white focus:outline-none"
         />
       </div>
 
@@ -67,7 +67,7 @@ export function TopBar() {
           onClick={() => showToast("Switching portal language to አማርኛ...")}
           className="flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100"
         >
-          <Icon name="translate" className="text-[16px] text-pine-green" />
+          <Icon name="translate" className="text-[16px] text-black" />
           <span className="text-[11px] font-semibold">EN | አማርኛ</span>
         </button>
 

@@ -20,17 +20,17 @@ const pharmacyKpis: PharmacyKpi[] = [
       className: "bg-surface-container text-on-surface-variant",
     },
     icon: "prescriptions",
-    iconBoxClassName: "bg-surface-container-low text-primary",
+    iconBoxClassName: "bg-surface-container-low text-black",
   },
   {
     label: "Dispensed Today",
     value: "154",
     badge: {
       text: "ETB 428,900",
-      className: "bg-secondary-fixed/40 text-on-secondary-fixed-variant",
+      className: "bg-neutral-200 text-neutral-800",
     },
     icon: "task_alt",
-    iconBoxClassName: "bg-secondary-container/30 text-secondary",
+    iconBoxClassName: "bg-neutral-200/30 text-neutral-600",
   },
   {
     label: "Pending Dispensation",

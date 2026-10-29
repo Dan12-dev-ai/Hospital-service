@@ -35,7 +35,7 @@ export function BillingHeader({
         <button
           type="button"
           onClick={onIssueCard}
-          className="flex items-center gap-2 rounded-xl bg-primary-container px-4 py-2 text-label-lg font-label-lg text-on-primary shadow-soft transition-all hover:bg-primary"
+          className="flex items-center gap-2 rounded-xl bg-black px-4 py-2 text-label-lg font-label-lg text-white shadow-soft transition-all hover:bg-neutral-800"
         >
           <Icon name="add_card" className="text-[20px]" />
           <span>

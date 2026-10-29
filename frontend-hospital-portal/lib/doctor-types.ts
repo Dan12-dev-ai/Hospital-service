@@ -18,8 +18,8 @@ export const RANK_OPTIONS: { value: DoctorRank; label: string }[] = [
 ];
 
 const STATUS_STYLES: Record<DutyStatus, { badge: string; dot: string; bar: string }> = {
-  "on-duty": { badge: "bg-secondary-fixed/40 text-on-secondary-container font-medium", dot: "bg-secondary", bar: "bg-primary-container" },
-  "in-consultation": { badge: "bg-primary-fixed/40 text-on-primary-fixed-variant font-medium", dot: "bg-primary animate-pulse", bar: "bg-primary" },
+  "on-duty": { badge: "bg-neutral-200 text-neutral-800 font-medium", dot: "bg-neutral-600", bar: "bg-black" },
+  "in-consultation": { badge: "bg-neutral-200 text-neutral-800 font-medium", dot: "bg-black animate-pulse", bar: "bg-black" },
   "on-call": { badge: "bg-tertiary-fixed/30 text-tertiary-container font-medium", dot: "bg-tertiary", bar: "bg-tertiary" },
   "off-duty": { badge: "bg-surface-container text-on-surface-variant", dot: "bg-outline", bar: "bg-outline" },
 };

@@ -26,7 +26,7 @@ const REFRESH_MS = 10_000;
 
 const STATUS_STYLES: Record<QueueStatus, string> = {
   waiting: "bg-slate-100 text-slate-700",
-  called: "bg-emerald-100 text-emerald-800",
+  called: "bg-neutral-100 text-neutral-800",
   done: "bg-sky-50 text-sky-800",
   skipped: "bg-amber-50 text-amber-800",
   cancelled: "bg-rose-50 text-rose-700",
@@ -191,7 +191,7 @@ function QueueCard({
         </ul>
       )}
       {finished.length > 0 && (
-        <button type="button" onClick={() => setShowFinished((v) => !v)} className="self-start text-[11px] font-semibold text-primary hover:underline">
+        <button type="button" onClick={() => setShowFinished((v) => !v)} className="self-start text-[11px] font-semibold text-black hover:underline">
           {showFinished ? "Hide" : "Show"} {finished.length} finished
         </button>
       )}
@@ -230,7 +230,7 @@ function EntryRow({
   return (
     <li data-testid="queue-entry" className="flex flex-col justify-between gap-2 rounded-2xl border border-slate-100 px-3 py-2 sm:flex-row sm:items-center">
       <div className="flex items-center gap-3">
-        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-surface-container text-sm font-bold text-primary">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-surface-container text-sm font-bold text-black">
           {entry.ticket}
         </span>
         <div className="flex flex-col">
@@ -368,7 +368,7 @@ function CheckInModal({
             <ul className="flex flex-col gap-1">
               {patients.data!.items.map((p) => (
                 <li key={p.id}>
-                  <label className={`flex cursor-pointer items-center gap-2 rounded-xl px-3 py-2 text-xs ${patientId === p.id ? "bg-pine-light" : "bg-surface-container-low"}`}>
+                  <label className={`flex cursor-pointer items-center gap-2 rounded-xl px-3 py-2 text-xs ${patientId === p.id ? "bg-neutral-100" : "bg-surface-container-low"}`}>
                     <input type="radio" name="checkin-patient" checked={patientId === p.id} onChange={() => setPatientId(p.id)} />
                     <span className="font-semibold">{p.full_name}</span>
                     <span className="text-slate-500">{p.mrn}{p.dedan_id ? ` • Endod ${p.dedan_id}` : ""}</span>

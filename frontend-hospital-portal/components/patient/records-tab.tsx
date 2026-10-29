@@ -59,7 +59,7 @@ export function RecordsTab({ patientId, staff, hospital }: { patientId: string; 
         <div className="flex items-center gap-2">
           <label htmlFor="records-filter" className="text-xs font-semibold text-slate-500">Show</label>
           <select id="records-filter" value={filter} onChange={(e) => setFilter(e.target.value as RecordCategory | "all")}
-            className="rounded-lg bg-surface-container-low px-2 py-1 text-xs">
+            className="cursor-pointer rounded-lg bg-surface-container-low px-2 py-1 text-xs">
             <option value="all">All records</option>
             {(Object.keys(CATEGORY_LABELS) as RecordCategory[]).map((c) => (
               <option key={c} value={c}>{CATEGORY_LABELS[c]}</option>
@@ -89,7 +89,7 @@ export function RecordsTab({ patientId, staff, hospital }: { patientId: string; 
               className={`flex flex-col gap-2 rounded-2xl border px-4 py-3 ${r.retracted ? "border-rose-100 bg-rose-50/40" : "border-slate-100"}`}>
               <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-start">
                 <div className="flex items-start gap-3">
-                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-pine-light text-pine-green">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-neutral-100 text-black">
                     <Icon name={CATEGORY_ICONS[r.category]} className="text-[18px]" />
                   </div>
                   <div className="flex flex-col">
@@ -108,7 +108,7 @@ export function RecordsTab({ patientId, staff, hospital }: { patientId: string; 
                     </span>
                   )}
                   {r.published && (
-                    <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-800">Sent to Endod</span>
+                    <span className="rounded-full bg-neutral-50 px-2 py-0.5 text-[10px] font-semibold text-neutral-800">Sent to Endod</span>
                   )}
                   {r.retracted ? (
                     <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-semibold text-rose-800">Retracted</span>

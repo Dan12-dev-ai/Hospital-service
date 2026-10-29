@@ -4,6 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { cn } from "cn";
 import { Icon } from "@/components/ui/icon";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+
 import { useDashboard } from "@/components/dashboard/dashboard-context";
 import { ErrorState, LoadingState, RoleGate } from "@/components/common/states";
 import { useSignedIn } from "@/components/session/session-context";
@@ -122,7 +124,7 @@ function Bookings({ staff, hospital }: { staff: Staff; hospital: Hospital }) {
             <span className="font-body-md text-headline-lg font-normal text-outline"> — {total} bookings</span>
           </h1>
           <p className="flex items-center gap-1.5 font-body-sm text-body-sm text-outline">
-            <Icon name="local_hospital" className="text-[15px] text-primary" />
+            <Icon name="local_hospital" className="text-[15px] text-black" />
             <span>
               {hospital.name}
               {hospital.name_am ? ` • ${hospital.name_am}` : ""}
@@ -142,10 +144,10 @@ function Bookings({ staff, hospital }: { staff: Staff; hospital: Hospital }) {
       {/* KPIs */}
       <div className="mb-space-xl grid grid-cols-2 gap-space-md lg:grid-cols-4">
         {[
-          { label: "Awaiting approval", value: counts?.awaiting_doctor, icon: "hourglass_top", iconClass: "bg-secondary-container text-on-secondary-container" },
-          { label: "Confirmed", value: counts?.confirmed, icon: "event_available", iconClass: "bg-surface-container text-primary" },
-          { label: "Completed", value: counts?.completed, icon: "check_circle", iconClass: "bg-surface-container-high text-primary-container" },
-          { label: "Rejected / cancelled", value: counts ? counts.rejected + counts.cancelled : undefined, icon: "event_busy", iconClass: "bg-primary-fixed text-on-primary-fixed-variant" },
+          { label: "Awaiting approval", value: counts?.awaiting_doctor, icon: "hourglass_top", iconClass: "bg-neutral-200 text-neutral-800" },
+          { label: "Confirmed", value: counts?.confirmed, icon: "event_available", iconClass: "bg-surface-container text-black" },
+          { label: "Completed", value: counts?.completed, icon: "check_circle", iconClass: "bg-surface-container-high text-black" },
+          { label: "Rejected / cancelled", value: counts ? counts.rejected + counts.cancelled : undefined, icon: "event_busy", iconClass: "bg-neutral-200 text-neutral-800" },
         ].map((kpi) => (
           <div key={kpi.label} className="flex h-32 flex-col justify-between rounded-2xl bg-surface-container-lowest p-space-lg shadow-soft">
             <div className="flex items-center justify-between">
@@ -172,7 +174,7 @@ function Bookings({ staff, hospital }: { staff: Staff; hospital: Hospital }) {
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Search by patient name, Endod ID, phone, doctor..."
-              className="w-full rounded-xl bg-surface-container-low py-2.5 pl-10 pr-16 font-body-md text-body-md text-on-surface transition-all placeholder:text-outline focus:bg-surface-container-lowest focus:outline-none focus:ring-2 focus:ring-primary-container"
+              className="w-full rounded-xl bg-surface-container-low py-2.5 pl-10 pr-16 font-body-md text-body-md text-on-surface transition-all placeholder:text-outline focus:bg-surface-container-lowest focus:outline-none focus:ring-2 focus:ring-black"
             />
           </div>
           <div className="flex shrink-0 items-center gap-space-sm">
@@ -182,19 +184,16 @@ function Bookings({ staff, hospital }: { staff: Staff; hospital: Hospital }) {
                 My visits only
               </label>
             )}
-            <div className="relative">
-              <select
-                aria-label="Visit type"
-                value={mode}
-                onChange={(event) => setMode(event.target.value as VisitMode | "all")}
-                className="cursor-pointer appearance-none rounded-xl bg-surface-container-low py-2.5 pl-3 pr-8 font-label-md text-label-md text-on-surface focus:outline-none"
-              >
-                <option value="all">All visit types</option>
-                <option value="in_person">In person</option>
-                <option value="video">Video</option>
-              </select>
-              <Icon name="expand_more" className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[16px] text-outline" />
-            </div>
+            <Select value={mode} onValueChange={(v) => { if (v) setMode(v as VisitMode | "all"); }}>
+              <SelectTrigger aria-label="Visit type" className="cursor-pointer rounded-xl bg-surface-container-low py-2.5 pl-3 pr-8 font-label-md text-label-md text-on-surface">
+                <SelectValue>{(v) => (v === "all" ? "All visit types" : v === "in_person" ? "In person" : v === "video" ? "Video" : v)}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All visit types</SelectItem>
+                <SelectItem value="in_person">In person</SelectItem>
+                <SelectItem value="video">Video</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         </div>
 
@@ -210,7 +209,7 @@ function Bookings({ staff, hospital }: { staff: Staff; hospital: Hospital }) {
               className={cn(
                 "shrink-0 rounded-full px-3.5 py-1.5 font-label-md text-label-md transition-all",
                 status === key
-                  ? "bg-primary-container text-on-primary shadow-xs"
+                  ? "bg-black text-white shadow-xs"
                   : "bg-surface-container-low text-on-surface-variant hover:bg-surface-container hover:text-on-surface"
               )}
             >

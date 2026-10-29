@@ -32,7 +32,7 @@ export function DoctorsHeader({
           <button
             type="button"
             onClick={onAdd}
-            className="flex items-center gap-2 rounded-full bg-primary-container px-5 py-2.5 text-label-md font-label-md text-on-primary shadow-sm transition-all hover:bg-primary"
+            className="flex items-center gap-2 rounded-full bg-black px-5 py-2.5 text-label-md font-label-md text-white shadow-sm transition-all hover:bg-neutral-800"
           >
             <Icon name="person_add" className="text-[20px]" />
             <span>

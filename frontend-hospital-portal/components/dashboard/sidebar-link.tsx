@@ -26,7 +26,7 @@ export function SidebarLink({
         "flex items-center justify-between rounded-xl px-3 py-2 text-[13px] font-medium transition-colors",
         collapsed && "justify-center px-0",
         isActive
-          ? "bg-pine-green text-white shadow-sm"
+          ? "bg-black text-white shadow-sm"
           : "text-slate-500 hover:bg-slate-50 hover:text-slate-900"
       )}
     >
@@ -48,7 +48,7 @@ export function SidebarLink({
         </span>
       )}
       {!collapsed && item.dot && (
-        <span className="h-2 w-2 rounded-full bg-emerald-400" />
+        <span className="h-2 w-2 rounded-full bg-neutral-400" />
       )}
     </Link>
   );

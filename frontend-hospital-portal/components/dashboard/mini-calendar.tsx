@@ -110,7 +110,7 @@ export function MiniCalendar() {
               <span
                 className={
                   selectedDay === cell.day
-                    ? "flex h-7 w-7 items-center justify-center rounded-full bg-pine-green font-bold text-white shadow-sm"
+                    ? "flex h-7 w-7 items-center justify-center rounded-full bg-black font-bold text-white shadow-sm"
                     : "flex h-7 w-7 items-center justify-center rounded-full transition-colors hover:bg-slate-100"
                 }
               >

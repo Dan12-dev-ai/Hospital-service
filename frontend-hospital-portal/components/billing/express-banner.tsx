@@ -6,7 +6,7 @@ export function ExpressBanner({ onOpen }: { onOpen: () => void }) {
   return (
     <section className="flex flex-col items-center justify-between gap-4 rounded-2xl bg-surface-container-low p-4 md:flex-row">
       <div className="flex items-center gap-3">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary-container text-on-primary">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-black text-white">
           <Icon name="how_to_reg" className="text-[20px]" />
         </div>
         <div className="flex flex-col">
@@ -22,7 +22,7 @@ export function ExpressBanner({ onOpen }: { onOpen: () => void }) {
 
       <div className="flex w-full items-center justify-end gap-2 md:w-auto">
         <div className="flex items-center -space-x-1.5">
-          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary-container text-label-sm font-label-sm text-on-primary">
+          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-black text-label-sm font-label-sm text-white">
             1
           </span>
           <span className="flex h-6 w-6 items-center justify-center rounded-full bg-surface-variant text-label-sm font-label-sm text-on-surface-variant">
@@ -35,7 +35,7 @@ export function ExpressBanner({ onOpen }: { onOpen: () => void }) {
         <button
           type="button"
           onClick={onOpen}
-          className="rounded-lg bg-surface-container-lowest px-3 py-1.5 text-label-md font-label-md text-primary shadow-soft transition-colors hover:bg-surface-bright"
+          className="rounded-lg bg-surface-container-lowest px-3 py-1.5 text-label-md font-label-md text-black shadow-soft transition-colors hover:bg-surface-bright"
         >
           Open Registration Flow
         </button>

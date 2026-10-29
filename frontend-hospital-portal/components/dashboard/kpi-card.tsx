@@ -20,7 +20,7 @@ export function KpiCard({ metric }: { metric: KpiMetric }) {
             {metric.value}
           </span>
           {metric.trend && (
-            <span className="inline-flex items-center gap-0.5 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
+            <span className="inline-flex items-center gap-0.5 rounded-full bg-neutral-50 px-2 py-0.5 text-[11px] font-semibold text-neutral-700">
               <Icon name="trending_up" className="text-[14px]" />
               {metric.trend}
             </span>

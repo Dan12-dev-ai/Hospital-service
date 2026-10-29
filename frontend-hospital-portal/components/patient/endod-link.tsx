@@ -145,12 +145,12 @@ export function EndodLink({
   return (
     <section className="flex flex-col gap-4 rounded-3xl border border-card-border/80 bg-white p-5 shadow-soft">
       <h2 className="flex items-center gap-2 text-sm font-bold text-slate-800">
-        <Icon name="link" className="text-[18px] text-pine-green" />
+        <Icon name="link" className="text-[18px] text-black" />
         Endod account
       </h2>
 
       {linkedId ? (
-        <div data-testid="endod-link-status" className="flex flex-col gap-2 rounded-2xl bg-emerald-50 px-4 py-3 text-xs text-emerald-900 sm:flex-row sm:items-center sm:justify-between">
+        <div data-testid="endod-link-status" className="flex flex-col gap-2 rounded-2xl bg-neutral-50 px-4 py-3 text-xs text-neutral-900 sm:flex-row sm:items-center sm:justify-between">
           <span>
             <strong>Linked to Endod {linkedId}</strong>
             {request?.status === "linked" && request.linked_name ? ` (${request.linked_name})` : ""}. New records and
@@ -200,7 +200,7 @@ export function EndodLink({
               </span>
               {canLink && (
                 <button type="button" onClick={() => { setMode("id"); setDedanId(state.data?.claimed_dedan_id ?? ""); }}
-                  className="font-semibold text-primary hover:underline">
+                  className="font-semibold text-black hover:underline">
                   Use this ID
                 </button>
               )}

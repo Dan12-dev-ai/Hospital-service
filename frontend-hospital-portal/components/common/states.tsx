@@ -45,7 +45,7 @@ export function LoadingState({ label = "Loading…", className }: { label?: stri
         className
       )}
     >
-      <span className="h-4 w-4 animate-spin rounded-full border-2 border-pine-green border-t-transparent" />
+      <span className="h-4 w-4 animate-spin rounded-full border-2 border-black border-t-transparent" />
       <span>{label}</span>
     </div>
   );
@@ -87,7 +87,7 @@ export function ErrorState({
 export function EmptyState({ icon = "inbox", title, children }: { icon?: string; title: string; children?: ReactNode }) {
   return (
     <div className="flex flex-col items-center justify-center gap-2 p-10 text-center">
-      <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-pine-light text-pine-green">
+      <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-neutral-100 text-black">
         <Icon name={icon} className="text-[24px]" />
       </div>
       <p className="text-sm font-semibold text-slate-800">{title}</p>
@@ -147,7 +147,7 @@ export function Modal({
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             {icon && (
-              <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-primary text-on-primary">
+              <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-black text-white">
                 <Icon name={icon} className="text-[18px]" />
               </div>
             )}
@@ -170,12 +170,12 @@ export function Modal({
 }
 
 export const inputClass =
-  "w-full rounded-xl bg-surface-container-low px-3.5 py-2.5 text-sm text-on-surface placeholder:text-outline focus:outline-none focus:ring-2 focus:ring-primary-container disabled:opacity-60";
+  "w-full cursor-pointer rounded-xl bg-surface-container-low px-3.5 py-2.5 text-sm text-on-surface placeholder:text-outline focus:outline-none focus:ring-2 focus:ring-black disabled:opacity-60";
 
 export const labelClass = "mb-1 block text-xs font-semibold text-on-surface-variant";
 
 export const primaryButtonClass =
-  "inline-flex items-center justify-center gap-1.5 rounded-xl bg-primary-container px-4 py-2 text-xs font-semibold text-on-primary shadow-sm transition-colors hover:bg-pine-dark disabled:cursor-not-allowed disabled:opacity-60";
+  "inline-flex items-center justify-center gap-1.5 rounded-xl bg-black px-4 py-2 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-60";
 
 export const secondaryButtonClass =
   "inline-flex items-center justify-center gap-1.5 rounded-xl bg-surface-container px-4 py-2 text-xs font-semibold text-on-surface-variant transition-colors hover:bg-surface-container-high disabled:cursor-not-allowed disabled:opacity-60";

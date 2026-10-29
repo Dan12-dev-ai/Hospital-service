@@ -25,8 +25,8 @@ export function RevenueChart() {
 
       <ChartLegend
         items={[
-          { colorClass: "bg-pine-green", label: "Incomes" },
-          { colorClass: "bg-[#34d399]", label: "Discharges" },
+          { colorClass: "bg-black", label: "Incomes" },
+          { colorClass: "bg-[#9ca3af]", label: "Discharges" },
         ]}
       />
 
@@ -56,7 +56,7 @@ export function RevenueChart() {
             <path
               d="M 0,55 C 30,55 45,45 75,55 C 105,65 120,20 150,20 C 180,20 195,60 225,35 C 255,15 270,45 300,42"
               fill="none"
-              stroke="#1b6b57"
+              stroke="#000000"
               strokeLinecap="round"
               strokeWidth="2.5"
             />
@@ -64,7 +64,7 @@ export function RevenueChart() {
             <path
               d="M 0,45 C 30,45 45,65 75,60 C 105,55 120,85 150,75 C 180,65 195,30 225,50 C 255,70 270,55 300,52"
               fill="none"
-              stroke="#34d399"
+              stroke="#9ca3af"
               strokeLinecap="round"
               strokeWidth="2.5"
             />

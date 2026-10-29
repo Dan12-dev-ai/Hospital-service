@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { Icon } from "@/components/ui/icon";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+
 import { EmptyState } from "@/components/common/states";
 import type { PatientStatus } from "@/lib/api-types";
 import { initialsOf } from "@/lib/format";
@@ -110,18 +112,19 @@ export function PatientsTable({
           </span>
           <div className="flex items-center gap-1">
             <span className="text-label-sm font-label-sm text-outline">Rows:</span>
-            <select
-              aria-label="Rows per page"
-              value={pageSize}
-              onChange={(event) => onPageSizeChange(Number(event.target.value))}
-              className="cursor-pointer rounded-lg bg-surface-container-low px-2 py-1 text-label-sm font-label-sm text-on-surface focus:outline-none"
-            >
-              {pageSizes.map((size) => (
-                <option key={size} value={size}>
-                  {size}
-                </option>
-              ))}
-            </select>
+            <Select value={String(pageSize)} onValueChange={(v) => { if (v) onPageSizeChange(Number(v)); }}>
+              <SelectTrigger aria-label="Rows per page" className="cursor-pointer">
+                <SelectValue>{(v) => v}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {pageSizes.map((size) => (
+                  <SelectItem key={size} value={String(size)}>
+                    {size}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
           </div>
         </div>
         <div className="flex items-center gap-1 self-end sm:self-auto">
@@ -167,18 +170,18 @@ function PatientRow({
     <tr data-testid="patient-row" className="transition-colors hover:bg-surface-container-low/50">
       <td className={`px-3 ${padding}`}>
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-surface-container text-xs font-bold text-primary">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-surface-container text-xs font-bold text-black">
             {initialsOf(patient.name)}
           </div>
           <div className="flex min-w-0 flex-col">
             <div className="flex items-center gap-1.5">
-              <Link href={`/patients/${patient.id}`} className="truncate text-label-lg font-label-lg text-on-surface hover:text-primary hover:underline">
+              <Link href={`/patients/${patient.id}`} className="truncate text-label-lg font-label-lg text-on-surface hover:text-black hover:underline">
                 {patient.name}
               </Link>
               {patient.nameAm && <span className="text-body-sm font-body-sm text-outline">({patient.nameAm})</span>}
             </div>
             <span className="flex items-center gap-1.5 text-body-sm font-body-sm text-on-surface-variant">
-              <span className="font-medium text-primary">{patient.mrn}</span>
+              <span className="font-medium text-black">{patient.mrn}</span>
               {patient.dedanId ? (
                 <>
                   <span>•</span>
@@ -228,21 +231,24 @@ function PatientRow({
 
       <td className={`px-3 ${padding} text-right`}>
         {canChangeStatus ? (
-          <select
-            aria-label={`Change status of ${patient.name}`}
-            value=""
-            onChange={(event) => {
-              if (event.target.value) onChangeStatus(patient.id, event.target.value as PatientStatus);
+          <Select
+            value="move"
+            onValueChange={(v) => {
+              if (v && v !== "move") onChangeStatus(patient.id, v as PatientStatus);
             }}
-            className="cursor-pointer rounded-xl bg-surface-container-low px-2 py-1.5 text-label-sm font-label-sm text-on-surface focus:outline-none"
           >
-            <option value="">Move to…</option>
-            {nextStatuses(patient.status).map((status) => (
-              <option key={status} value={status}>
-                {STATUS_LABELS[status]}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger aria-label={`Change status of ${patient.name}`} className="cursor-pointer">
+              <SelectValue>{(v) => (v === "move" ? "Move to…" : (STATUS_LABELS[v as PatientStatus] ?? v))}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="move">Move to…</SelectItem>
+              {nextStatuses(patient.status).map((status) => (
+                <SelectItem key={status} value={status}>
+                  {STATUS_LABELS[status]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         ) : (
           <span className="text-body-sm font-body-sm text-outline">—</span>
         )}

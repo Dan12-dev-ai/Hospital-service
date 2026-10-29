@@ -16,7 +16,7 @@ export function PharmacyHeader() {
           </span>
         </h1>
         <p className="flex items-center gap-1.5 text-body-sm font-body-sm text-on-surface-variant">
-          <Icon name="location_on" className="text-[16px] text-primary" />
+          <Icon name="location_on" className="text-[16px] text-black" />
           Central Outpatient Pharmacy &amp; Satellite
           Inpatient Dispensary
         </p>
@@ -34,7 +34,7 @@ export function PharmacyHeader() {
         <button
           type="button"
           onClick={() => showToast("Opening new medication dispensation workflow")}
-          className="group flex items-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-label-lg font-label-lg text-on-primary shadow-sm transition-all hover:bg-primary-container"
+          className="group flex items-center gap-2 rounded-xl bg-black px-5 py-2.5 text-label-lg font-label-lg text-white shadow-sm transition-all hover:bg-black"
         >
           <Icon
             name="add"

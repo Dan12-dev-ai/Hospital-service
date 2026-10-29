@@ -85,12 +85,12 @@ export function FileLinks({ files, base }: { files: { id: string; filename: stri
     <ul className="flex flex-wrap gap-2" data-testid="record-files">
       {files.map((file) => (
         <li key={file.id} className="flex items-center gap-2 rounded-xl bg-surface-container-low px-3 py-1.5 text-xs">
-          <Icon name={file.content_type === "application/pdf" ? "picture_as_pdf" : "image"} className="text-[16px] text-pine-green" />
-          <a href={fileUrl(`${base}/${file.id}`)} target="_blank" rel="noopener noreferrer" className="font-semibold text-primary hover:underline">
+          <Icon name={file.content_type === "application/pdf" ? "picture_as_pdf" : "image"} className="text-[16px] text-black" />
+          <a href={fileUrl(`${base}/${file.id}`)} target="_blank" rel="noopener noreferrer" className="font-semibold text-black hover:underline">
             {file.filename}
           </a>
           <span className="text-slate-400">{formatSize(file.size)}</span>
-          <a href={fileUrl(`${base}/${file.id}`, true)} download={file.filename} aria-label={`Download ${file.filename}`} className="text-slate-500 hover:text-primary">
+          <a href={fileUrl(`${base}/${file.id}`, true)} download={file.filename} aria-label={`Download ${file.filename}`} className="text-slate-500 hover:text-black">
             <Icon name="download" className="text-[16px]" />
           </a>
         </li>

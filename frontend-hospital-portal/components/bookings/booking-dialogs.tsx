@@ -11,6 +11,8 @@ import {
   secondaryButtonClass,
 } from "@/components/common/states";
 import { useApi } from "@/lib/api";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+
 import type { Booking, DoctorList } from "@/lib/api-types";
 
 export type ReasonAction = "reject" | "cancel";
@@ -137,15 +139,20 @@ export function ApproveDialog({
         ) : items.length === 0 ? (
           <p className="text-xs text-slate-500">No active doctors yet. Add a doctor on the Doctors page first.</p>
         ) : (
-          <select id="approve-doctor" value={doctorId} onChange={(event) => setDoctorId(event.target.value)} className={inputClass}>
-            <option value="">Choose a doctor…</option>
-            {items.map((doctor) => (
-              <option key={doctor.id} value={doctor.id}>
-                {doctor.full_name}
-                {doctor.specialty ? ` — ${doctor.specialty}` : ""}
-              </option>
-            ))}
-          </select>
+          <Select value={doctorId || "__none__"} onValueChange={(v) => setDoctorId(v === "__none__" ? "" : (v ?? ""))}>
+            <SelectTrigger id="approve-doctor" className="w-full cursor-pointer">
+              <SelectValue>{(v) => (v && v !== "__none__" ? (items.find((d) => d.id === v)?.full_name ?? v) : "Choose a doctor…")}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__none__">Choose a doctor…</SelectItem>
+              {items.map((doctor) => (
+                <SelectItem key={doctor.id} value={doctor.id}>
+                  {doctor.full_name}
+                  {doctor.specialty ? ` — ${doctor.specialty}` : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         )}
       </div>
       <FormError message={error} />

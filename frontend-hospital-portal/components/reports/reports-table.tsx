@@ -71,7 +71,7 @@ export function ReportsTable({ records }: { records: ReportRecord[] }) {
             <select
               aria-label="Rows per page"
               defaultValue="6"
-              className="cursor-pointer rounded bg-surface-container-lowest px-2 py-0.5 text-on-surface focus:outline-none focus:ring-1 focus:ring-primary/30"
+              className="cursor-pointer rounded bg-surface-container-lowest px-2 py-0.5 text-on-surface focus:outline-none focus:ring-1 focus:ring-black/30"
             >
               <option>6</option>
               <option>15</option>
@@ -113,7 +113,7 @@ function PageButton({ page, active }: { page: number; active?: boolean }) {
       type="button"
       className={`flex h-8 w-8 items-center justify-center rounded-lg font-label-md text-label-sm transition-colors ${
         active
-          ? "bg-primary-container text-on-primary"
+          ? "bg-black text-white"
           : "text-on-surface-variant hover:bg-surface-container"
       }`}
     >
@@ -205,7 +205,7 @@ function ReportRow({ record }: { record: ReportRecord }) {
             type="button"
             title="Download PDF Report"
             onClick={() => showToast(`Downloading ${record.id} as PDF`)}
-            className="flex items-center gap-1 rounded-lg bg-surface-container-low px-2.5 py-1.5 font-label-md text-label-sm text-primary transition-colors hover:bg-surface-container"
+            className="flex items-center gap-1 rounded-lg bg-surface-container-low px-2.5 py-1.5 font-label-md text-label-sm text-black transition-colors hover:bg-surface-container"
           >
             <Icon name="picture_as_pdf" className="text-[16px]" />
             <span>PDF</span>

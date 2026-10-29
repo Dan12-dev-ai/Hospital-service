@@ -9,7 +9,7 @@ export function AutoDispatchStrip() {
   return (
     <section className="flex flex-col items-center justify-between gap-3 rounded-2xl bg-surface-container-lowest p-4 shadow-sm md:flex-row">
       <div className="flex items-center gap-3">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-surface-container-high text-primary">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-surface-container-high text-black">
           <Icon name="schedule_send" className="text-[20px]" />
         </div>
         <div className="flex flex-col">
@@ -17,7 +17,7 @@ export function AutoDispatchStrip() {
             <span className="font-label-lg text-label-md text-on-surface">
               Scheduled Auto-Dispatches
             </span>
-            <span className="h-2 w-2 rounded-full bg-secondary" />
+            <span className="h-2 w-2 rounded-full bg-neutral-600" />
           </div>
           <span className="font-body-sm text-body-sm text-outline">
             6 statutory reports queued for MoH weekly submission at 18:00 EAT
@@ -29,7 +29,7 @@ export function AutoDispatchStrip() {
         <button
           type="button"
           onClick={() => showToast("Opening auto-dispatch schedule configurator")}
-          className="flex items-center gap-1 font-label-md text-label-sm text-primary transition-all hover:underline"
+          className="flex items-center gap-1 font-label-md text-label-sm text-black transition-all hover:underline"
         >
           <span>Configure Schedule</span>
           <Icon name="arrow_forward" className="text-[16px]" />

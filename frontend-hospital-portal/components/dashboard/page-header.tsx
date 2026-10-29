@@ -30,7 +30,7 @@ export function PageHeader() {
         )}
         <Link
           href="/patients"
-          className="flex items-center gap-1.5 rounded-2xl bg-pine-green px-4 py-2 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-[#145243]"
+          className="flex items-center gap-1.5 rounded-2xl bg-black px-4 py-2 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-[#1f2937]"
         >
           <Icon name="person" className="text-[18px]" />
           <span>Patients</span>

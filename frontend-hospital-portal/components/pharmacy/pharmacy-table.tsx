@@ -65,7 +65,7 @@ export function PharmacyTable({ records }: { records: PharmacyRecord[] }) {
             <select
               aria-label="Rows per page"
               defaultValue="15"
-              className="cursor-pointer rounded-lg bg-surface-container-lowest px-2 py-1 text-on-surface focus:outline-none focus:ring-1 focus:ring-primary/30"
+              className="cursor-pointer rounded-lg bg-surface-container-lowest px-2 py-1 text-on-surface focus:outline-none focus:ring-1 focus:ring-black/30"
             >
               <option>15</option>
               <option>25</option>
@@ -106,7 +106,7 @@ function PageButton({ page, active }: { page: number; active?: boolean }) {
       type="button"
       className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
         active
-          ? "bg-primary font-bold text-on-primary shadow-sm"
+          ? "bg-black font-bold text-white shadow-sm"
           : "font-medium text-on-surface hover:bg-surface-container"
       }`}
     >
@@ -137,7 +137,7 @@ function PharmacyRow({ record }: { record: PharmacyRecord }) {
                 {record.nameAm}
               </span>
               <span>•</span>
-              <span className="font-mono font-medium text-primary">
+              <span className="font-mono font-medium text-black">
                 {record.id}
               </span>
               <span>•</span>
@@ -207,7 +207,7 @@ function PharmacyRow({ record }: { record: PharmacyRecord }) {
             onClick={() => showToast(record.action.message)}
             className={`rounded-xl font-label-md text-label-md transition-all ${
               record.action.variant === "primary"
-                ? "bg-primary px-3.5 py-1.5 font-semibold text-on-primary shadow-sm hover:bg-primary-container"
+                ? "bg-black px-3.5 py-1.5 font-semibold text-white shadow-sm hover:bg-black"
                 : "bg-surface-container-low px-3 py-1.5 font-medium text-on-surface hover:bg-surface-container"
             }`}
           >

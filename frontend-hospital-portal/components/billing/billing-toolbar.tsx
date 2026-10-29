@@ -2,6 +2,8 @@
 
 import { cn } from "cn";
 import { Icon } from "@/components/ui/icon";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+
 import {
   billingClinics,
   billingPaymentMethods,
@@ -41,7 +43,7 @@ export function BillingToolbar({
             className={cn(
               "whitespace-nowrap rounded-full px-3.5 py-1.5 text-label-md font-label-md transition-all",
               tab === item.key
-                ? "bg-primary-container text-on-primary shadow-soft"
+                ? "bg-black text-white shadow-soft"
                 : "bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container"
             )}
           >
@@ -61,7 +63,7 @@ export function BillingToolbar({
             value={filterQuery}
             onChange={(event) => onFilterQueryChange(event.target.value)}
             placeholder="Filter current results..."
-            className="w-full rounded-xl bg-surface-container-lowest py-1.5 pl-9 pr-3 text-body-sm font-body-sm text-on-surface shadow-soft placeholder:text-outline focus:outline-none focus:ring-2 focus:ring-primary-container"
+            className="w-full rounded-xl bg-surface-container-lowest py-1.5 pl-9 pr-3 text-body-sm font-body-sm text-on-surface shadow-soft placeholder:text-outline focus:outline-none focus:ring-2 focus:ring-black"
           />
         </div>
 
@@ -96,23 +98,17 @@ function SelectPill({
   ariaLabel: string;
 }) {
   return (
-    <div className="relative">
-      <select
-        aria-label={ariaLabel}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="cursor-pointer appearance-none rounded-xl bg-surface-container-lowest py-1.5 pl-3 pr-8 text-label-md font-label-md text-on-surface-variant shadow-soft focus:outline-none focus:ring-2 focus:ring-primary-container"
-      >
+    <Select value={value} onValueChange={(v) => onChange(v ?? value)}>
+      <SelectTrigger aria-label={ariaLabel} className="cursor-pointer rounded-xl bg-surface-container-lowest py-1.5 pl-3 pr-8 text-label-md font-label-md text-on-surface-variant shadow-soft focus:outline-none focus:ring-2 focus:ring-black">
+        <SelectValue>{(v) => options.find((o) => o.value === v)?.label ?? v}</SelectValue>
+      </SelectTrigger>
+      <SelectContent>
         {options.map((option) => (
-          <option key={option.value} value={option.value}>
+          <SelectItem key={option.value} value={option.value}>
             {option.label}
-          </option>
+          </SelectItem>
         ))}
-      </select>
-      <Icon
-        name="expand_more"
-        className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[18px] text-outline"
-      />
-    </div>
+      </SelectContent>
+    </Select>
   );
 }

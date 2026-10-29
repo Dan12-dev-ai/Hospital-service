@@ -1,7 +1,9 @@
 "use client";
 
 import { cn } from "cn";
-import { Icon } from "@/components/ui/icon";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+
+
 import {
   reportDepartments,
   reportFormats,
@@ -42,7 +44,7 @@ export function ReportsToolbar({
             className={cn(
               "whitespace-nowrap rounded-xl px-3.5 py-2 font-label-lg text-label-sm transition-colors",
               tab === item.key
-                ? "bg-primary-container text-on-primary shadow-sm"
+                ? "bg-black text-white shadow-sm"
                 : "text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface"
             )}
           >
@@ -87,23 +89,17 @@ function SelectPill({
   ariaLabel: string;
 }) {
   return (
-    <div className="relative">
-      <select
-        aria-label={ariaLabel}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="cursor-pointer appearance-none rounded-xl bg-surface-container-low py-1.5 pl-3 pr-8 font-label-md text-label-sm text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary/20"
-      >
+    <Select value={value} onValueChange={(v) => onChange(v ?? value)}>
+      <SelectTrigger aria-label={ariaLabel} className="cursor-pointer rounded-xl bg-surface-container-low py-1.5 pl-3 pr-8 font-label-md text-label-sm text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-black/20">
+        <SelectValue>{(v) => options.find((o) => o.value === v)?.label ?? v}</SelectValue>
+      </SelectTrigger>
+      <SelectContent>
         {options.map((option) => (
-          <option key={option.value} value={option.value}>
+          <SelectItem key={option.value} value={option.value}>
             {option.label}
-          </option>
+          </SelectItem>
         ))}
-      </select>
-      <Icon
-        name="arrow_drop_down"
-        className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-[16px] text-on-surface-variant"
-      />
-    </div>
+      </SelectContent>
+    </Select>
   );
 }

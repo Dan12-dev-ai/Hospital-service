@@ -62,9 +62,9 @@ export function AppointmentsCard() {
               type="button"
               onClick={() => setStatusFilter(filter.key)}
               className={cn(
-                "whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] transition-colors",
+                "whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] transition-colors cursor-pointer",
                 statusFilter === filter.key
-                  ? "bg-pine-green font-semibold text-white"
+                  ? "bg-black font-semibold text-white"
                   : "font-medium text-slate-600 hover:bg-slate-100"
               )}
             >

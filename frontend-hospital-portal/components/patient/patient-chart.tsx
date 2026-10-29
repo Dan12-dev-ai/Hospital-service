@@ -56,7 +56,7 @@ function Chart({ id, staff, hospital }: { id: string; staff: Staff; hospital: Ho
   return (
     <div className="flex w-full flex-col gap-5">
       <header className="flex flex-col gap-2">
-        <Link href="/patients" className="flex items-center gap-1 text-xs font-semibold text-primary hover:underline">
+        <Link href="/patients" className="flex items-center gap-1 text-xs font-semibold text-black hover:underline">
           <Icon name="arrow_back" className="text-[16px]" />
           Patients
         </Link>
@@ -67,7 +67,7 @@ function Chart({ id, staff, hospital }: { id: string; staff: Staff; hospital: Ho
               {p.full_name_am && <span className="ml-2 text-base font-medium text-slate-400">({p.full_name_am})</span>}
             </h1>
             <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-slate-500">
-              <span className="font-semibold text-primary">{p.mrn}</span>
+              <span className="font-semibold text-black">{p.mrn}</span>
               <span>•</span>
               <span>{p.sex === "female" ? "Female" : "Male"}{p.age_years !== null ? `, ${p.age_years} y` : ""}</span>
               <span>•</span>
@@ -75,7 +75,7 @@ function Chart({ id, staff, hospital }: { id: string; staff: Staff; hospital: Ho
               {p.dedan_id ? (
                 <>
                   <span>•</span>
-                  <span className="font-semibold text-pine-green">Endod {p.dedan_id}</span>
+                  <span className="font-semibold text-black">Endod {p.dedan_id}</span>
                 </>
               ) : p.claimed_dedan_id ? (
                 <>
@@ -108,7 +108,7 @@ function Chart({ id, staff, hospital }: { id: string; staff: Staff; hospital: Ho
                 aria-selected={tab === t.key}
                 onClick={() => setTab(t.key)}
                 className={`inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold transition-colors ${
-                  tab === t.key ? "bg-pine-green text-white shadow-sm" : "bg-white text-slate-600 hover:bg-slate-50"
+                  tab === t.key ? "bg-black text-white shadow-sm" : "bg-white text-slate-600 hover:bg-slate-50"
                 }`}
               >
                 <Icon name={t.icon} className="text-[16px]" />
