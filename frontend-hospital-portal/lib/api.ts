@@ -18,6 +18,8 @@ export class ApiError extends Error {
 const TEMPORARY_PASSWORD = "Change your temporary password to continue.";
 /** The backend's answer (app/auth.py, NOT_APPROVED) while the hospital is still applying. */
 const NOT_APPROVED = "Your hospital is not approved by Endod yet. Finish your application to continue.";
+/** The backend's answer (app/auth.py, INCOMPLETE) to a sign-in half-way through. */
+const INCOMPLETE = "Finish signing in first.";
 
 function messageOf(body: unknown, status: number): { message: string; code?: string } {
   if (typeof body === "object" && body !== null) {
@@ -83,6 +85,9 @@ export async function apiFetch<T>(
     }
     if (response.status === 403 && message === NOT_APPROVED) {
       hardNavigate("/onboarding");
+    }
+    if (response.status === 403 && message === INCOMPLETE) {
+      hardNavigate("/enroll");
     }
     throw new ApiError(message, response.status, code);
   }

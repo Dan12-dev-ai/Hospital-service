@@ -61,6 +61,23 @@ def bootstrap(code: str, name: str, name_am: str | None, admin_email: str, admin
     return password
 
 
+def reset_two_factor(email: str) -> int:
+    """Endod's way to reset anyone's two-step verification (a lost phone, the last admin)."""
+    from app import twofactor
+    from app.auth import audit
+    from app.models import StaffUser
+
+    with platform_session() as session:
+        user = session.scalar(select(StaffUser).where(StaffUser.email == email.strip().lower()))
+        if user is None:
+            raise SystemExit(f"No staff account {email}.")
+        twofactor.reset(session, user)
+        audit(session, user.hospital_id, None, "staff_2fa_reset", "staff", user.id, {"by": "endod_cli"})
+        print(f"{user.email}: two-step verification reset; every session ended. "
+              "They set up a new authenticator at their next sign-in.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.cli")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -94,7 +111,12 @@ def main(argv: list[str] | None = None) -> int:
     export = commands.add_parser("export-file", help="write a stored file (record file or document), decrypted")
     export.add_argument("--file", required=True, help="the file's id")
     export.add_argument("--out", required=True, help="where to write it (must not exist; created 0600)")
+    reset = commands.add_parser("reset-2fa", help="forget a staff member's authenticator (they set up a new one)")
+    reset.add_argument("--email", required=True)
     args = parser.parse_args(argv)
+
+    if args.command == "reset-2fa":
+        return reset_two_factor(args.email)
 
     if args.command in ("encrypt-existing", "check-encryption", "enforce-encryption", "rotate-key",
                         "decrypt-existing", "export-file"):

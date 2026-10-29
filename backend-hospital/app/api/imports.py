@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta, timezone
 from typing import Any, Dict, Optional
 from urllib.parse import unquote
 
@@ -17,7 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from app import crypto, files, imports, records
 from app.auth import Staff, audit, require_roles
 from app.db import new_id, session_scope, utcnow
-from app.models import ClinicalRecord, Hospital, ImportBatch, Patient, RecordFile, Role
+from app.models import Hospital, ImportBatch, Patient, RecordFile, Role
 
 router = APIRouter(prefix="/imports", tags=["imports"])
 
@@ -141,15 +141,7 @@ def _confirm(import_id: str, staff: Staff) -> Dict[str, Any]:
             if key and imports.already_imported(session, staff.hospital_id, key):
                 skipped.append({"index": item["index"], "what": item["what"], "reason": "already imported"})
                 continue
-            record = ClinicalRecord(
-                hospital_id=staff.hospital_id, patient_id=patient.id, category=item["category"], title=item["title"],
-                details=json.dumps(item["details"], ensure_ascii=False),
-                occurred_at=datetime.fromisoformat(item["occurred_at"]).astimezone(timezone.utc),
-                recorded_by=None, recorded_by_name=item["recorded_by"], source="import", version=1,
-                import_key=key,
-            )
-            session.add(record)
-            session.flush()
+            record = imports.new_record(session, staff.hospital_id, patient, {**item, "import_key": key})
             file_id = (item.get("file") or {}).get("file_id")
             if file_id:
                 row = session.scalar(select(RecordFile).where(RecordFile.id == file_id,

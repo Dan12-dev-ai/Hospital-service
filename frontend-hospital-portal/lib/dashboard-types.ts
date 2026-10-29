@@ -10,6 +10,8 @@ export type NavItem = {
   dot?: boolean;
   /** Roles that see this link (everyone when absent). */
   roles?: Role[];
+  /** Only for hospitals approved by Endod (not pending or suspended). */
+  approvedOnly?: boolean;
 };
 
 export type AppointmentStatus = "requested" | "checkedin" | "confirmed";

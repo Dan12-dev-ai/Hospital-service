@@ -45,6 +45,12 @@ HOSPITAL_DATABASE_URL as the server under test. Prints JSON.
     python seed.py applicant-staff <hospital_id> <email> <role>
         Another staff member of an applying hospital, with the temporary
         password (they must change it at first sign-in).
+
+    python seed.py totp-code <email>
+        A code from the account's authenticator app, for a step no earlier
+        code used (waiting for the next step if needed). The accounts of a
+        seeded hospital have an authenticator set up already (but newdoc,
+        who sets it up after changing the temporary password).
 """
 
 from __future__ import annotations
@@ -52,6 +58,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -59,7 +66,7 @@ sys.path.insert(0, os.getcwd())
 
 from sqlalchemy import select  # noqa: E402
 
-from app import bookings, dispensing, linking, records, sharing  # noqa: E402
+from app import bookings, dispensing, linking, records, sharing, totp  # noqa: E402
 from app.db import platform_session  # noqa: E402
 from app.models import (  # noqa: E402
     Booking, ClinicalRecord, Hospital, HospitalStatus, LinkStatus, Patient, PatientLinkRequest, ProcessedEvent,
@@ -98,8 +105,11 @@ def seed_hospital(tag: str, unlisted: bool) -> dict:
         for key, role in ROLES.items():
             email = f"{key}@{tag}.example"
             name = f"{'Dr. ' if role == 'doctor' else ''}{key.title()} {tag.title()}"
+            # Two-step verification set up already (app/twofactor.py): the
+            # tests read codes with `seed.py totp-code`.
             session.add(StaffUser(hospital_id=hospital.id, email=email, full_name=name, role=role,
-                                  password_hash=hashed, must_change_password=False))
+                                  password_hash=hashed, must_change_password=False,
+                                  totp_secret=totp.new_secret(), totp_enrolled_at=datetime.now(timezone.utc)))
             accounts[key] = {"email": email, "name": name}
         email = f"newdoc@{tag}.example"
         session.add(StaffUser(hospital_id=hospital.id, email=email, full_name=f"Dr. Newdoc {tag.title()}",
@@ -270,6 +280,20 @@ def seed_applicant_staff(hospital_id: str, email: str, role: str) -> dict:
         return {"id": user.id, "email": email, "temporary_password": TEMPORARY_PASSWORD}
 
 
+def totp_code(email: str) -> dict:
+    with platform_session() as session:
+        user = session.scalar(select(StaffUser).where(StaffUser.email == email.strip().lower()))
+        if user is None or not user.totp_secret:
+            raise SystemExit(f"{email} has no authenticator set up")
+        secret, last = user.totp_secret, user.totp_last_step
+    now = totp.current_step()
+    step = max(now, -1 if last is None else last + 1)
+    if step > now + totp.WINDOW:
+        # Every usable step was used: wait until this one is within reach.
+        time.sleep(max(0.0, (step - totp.WINDOW) * totp.INTERVAL - time.time() + 0.2))
+    return {"code": totp.code_at(secret, step)}
+
+
 def main() -> None:
     args = sys.argv[1:]
     if args[:1] == ["hospital"] and len(args) >= 2:
@@ -288,6 +312,8 @@ def main() -> None:
         print(json.dumps(seed_applicant_staff(args[1], args[2], args[3])))
     elif args[:1] == ["dispense"] and len(args) == 6:
         print(json.dumps(dispense(args[1], args[2], args[3], args[4], args[5])))
+    elif args[:1] == ["totp-code"] and len(args) == 2:
+        print(json.dumps(totp_code(args[1])))
     elif args[:1] == ["share"] and len(args) == 5:
         print(json.dumps(share(args[1], args[2], args[3], args[4])))
     else:

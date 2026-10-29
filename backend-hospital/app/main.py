@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
 from app.api import (
-    admin, application, auth, bookings, doctors, history, imports, onboarding, patients, queue, shared,
+    admin, application, auth, bookings, connections, doctors, history, imports, onboarding, patients, queue, shared,
 )
 from app.config import Settings, get_settings
 from app.crypto import check_master_key, verify_master_key
@@ -96,6 +96,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(queue.router)
     app.include_router(shared.router)
     app.include_router(imports.router)
+    # "Connect your system" (the portal). The integration API itself is a
+    # separate service: app/integrations_main.py.
+    app.include_router(connections.router)
     return app
 
 

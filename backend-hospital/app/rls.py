@@ -49,8 +49,9 @@ into a query as ``hospital_app`` could still call ``set_config`` to choose
 another hospital, or, with a second statement, ``SET ROLE hospital_platform``;
 parameterised queries are what keep that out.
 
-Migration 0007 installs these objects, and 0008 the policies of
-``hospital_keys`` (each hospital's wrapped data keys, app/crypto.py); the
+Migration 0007 installs these objects, 0008 the policies of
+``hospital_keys`` (each hospital's wrapped data keys, app/crypto.py), and
+0009 those of the integration API's tables and its client lookup; the
 tests (which create the tables directly) call :func:`install`.
 tests/test_rls.py checks they agree.
 """
@@ -94,6 +95,15 @@ TENANT_TABLES: List[Tuple[str, str]] = [
     ("patient_alerts", "hospital_id"),
     # Migration 0008: the hospitals' wrapped data keys.
     ("hospital_keys", "hospital_id"),
+    # Migration 0009: the integration API (app/integrations).
+    ("integration_clients", "hospital_id"),
+    ("integration_assertions", "hospital_id"),
+    ("integration_requests", "hospital_id"),
+    ("integration_resources", "hospital_id"),
+    ("integration_idempotency", "hospital_id"),
+    ("webhook_deliveries", "hospital_id"),
+    # Migration 0010: two-step verification.
+    ("staff_recovery_codes", "hospital_id"),
 ]
 
 #: Child tables without a hospital column: table -> (parent, foreign key column).
@@ -157,6 +167,16 @@ SAME_HOSPITAL_REFERENCES: List[Tuple[str, str, str, str]] = [
     ("prescription_dispenses", "record_id", "clinical_records", "CASCADE"),
     ("patient_alerts", "patient_id", "patients", "CASCADE"),
     ("patient_alerts", "created_by", "staff_users", "SET NULL"),
+    # Migration 0009: the integration API.
+    ("integration_clients", "created_by", "staff_users", "SET NULL"),
+    ("integration_assertions", "client_pk", "integration_clients", "CASCADE"),
+    ("integration_requests", "client_pk", "integration_clients", "CASCADE"),
+    ("integration_resources", "client_pk", "integration_clients", "CASCADE"),
+    ("integration_resources", "record_id", "clinical_records", "CASCADE"),
+    ("integration_idempotency", "client_pk", "integration_clients", "CASCADE"),
+    ("webhook_deliveries", "client_pk", "integration_clients", "CASCADE"),
+    # Migration 0010: two-step verification.
+    ("staff_recovery_codes", "user_id", "staff_users", "CASCADE"),
 ]
 
 TENANT_POLICY = "tenant_isolation"
@@ -267,6 +287,11 @@ FUNCTIONS: List[Tuple[str, str]] = [
                        WHERE h.status = 'suspended' AND a.status <> 'approved')
             RETURNING 1)
         SELECT count(*)::integer FROM gone $$"""),
+    # Migration 0009, the integration API's token endpoint: the hospital of a
+    # client (a revoked one too: it is refused afterwards, with the same work).
+    ("hospital_of_integration_client(p_client_id text)",
+     f"""RETURNS text LANGUAGE sql STABLE {_DEFINER} AS $$
+        SELECT hospital_id::text FROM integration_clients WHERE client_id = p_client_id $$"""),
 ]
 
 
@@ -495,6 +520,14 @@ def hospital_of_token(session: Session, digest: str) -> Optional[str]:
     if sess.revoked_at is not None or ensure_aware(sess.expires_at) <= utcnow() or not user.active:
         return None
     return user.hospital_id
+
+
+def hospital_of_integration_client(session: Session, client_id: str) -> Optional[str]:
+    """The hospital of the integration client with this (public) client_id, if any."""
+    if _postgres(session):
+        return session.scalar(text("SELECT hospital_of_integration_client(:c)"), {"c": client_id})
+    return session.scalar(text("SELECT hospital_id FROM integration_clients WHERE client_id = :c"),
+                          {"c": client_id})
 
 
 def hospital_code_taken(session: Session, code: str) -> bool:

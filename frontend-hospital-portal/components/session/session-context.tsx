@@ -59,6 +59,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           hardNavigate("/account/password");
           return;
         }
+        // A sign-in half-way: the code (sign in again), or the authenticator's set-up.
+        if (staff.stage === "totp" || staff.stage === "enroll") {
+          hardNavigate(staff.stage === "totp" ? "/login" : "/enroll");
+          return;
+        }
         if (staff.hospital?.locked) {
           hardNavigate("/onboarding");
           return;

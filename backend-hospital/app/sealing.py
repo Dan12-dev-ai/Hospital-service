@@ -34,7 +34,7 @@ from __future__ import annotations
 from typing import Dict, Optional, Tuple
 
 from sqlalchemy import event, inspect, select
-from sqlalchemy.orm import Session, attributes
+from sqlalchemy.orm import Session, attributes, object_session
 from sqlalchemy.orm.util import identity_key
 
 from app import crypto
@@ -50,10 +50,18 @@ SEALED: Dict[str, Tuple[str, ...]] = {
     "record_files": ("filename",),
     "shared_records": ("title", "details", "files"),
     "import_batches": ("plan",),
+    # Migration 0009: the integration API.
+    "integration_clients": ("webhook_secret",),
+    "integration_idempotency": ("response",),
+    "webhook_deliveries": ("body",),
+    # Migration 0010: authenticator secrets.
+    "staff_users": ("totp_secret",),
+    "staff_sessions": ("totp_pending_secret",),
 }
 
 #: Tables whose hospital is their parent row's: table -> (parent table, foreign key column).
-VIA_PARENT: Dict[str, Tuple[str, str]] = {"shared_records": ("record_shares", "share_id")}
+VIA_PARENT: Dict[str, Tuple[str, str]] = {"shared_records": ("record_shares", "share_id"),
+                                          "staff_sessions": ("staff_users", "user_id")}
 
 _PLAIN = "sealing.plain"
 
@@ -191,7 +199,9 @@ def _on_load(obj, context) -> None:
 
 
 def _on_refresh(obj, context, attrs) -> None:
-    _unseal(obj, context.session, attrs)
+    # A bulk UPDATE refreshes the attributes it set without a query context.
+    session = context.session if context is not None else object_session(obj)
+    _unseal(obj, session, attrs)
 
 
 def register() -> None:

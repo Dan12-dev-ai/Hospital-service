@@ -190,6 +190,8 @@ class TestLockout:
     OPEN = {
         ("POST", "/auth/login"), ("POST", "/auth/logout"), ("GET", "/auth/me"), ("POST", "/auth/password"),
         ("POST", "/onboarding"), ("GET", "/health"),
+        # The sign-in steps (a code, setting up the authenticator) answer for themselves.
+        ("POST", "/auth/totp"), ("POST", "/auth/enroll/start"), ("POST", "/auth/enroll/confirm"),
     }
 
     def test_every_other_staff_route_refuses_a_pending_hospital(self, client):
@@ -228,6 +230,11 @@ class TestLockout:
         client.post("/onboarding/submit", headers=headers)
         approved = client.post(f"/platform/hospitals/{hospital_id}/approve", headers=KEY).json()
         assert approved["status"] == "approved"
+        # Approval ends the password-only session; the next sign-in sets up the authenticator.
+        assert client.get("/hospital", headers=headers).status_code == 401
+        signed = client.post("/auth/login", json={"email": ACCOUNT["admin_email"], "password": ACCOUNT["password"]})
+        assert signed.json()["stage"] == "enroll"
+        headers = sign_in(client, ACCOUNT["admin_email"], ACCOUNT["password"])
         assert client.get("/hospital", headers=headers).status_code == 200
         assert client.get("/patients", headers=headers).status_code == 200
         app = client.get("/onboarding/application", headers=headers).json()

@@ -46,6 +46,8 @@ export const navItems: NavItem[] = [
   { label: "Pharmacy", icon: "medication", href: "/pharmacy" },
   { label: "Reports", icon: "description", href: "/reports" },
   { label: "Settings", icon: "settings", href: "/settings", roles: ["admin"] },
+  // The hospital's own systems (the integration API): admins of approved hospitals.
+  { label: "Connect your system", icon: "hub", href: "/connect", roles: ["admin"], approvedOnly: true },
 ];
 
 /** Billing is not connected to the hospital service yet: an illustrative card. */

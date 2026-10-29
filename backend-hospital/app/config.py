@@ -72,6 +72,22 @@ class Settings(BaseSettings):
     #: used when it is not set.
     MASTER_KEY_FILE: Optional[str] = None
 
+    # --- Integration API for hospitals' own systems (docs/integrations.md) ---
+    #: A file holding the service's signing key for integration access tokens
+    #: (a PEM EC P-256 private key: ``openssl ecparam -name prime256v1 -genkey
+    #: -noout -out signing.pem``), mounted read-only like the master key.
+    #: Without it, outside development and test, the integration API issues no
+    #: tokens (it answers 503).
+    INTEGRATIONS_SIGNING_KEY_FILE: Optional[str] = None
+    #: The integration API's public base URL (nginx maps it to /integrations/v1
+    #: of this service). The token URL, which client assertions must name as
+    #: their audience, is this plus ``/oauth/token``.
+    INTEGRATIONS_PUBLIC_URL: str = "https://api.endod-health.com/hospital/v1"
+    #: The secret nginx sends as ``X-Endod-Edge-Key`` to the integrations
+    #: service (app/integrations_main.py), which refuses any request without
+    #: it, and answers 503 in production while it is not set.
+    EDGE_SHARED_SECRET: Optional[str] = None
+
     @field_validator("ENVIRONMENT", mode="before")
     @classmethod
     def _lower(cls, value):

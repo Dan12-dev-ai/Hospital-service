@@ -15,6 +15,7 @@ import time
 import redis
 
 from app import bookings, chores, dispensing, eventbus, linking, sharing
+from app.integrations import webhooks
 from app.crypto import check_master_key, verify_master_key
 from app.db import check_connection_role
 
@@ -71,6 +72,9 @@ def main() -> int:
     check_master_key()
     check_connection_role()
     verify_master_key()  # this database's master key, or nothing starts
+    # Webhooks to hospitals' own systems: their own thread and pool, never this loop.
+    deliverer = webhooks.Deliverer()
+    deliverer.start()
     backoff = 1.0
     client = None
     while _running:
@@ -92,6 +96,7 @@ def main() -> int:
             logger.exception("worker_round_failed")
             time.sleep(backoff)
             backoff = min(backoff * 2, 30)
+    deliverer.stop()
     logger.info("worker_stopped")
     return 0
 
