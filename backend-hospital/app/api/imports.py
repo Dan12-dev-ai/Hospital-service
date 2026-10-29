@@ -14,7 +14,7 @@ from fastapi.responses import PlainTextResponse
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app import files, imports, records
+from app import crypto, files, imports, records
 from app.auth import Staff, audit, require_roles
 from app.db import new_id, session_scope, utcnow
 from app.models import ClinicalRecord, Hospital, ImportBatch, Patient, RecordFile, Role
@@ -61,24 +61,25 @@ async def preview(request: Request, x_filename: Optional[str] = Header(default=N
 def _plan(staff: Staff, data: bytes, kind: str, filename: Optional[str]) -> Dict[str, Any]:
     stored = []
     try:
-        with session_scope() as session:
+        with session_scope(staff.hospital_id) as session:
             hospital = session.get(Hospital, staff.hospital_id)
             try:
                 planner = imports.plan(session, hospital, data, kind)
             except imports.ImportFailed as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-            # Inline documents are kept as uploads until the import is confirmed.
+            # Inline documents are kept as uploads until the import is confirmed (encrypted).
+            key = crypto.active_key(session, staff.hospital_id) if planner.documents else None
             for item in planner.items:
                 document = planner.documents.get(item["index"])
                 if document is None:
                     continue
                 raw, _type, name = document
                 file_id = new_id()
-                size, sha256, content_type = files.store_bytes(raw, staff.hospital_id, file_id)
+                size, sha256, content_type = files.store_bytes(raw, staff.hospital_id, file_id, key)
                 stored.append(file_id)
                 session.add(RecordFile(id=file_id, hospital_id=staff.hospital_id, patient_id=item["patient_id"],
                                        filename=name, content_type=content_type, size=size, sha256=sha256,
-                                       uploaded_by=staff.id))
+                                       key_version=key.version, uploaded_by=staff.id))
                 item["file"]["file_id"] = file_id
             batch = ImportBatch(hospital_id=staff.hospital_id, created_by=staff.id, format=kind, filename=filename,
                                 plan=json.dumps({"items": planner.items, "skipped": planner.skipped},
@@ -114,7 +115,7 @@ def confirm(import_id: str, staff: Staff = Depends(importers)) -> Dict[str, Any]
 
 
 def _confirm(import_id: str, staff: Staff) -> Dict[str, Any]:
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         batch = session.scalar(select(ImportBatch).where(
             ImportBatch.id == import_id, ImportBatch.hospital_id == staff.hospital_id).with_for_update())
         if batch is None:

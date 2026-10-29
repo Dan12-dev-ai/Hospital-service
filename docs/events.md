@@ -22,7 +22,18 @@ change that was rolled back. Delivery is at least once; each receiver records
 handled event ids in the same transaction as the effect, so handling is
 exactly once. A failing event is retried after 30 seconds, up to 5 times, then
 moved to the dead-letter stream; a malformed one (fails validation) goes there
-at once. An event that arrives before the one it depends on (a cancellation
+at once. A dead-letter entry keeps the event's id, type, source, time, the
+error and a redacted payload (field names and `*_id` values only), never its
+clinical data. Payloads are plain text in Redis while in flight: an entry is
+deleted once every consumer group on its stream has acknowledged it (one
+atomic Lua script per stream, so no group can be created or acknowledge in
+between). This relies on two rules for every consumer of these streams: an
+entry a consumer holds stays in its group's pending list until acknowledged
+(take over a dead consumer's entries with XAUTOCLAIM; never XGROUP
+DELCONSUMER a consumer that still holds entries, which would drop them
+unacknowledged), and a group created later from `0` gets only the entries no
+group had finished with by then (create groups at startup, before relying
+on history). An event that arrives before the one it depends on (a cancellation
 before its booking) is retried until that one has been handled.
 
 Every payload is validated by the receiver; times must carry their offset and
@@ -112,3 +123,9 @@ confirmed or declined two hours after its time.
 Linking hospital patients to Endod accounts, clinical records, visits and
 follow-ups, queues, records shared by patients and imports add more events to
 these same streams. Their contract is in [history-events.md](history-events.md).
+
+## Prescriptions dispensed at pharmacies
+
+`prescription.dispensed` (`endod:patient`): a pharmacy gave medicine from one
+of this hospital's prescription records, through Endod. The contract (section
+4 is this service's part) is in [pharmacy.md](pharmacy.md).

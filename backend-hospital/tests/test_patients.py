@@ -26,10 +26,10 @@ def register(client, headers, **overrides):
 
 def link_directly(patient_id, dedan_id):
     """As if Endod had confirmed the link (patient.linked)."""
-    from app.db import session_scope
+    from app.db import platform_session
     from app.models import Patient
 
-    with session_scope() as session:
+    with platform_session() as session:
         session.get(Patient, patient_id).dedan_id = dedan_id
 
 
@@ -98,17 +98,18 @@ class TestRegistration:
 
     def test_only_stored_form_endod_ids_reach_the_database_or_the_bus(self, client, desk):
         from app import eventbus
-        from app.db import session_scope
+        from app.db import platform_session
         from app.models import ClinicalRecord, Patient, QueueEntry, RecordShare, Visit
 
         patient = register(client, desk)
-        with session_scope() as session:
+        with platform_session() as session:
             row = session.get(Patient, patient["id"])
             for bad in ("DE-482731", "de482731", "DE4827310", "x" * 40):
                 with pytest.raises(ValueError):
                     row.dedan_id = bad
-                for model, column in ((ClinicalRecord, "published_dedan_id"), (Visit, "follow_up_sent_to"),
-                                      (QueueEntry, "dedan_id"), (RecordShare, "dedan_id")):
+                for model, column in ((ClinicalRecord, "published_dedan_id"), (ClinicalRecord, "previous_dedan_id"),
+                                      (Visit, "follow_up_sent_to"), (QueueEntry, "dedan_id"),
+                                      (RecordShare, "dedan_id")):
                     with pytest.raises(ValueError):
                         setattr(model(), column, bad)
                 with pytest.raises(ValueError):
@@ -145,12 +146,12 @@ class TestDirectory:
     def test_viewing_a_record_is_logged(self, client, desk):
         from sqlalchemy import select
 
-        from app.db import session_scope
+        from app.db import platform_session
         from app.models import AuditEvent
 
         patient = register(client, desk)
         assert client.get(f"/patients/{patient['id']}", headers=desk).json()["mrn"] == patient["mrn"]
-        with session_scope() as session:
+        with platform_session() as session:
             actions = session.scalars(select(AuditEvent.action).where(AuditEvent.target_id == patient["id"])).all()
         assert "patient_viewed" in actions
 
@@ -243,12 +244,12 @@ class TestReviewFixes:
     def test_searches_are_audited(self, client, desk):
         from sqlalchemy import select
 
-        from app.db import session_scope
+        from app.db import platform_session
         from app.models import AuditEvent
 
         patient = register(client, desk)
         client.get("/patients", headers=desk, params={"q": patient["mrn"]})
-        with session_scope() as session:
+        with platform_session() as session:
             event = session.scalar(select(AuditEvent).where(AuditEvent.action == "patients_searched"))
         assert event is not None and patient["id"] in event.detail
 
@@ -290,12 +291,12 @@ class TestReviewFixes:
 
         from sqlalchemy import select
 
-        from app.db import session_scope
+        from app.db import platform_session
         from app.models import AuditEvent
 
         patient = register(client, desk, claimed_dedan_id="DE482731")
         client.patch(f"/patients/{patient['id']}", headers=desk, json={"claimed_dedan_id": None, "address": "Bole"})
-        with session_scope() as session:
+        with platform_session() as session:
             detail = json.loads(session.scalar(select(AuditEvent.detail).where(AuditEvent.action == "patient_updated")))
         assert detail["identity"] == {"claimed_dedan_id": {"from": "DE482731", "to": None}}
 

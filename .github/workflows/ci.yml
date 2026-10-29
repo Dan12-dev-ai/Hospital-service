@@ -32,19 +32,45 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - name: Tests (SQLite)
         run: python -m pytest tests -q
-      - name: Tests (PostgreSQL)
+      # Tables are created as the owner (this URL); the app and every test run as
+      # the hospital_app role, under row-level security (tests/conftest.py).
+      - name: Tests (PostgreSQL, as hospital_app)
         env:
           HOSPITAL_TEST_DATABASE_URL: postgresql+psycopg://hospital:ci-only@localhost:5432/hospital
         run: python -m pytest tests -q
+      # As in production: migrations as the owner, which also creates or
+      # updates hospital_app (migrations/env.py); then the app role uses it.
       - name: Migrations apply on PostgreSQL
         env:
           HOSPITAL_DATABASE_URL: postgresql+psycopg://hospital:ci-only@localhost:5432/hospital
+          HOSPITAL_APP_DB_PASSWORD: ci-app-only
         run: |
           python -c "from app import models; from app.db import Base, get_engine; Base.metadata.drop_all(get_engine())"
           alembic upgrade head
           alembic downgrade base
           alembic upgrade head
+      - name: The app role works after the migrations, and only through the policies
+        env:
+          HOSPITAL_DATABASE_URL: postgresql+psycopg://hospital_app:ci-app-only@localhost:5432/hospital
+        run: |
           python -m app.cli bootstrap --code CI --name "CI Hospital" --admin-email admin@ci.example --admin-name Admin
+          python - <<'PY'
+          from sqlalchemy import text
+          from app.db import platform_session, session_scope
+          with session_scope() as session:
+              assert session.scalar(text("SELECT current_user")) == "hospital_app"
+              assert session.scalar(text("SELECT count(*) FROM staff_users")) == 0, "no tenant must see nothing"
+              assert session.scalar(text("SELECT hospital_of_staff_email('admin@ci.example')")) is not None
+          with platform_session() as session:
+              assert session.scalar(text("SELECT count(*) FROM staff_users")) == 1
+          print("hospital_app: row-level security holds")
+          PY
+          # Encryption at rest after the migrations, with a real master key file.
+          head -c 32 /dev/urandom > "$RUNNER_TEMP/master.key"
+          export HOSPITAL_MASTER_KEY_FILE="$RUNNER_TEMP/master.key"
+          python -m app.cli encrypt-existing
+          python -m app.cli check-encryption
+          python -m app.cli enforce-encryption
 
   backend-image:
     name: Hospital backend image

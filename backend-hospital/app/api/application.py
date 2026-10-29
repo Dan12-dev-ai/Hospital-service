@@ -26,15 +26,14 @@ from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse
 from pydantic import AwareDatetime, BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app import eventbus, files, onboarding
+from app import crypto, eventbus, files, onboarding
 from app.api.onboarding import platform_admin
 from app.auth import Staff, audit, signed_in_staff
-from app.db import ensure_aware, new_id, session_scope, utcnow
+from app.db import ensure_aware, new_id, platform_session, session_scope, utcnow
 from app.models import (
     ApplicationStatus, DemoBooking, DocumentKind, Hospital, HospitalStatus, OnboardingApplication,
     OnboardingDocument, Role, Service,
@@ -57,7 +56,7 @@ def applicant(staff: Staff = Depends(signed_in_staff)) -> Staff:
         raise HTTPException(status_code=403, detail="Change your temporary password to continue.")
     if staff.role != Role.ADMIN:
         raise HTTPException(status_code=403, detail=NOT_APPLICANT)
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         contact = onboarding.contact_person(session, staff.hospital_id)
         if contact is None or contact.id != staff.id:
             raise HTTPException(status_code=403, detail=NOT_APPLICANT)
@@ -78,7 +77,7 @@ def read_status(staff: Staff = Depends(signed_in_staff)) -> Dict[str, Any]:
     """Where the hospital is in onboarding, for anyone of its staff (the
     Under review page): read-only, without documents or contact details,
     except for the contact person themself."""
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         hospital = _hospital(session, staff)
         onboarding.release_stale(session)
         app = onboarding.application_for(session, hospital)
@@ -101,7 +100,7 @@ def read_status(staff: Staff = Depends(signed_in_staff)) -> Dict[str, Any]:
 
 @router.get("/onboarding/application")
 def read_application(staff: Staff = Depends(applicant)) -> Dict[str, Any]:
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         return onboarding.application_payload(session, _hospital(session, staff))
 
 
@@ -156,7 +155,7 @@ class DocumentsStep(BaseModel):
 
 
 def _save_step(staff: Staff, step: str, apply) -> Dict[str, Any]:
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         hospital = _hospital(session, staff, lock=True)
         app = onboarding.application_for(session, hospital, lock=True)
         onboarding.require_editable(hospital, app)
@@ -228,23 +227,25 @@ async def upload_document(kind: str, request: Request,
     if content_length is not None and content_length > onboarding.MAX_DOCUMENT_BYTES:
         raise HTTPException(status_code=413, detail=f"A document can be at most {limit_mb} MB.")
 
-    def check() -> None:
-        with session_scope() as session:
+    def check() -> crypto.DataKey:
+        with session_scope(staff.hospital_id) as session:
             hospital = _hospital(session, staff)
             onboarding.require_editable(hospital, onboarding.application_for(session, hospital))
+            # Encrypted as it arrives, with the hospital's data key.
+            return crypto.active_key(session, staff.hospital_id)
 
-    await run_in_threadpool(check)
+    key = await run_in_threadpool(check)
     file_id = new_id()
     try:
         size, sha256, content_type = await files.store_stream(
-            request.stream(), staff.hospital_id, file_id, max_bytes=onboarding.MAX_DOCUMENT_BYTES)
+            request.stream(), staff.hospital_id, file_id, key, max_bytes=onboarding.MAX_DOCUMENT_BYTES)
         filename = files.safe_filename(unquote(x_filename or ""), content_type)
     except files.FileRejected as exc:
         files.delete(staff.hospital_id, file_id)
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     def save() -> tuple:
-        with session_scope() as session:
+        with session_scope(staff.hospital_id) as session:
             hospital = _hospital(session, staff, lock=True)
             # Checked again under the lock: the application may have been submitted meanwhile.
             onboarding.require_editable(hospital, onboarding.application_for(session, hospital, lock=True))
@@ -256,7 +257,7 @@ async def upload_document(kind: str, request: Request,
                 session.flush()  # the old row goes before the new one takes its kind
             session.add(OnboardingDocument(id=file_id, hospital_id=hospital.id, kind=kind, filename=filename,
                                            content_type=content_type, size=size, sha256=sha256,
-                                           uploaded_by=staff.id))
+                                           key_version=key.version, uploaded_by=staff.id))
             audit(session, hospital.id, staff.id, "onboarding_document_uploaded", "hospital", hospital.id,
                   {"kind": kind, "sha256": sha256, "replaced": bool(replaced)})
             session.flush()
@@ -275,16 +276,14 @@ async def upload_document(kind: str, request: Request,
     return payload
 
 
-def _send(doc: OnboardingDocument) -> FileResponse:
+def _send(session, doc: OnboardingDocument):
+    """The document, decrypted and checked against its sha256 before the
+    first byte is sent."""
     try:
-        path = files.path_for(doc.hospital_id, doc.id)
+        plain = files.open_checked(session, doc.hospital_id, doc.id, doc.size, doc.sha256)
     except files.FileRejected as exc:
         raise HTTPException(status_code=404, detail="Document not found.") from exc
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="Document not found.")
-    return FileResponse(path, media_type=doc.content_type, filename=doc.filename, content_disposition_type="inline",
-                        headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store",
-                                 "X-Sha256": doc.sha256})
+    return files.streaming_response(plain, doc.content_type, doc.filename, doc.sha256)
 
 
 def _document(session, hospital_id: str, kind: str) -> OnboardingDocument:
@@ -300,8 +299,8 @@ def _document(session, hospital_id: str, kind: str) -> OnboardingDocument:
 @router.get("/onboarding/documents/{kind}")
 def read_document(kind: str, staff: Staff = Depends(applicant)):
     """The hospital's own document (only its own: the hospital comes from the session)."""
-    with session_scope() as session:
-        return _send(_document(session, staff.hospital_id, kind))
+    with session_scope(staff.hospital_id) as session:
+        return _send(session, _document(session, staff.hospital_id, kind))
 
 
 # --- the demo --------------------------------------------------------------------------------
@@ -313,7 +312,7 @@ class DemoChoice(BaseModel):
 
 @router.get("/onboarding/demo-slots")
 def demo_slots(staff: Staff = Depends(applicant)) -> Dict[str, Any]:
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         demo = onboarding.demo_of(session, staff.hospital_id)
         return {
             "timezone": onboarding.DEMO_TIMEZONE,
@@ -330,8 +329,7 @@ DOCUMENTS_FIRST = "Upload all four documents before booking a demo."
 
 
 def _phone_taken(session, phone: str, hospital_id: str) -> bool:
-    return session.scalar(select(DemoBooking.id).where(
-        DemoBooking.phone == phone, DemoBooking.hospital_id != hospital_id)) is not None
+    return onboarding.phone_taken(session, phone, hospital_id)
 
 
 @router.post("/onboarding/demo")
@@ -347,7 +345,7 @@ def book_demo(body: DemoChoice, staff: Staff = Depends(applicant)) -> Dict[str, 
         raise HTTPException(status_code=400, detail="Choose one of the demo times on offer.")
     slot_utc = slot.astimezone(timezone.utc)
     try:
-        with session_scope() as session:
+        with session_scope(staff.hospital_id) as session:
             hospital = _hospital(session, staff, lock=True)
             onboarding.require_pending(hospital)
             contact = onboarding.contact_person(session, hospital.id)
@@ -388,7 +386,7 @@ def book_demo(body: DemoChoice, staff: Staff = Depends(applicant)) -> Dict[str, 
             session.flush()
             return onboarding.application_payload(session, hospital)
     except IntegrityError as exc:
-        with session_scope() as session:
+        with session_scope(staff.hospital_id) as session:
             contact = onboarding.contact_person(session, staff.hospital_id)
             phone_lost = bool(contact is not None and contact.phone
                               and _phone_taken(session, contact.phone, staff.hospital_id))
@@ -403,7 +401,7 @@ STEP_NAMES = {"contact": "contact person", "facility": "facility", "location": "
 
 @router.post("/onboarding/submit")
 def submit(staff: Staff = Depends(applicant)) -> Dict[str, Any]:
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         hospital = _hospital(session, staff, lock=True)
         app = onboarding.application_for(session, hospital, lock=True)
         onboarding.require_editable(hospital, app)
@@ -451,7 +449,7 @@ def list_applications(status_filter: Optional[str] = Query(default=None, alias="
     """Every hospital that applied through the portal (pending, or approved since)."""
     if status_filter is not None and status_filter not in ApplicationStatus.ALL:
         raise HTTPException(status_code=400, detail=f"status must be one of {list(ApplicationStatus.ALL)}.")
-    with session_scope() as session:
+    with platform_session() as session:
         rows = session.execute(
             select(Hospital, OnboardingApplication)
             .outerjoin(OnboardingApplication, OnboardingApplication.hospital_id == Hospital.id)
@@ -474,7 +472,7 @@ def _applied_hospital(session, hospital_id: str, lock: bool = False) -> Hospital
 
 @router.get("/platform/applications/{hospital_id}", dependencies=[Depends(platform_admin)])
 def read_application_for_endod(hospital_id: str) -> Dict[str, Any]:
-    with session_scope() as session:
+    with platform_session() as session:
         hospital = _applied_hospital(session, hospital_id)
         payload = onboarding.application_payload(session, hospital)
         for item in payload["documents"]["items"]:
@@ -486,9 +484,9 @@ def read_application_for_endod(hospital_id: str) -> Dict[str, Any]:
 
 @router.get("/platform/applications/{hospital_id}/documents/{kind}", dependencies=[Depends(platform_admin)])
 def read_document_for_endod(hospital_id: str, kind: str):
-    with session_scope() as session:
+    with platform_session() as session:
         hospital = _applied_hospital(session, hospital_id)
-        return _send(_document(session, hospital.id, kind))
+        return _send(session, _document(session, hospital.id, kind))
 
 
 class Rejection(BaseModel):
@@ -507,7 +505,7 @@ class Rejection(BaseModel):
 @router.post("/platform/hospitals/{hospital_id}/reject", dependencies=[Depends(platform_admin)])
 def reject(hospital_id: str, body: Rejection) -> Dict[str, Any]:
     """Send a submitted application back with a reason; the hospital fixes it and resubmits."""
-    with session_scope() as session:
+    with platform_session() as session:
         hospital = _applied_hospital(session, hospital_id, lock=True)
         app = onboarding.application_for(session, hospital, lock=True)
         if hospital.status != HospitalStatus.PENDING or app.status != ApplicationStatus.SUBMITTED:

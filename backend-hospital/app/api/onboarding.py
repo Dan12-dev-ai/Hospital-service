@@ -24,11 +24,11 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app import auth, files, listing, onboarding
+from app import auth, files, listing, onboarding, rls
 from app.api.admin import hospital_payload
 from app.auth import audit
 from app.config import get_settings
-from app.db import session_scope, utcnow
+from app.db import new_id, platform_session, session_scope, utcnow
 from app.models import (
     ApplicationStatus, FacilityType, Hospital, HospitalKind, HospitalStatus, OnboardingApplication,
     OnboardingDocument, Role, StaffUser,
@@ -101,11 +101,12 @@ def _code_for(session, name: str) -> str:
     base = "".join(w[0] for w in words).upper()[:6] or "HOSP"
     if len(base) < 2:
         base = (re.sub(r"[^A-Za-z]", "", name).upper() + "XX")[:3]
-    taken = set(session.scalars(select(Hospital.code).where(Hospital.code.like(f"{base}%"))))
-    if base not in taken:
+    # Codes are unique across hospitals; this request belongs to none yet, so
+    # it only asks whether a code is taken (rls.hospital_code_taken).
+    if not rls.hospital_code_taken(session, base):
         return base
     for n in range(2, 1000):
-        if f"{base}{n}" not in taken:
+        if not rls.hospital_code_taken(session, f"{base}{n}"):
             return f"{base}{n}"
     raise HTTPException(status_code=409, detail="Could not choose a hospital code; contact Endod.")
 
@@ -125,10 +126,13 @@ def sign_up(body: HospitalSignup, request: Request) -> Dict[str, Any]:
     if problem:
         raise HTTPException(status_code=400, detail=problem)
     email = body.admin_email.lower()
+    # The new hospital is the transaction's tenant from the start: everything
+    # this sign-up writes belongs to it.
+    hospital_id = new_id()
     try:
-        with session_scope() as session:
+        with session_scope(hospital_id) as session:
             hospital = Hospital(
-                code=_code_for(session, body.hospital_name), name=body.hospital_name,
+                id=hospital_id, code=_code_for(session, body.hospital_name), name=body.hospital_name,
                 name_am=body.hospital_name_am, kind=body.kind or HospitalKind.PRIVATE,
                 facility_type=body.facility_type or FacilityType.HOSPITAL, city=body.city, phone=body.phone,
                 status=HospitalStatus.PENDING, timezone=settings.DEFAULT_TIMEZONE,
@@ -151,7 +155,7 @@ def sign_up(body: HospitalSignup, request: Request) -> Dict[str, Any]:
 
 
 def hospital_payload_by_id(hospital_id: str) -> Dict[str, Any]:
-    with session_scope() as session:
+    with session_scope(hospital_id) as session:
         return hospital_payload(session.get(Hospital, hospital_id))
 
 
@@ -169,7 +173,7 @@ def platform_admin(x_platform_key: Optional[str] = Header(default=None)) -> None
 def list_hospitals(status_filter: Optional[str] = Query(default=None, alias="status")) -> List[Dict[str, Any]]:
     if status_filter is not None and status_filter not in HospitalStatus.ALL:
         raise HTTPException(status_code=400, detail=f"status must be one of {list(HospitalStatus.ALL)}.")
-    with session_scope() as session:
+    with platform_session() as session:
         query = select(Hospital).order_by(Hospital.created_at.desc())
         if status_filter:
             query = query.where(Hospital.status == status_filter)
@@ -196,7 +200,7 @@ def set_status(hospital_id: str, new_status: str, force: bool = False) -> Dict[s
     suspended hospital coming back). ``force`` (the CLI's ``--force``) skips
     that check on purpose, and the audit log says so.
     """
-    with session_scope() as session:
+    with platform_session() as session:
         hospital = session.scalar(select(Hospital).where(Hospital.id == hospital_id).with_for_update())
         if hospital is None:
             raise HTTPException(status_code=404, detail="Hospital not found.")
@@ -235,7 +239,7 @@ def suspend(hospital_id: str) -> Dict[str, Any]:
 @router.delete("/platform/hospitals/{hospital_id}", dependencies=[Depends(platform_admin)])
 def remove_pending(hospital_id: str) -> Dict[str, Any]:
     """Delete a sign-up Endod will not accept (only while pending), freeing its emails."""
-    with session_scope() as session:
+    with platform_session() as session:
         hospital = session.scalar(select(Hospital).where(Hospital.id == hospital_id).with_for_update())
         if hospital is None:
             raise HTTPException(status_code=404, detail="Hospital not found.")

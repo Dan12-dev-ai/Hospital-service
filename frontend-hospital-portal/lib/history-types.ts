@@ -61,7 +61,33 @@ export type ClinicalRecord = {
   published: boolean;
   published_version: number | null;
   files: RecordFile[];
+  /** Prescriptions only (null otherwise): what pharmacies gave through Endod (docs/pharmacy.md). */
+  dispensing?: Dispensing | null;
 };
+
+export type DispenseItem = {
+  item_index: number;
+  /** Given at this dispense (null: not counted). */
+  amount: number | null;
+  complete: boolean;
+  /** Given so far, at every pharmacy (null: not counted). */
+  given_total: number | null;
+  status: "not_given" | "partly_given" | "given";
+  /** From the prescription as it is now. */
+  drug: string | null;
+  quantity_total: number | null;
+};
+
+export type Dispense = {
+  dispense_id: string;
+  at: string;
+  /** As the pharmacist typed it (not verified). */
+  pharmacy_name: string;
+  status: "open" | "completed";
+  items: DispenseItem[];
+};
+
+export type Dispensing = { status: "not_dispensed" | "partly" | "fully"; dispenses: Dispense[] };
 
 export type RecordList = { items: ClinicalRecord[]; linked: boolean };
 

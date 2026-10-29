@@ -29,6 +29,12 @@ HOSPITAL_DATABASE_URL as the server under test. Prints JSON.
         A patient sharing one record (with a PDF) with the hospital: the
         records.shared event handled as the worker would.
 
+    python seed.py dispense <record_id> <pharmacy name> <at> <open|completed> <items JSON>
+        A pharmacy giving medicine from a prescription record through Endod:
+        the prescription.dispensed event handled as the worker would. ``at``
+        is ISO-8601 with its offset; the items are the event's
+        [{"item_index", "amount", "complete", "given_total", "status"}].
+
     python seed.py applicant <tag> [--complete] [--submitted]
         A hospital applying to join Endod (pending), with its admin (the
         contact person, with a mobile). --complete fills in every step but
@@ -53,10 +59,11 @@ sys.path.insert(0, os.getcwd())
 
 from sqlalchemy import select  # noqa: E402
 
-from app import bookings, linking, records, sharing  # noqa: E402
-from app.db import session_scope  # noqa: E402
+from app import bookings, dispensing, linking, records, sharing  # noqa: E402
+from app.db import platform_session  # noqa: E402
 from app.models import (  # noqa: E402
-    Booking, Hospital, HospitalStatus, LinkStatus, Patient, PatientLinkRequest, ProcessedEvent, StaffUser,
+    Booking, ClinicalRecord, Hospital, HospitalStatus, LinkStatus, Patient, PatientLinkRequest, ProcessedEvent,
+    StaffUser,
 )
 from app.security import hash_password  # noqa: E402
 
@@ -75,7 +82,7 @@ ROLES = {
 
 def seed_hospital(tag: str, unlisted: bool) -> dict:
     code = tag.upper()[:12]
-    with session_scope() as session:
+    with platform_session() as session:
         hospital = Hospital(
             code=code, name=f"{tag.title()} General Hospital", kind="private", city="Addis Ababa",
             status=HospitalStatus.APPROVED, timezone="Africa/Addis_Ababa",
@@ -119,10 +126,10 @@ def seed_booking(hospital_id: str, mode: str, minutes: int, patient: str) -> dic
     }
     event_id = uuid.uuid4().hex
     # As app.eventbus does for each event from the patient platform.
-    with session_scope() as session:
+    with platform_session() as session:
         bookings.on_requested(session, payload)
         session.add(ProcessedEvent(id=event_id, type="appointment.requested"))
-    with session_scope() as session:
+    with platform_session() as session:
         booking = session.scalar(select(Booking).where(Booking.external_id == appointment_id))
         if booking is None:
             raise SystemExit(f"booking was not accepted: {payload}")
@@ -131,13 +138,13 @@ def seed_booking(hospital_id: str, mode: str, minutes: int, patient: str) -> dic
 
 def handle(event_type: str, handler, payload: dict) -> None:
     """As app.eventbus does for each event from the patient platform."""
-    with session_scope() as session:
+    with platform_session() as session:
         handler(session, payload)
         session.add(ProcessedEvent(id=uuid.uuid4().hex, type=event_type))
 
 
 def link_reply(patient_id: str, answer: str, reason: str) -> dict:
-    with session_scope() as session:
+    with platform_session() as session:
         request = session.scalar(select(PatientLinkRequest).where(
             PatientLinkRequest.patient_id == patient_id, PatientLinkRequest.status == LinkStatus.PENDING))
         if request is None:
@@ -154,7 +161,7 @@ def link_reply(patient_id: str, answer: str, reason: str) -> dict:
 
 
 def link_now(patient_id: str, dedan_id: str) -> dict:
-    with session_scope() as session:
+    with platform_session() as session:
         patient = session.get(Patient, patient_id)
         linking.link(session, patient, dedan_id, records.hospital_today(session, patient.hospital_id))
         return {"patient_id": patient.id, "dedan_id": patient.dedan_id}
@@ -177,13 +184,27 @@ def share(hospital_id: str, dedan_id: str, patient: str, title: str) -> dict:
     return {"share_id": share_id, "record_id": record_id, "file_id": file_id}
 
 
+def dispense(record_id: str, pharmacy: str, at: str, status: str, items: str) -> dict:
+    with platform_session() as session:
+        record = session.get(ClinicalRecord, record_id)
+        if record is None:
+            raise SystemExit("unknown record")
+        hospital_id, dedan_id = record.hospital_id, record.published_dedan_id
+    dispense_id = uuid.uuid4().hex
+    handle("prescription.dispensed", dispensing.on_dispensed, {
+        "record_id": record_id, "hospital_id": hospital_id, "dedan_id": dedan_id, "dispense_id": dispense_id,
+        "at": at, "pharmacy_name": pharmacy, "status": status, "items": json.loads(items),
+    })
+    return {"dispense_id": dispense_id}
+
+
 def queue_yesterday(hospital_id: str, doctor_email: str, patient: str) -> dict:
     """A walk-in checked in yesterday (hospital time) and still waiting."""
     from datetime import timedelta as days
 
     from app import queues
 
-    with session_scope() as session:
+    with platform_session() as session:
         doctor = session.scalar(select(StaffUser).where(StaffUser.email == doctor_email))
         yesterday = records.hospital_today(session, hospital_id) - days(days=1)
         queue = queues.lock_queue(session, hospital_id, doctor.id, yesterday)
@@ -193,7 +214,7 @@ def queue_yesterday(hospital_id: str, doctor_email: str, patient: str) -> dict:
 
 
 def seed_applicant(tag: str, complete: bool, submitted: bool) -> dict:
-    from app import files, onboarding
+    from app import crypto, files, onboarding
     from app.db import new_id
     from app.models import (
         ApplicationStatus, DemoBooking, DocumentKind, OnboardingApplication, OnboardingDocument, Role,
@@ -201,7 +222,7 @@ def seed_applicant(tag: str, complete: bool, submitted: bool) -> dict:
 
     code = tag.upper()[:12]
     email = f"apply@{tag}.example"
-    with session_scope() as session:
+    with platform_session() as session:
         hospital = Hospital(code=code, name=f"{tag.title()} Applicant Clinic", kind="private", facility_type="clinic",
                             status=HospitalStatus.PENDING, timezone="Africa/Addis_Ababa")
         session.add(hospital)
@@ -220,12 +241,13 @@ def seed_applicant(tag: str, complete: bool, submitted: bool) -> dict:
             hospital.address, hospital.latitude, hospital.longitude = "Main Street", 8.54, 39.27
             application.license_number = f"MOH/{code}/1"
             pdf = b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n"
+            key = crypto.active_key(session, hospital.id)  # documents are encrypted at rest
             for kind in DocumentKind.ALL:
                 file_id = new_id()
-                size, sha256, content_type = files.store_bytes(pdf, hospital.id, file_id)
+                size, sha256, content_type = files.store_bytes(pdf, hospital.id, file_id, key)
                 session.add(OnboardingDocument(id=file_id, hospital_id=hospital.id, kind=kind, filename=f"{kind}.pdf",
                                                content_type=content_type, size=size, sha256=sha256,
-                                               uploaded_by=admin.id))
+                                               key_version=key.version, uploaded_by=admin.id))
         demo_at = None
         if submitted:
             taken = onboarding.taken_slots(session)
@@ -240,7 +262,7 @@ def seed_applicant(tag: str, complete: bool, submitted: bool) -> dict:
 
 
 def seed_applicant_staff(hospital_id: str, email: str, role: str) -> dict:
-    with session_scope() as session:
+    with platform_session() as session:
         user = StaffUser(hospital_id=hospital_id, email=email, full_name="Staff Member", role=role,
                          password_hash=hash_password(TEMPORARY_PASSWORD), must_change_password=True)
         session.add(user)
@@ -264,6 +286,8 @@ def main() -> None:
         print(json.dumps(seed_applicant(args[1], "--complete" in args[2:], "--submitted" in args[2:])))
     elif args[:1] == ["applicant-staff"] and len(args) == 4:
         print(json.dumps(seed_applicant_staff(args[1], args[2], args[3])))
+    elif args[:1] == ["dispense"] and len(args) == 6:
+        print(json.dumps(dispense(args[1], args[2], args[3], args[4], args[5])))
     elif args[:1] == ["share"] and len(args) == 5:
         print(json.dumps(share(args[1], args[2], args[3], args[4])))
     else:

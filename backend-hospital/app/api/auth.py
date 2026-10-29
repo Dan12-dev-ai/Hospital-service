@@ -40,7 +40,7 @@ def logout(staff: auth.Staff = Depends(auth.signed_in_staff)) -> Dict[str, bool]
 
 @router.get("/me")
 def me(staff: auth.Staff = Depends(auth.signed_in_staff)) -> Dict[str, Any]:
-    with session_scope() as session:
+    with session_scope(staff.hospital_id) as session:
         user = session.get(StaffUser, staff.id)
         return auth.staff_payload(user, session.get(Hospital, user.hospital_id))
 

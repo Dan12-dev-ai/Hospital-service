@@ -279,11 +279,11 @@ class TestFiles:
         from sqlalchemy import update
 
         from app import chores
-        from app.db import session_scope, utcnow
+        from app.db import platform_session, utcnow
         from app.models import RecordFile
 
         upload(client, doctor, patient["id"])
-        with session_scope() as session:
+        with platform_session() as session:
             session.execute(update(RecordFile).values(created_at=utcnow() - timedelta(days=3)))
         assert chores.run() == 1
         assert [p for p in (tmp_path / "files").rglob("*") if p.is_file()] == []
@@ -363,12 +363,12 @@ class TestVisits:
 
     def test_a_follow_up_is_sent_when_the_patient_is_linked(self, client, doctor, patient, bus):
         from app import linking, records
-        from app.db import session_scope
+        from app.db import platform_session
         from app.models import Patient
 
         on = (today() + timedelta(days=3)).isoformat()
         client.post(f"/patients/{patient['id']}/visits", headers=doctor, json={"follow_up_on": on})
-        with session_scope() as session:
+        with platform_session() as session:
             row = session.get(Patient, patient["id"])
             linking.link(session, row, "DE482731", records.hospital_today(session, row.hospital_id))
         [sent] = events(bus, "visit.follow_up")
@@ -378,7 +378,7 @@ class TestVisits:
 class TestCorrectionsWhileUnlinked:
     def test_a_correction_made_while_unlinked_is_sent_on_relinking(self, client, doctor, desk, linked, bus):
         from app import records
-        from app.db import session_scope
+        from app.db import platform_session
         from app.linking import link
         from app.models import Patient
 
@@ -390,7 +390,7 @@ class TestCorrectionsWhileUnlinked:
         assert fixed.json()["published"] is False  # Endod still has version 1
         assert len(events(bus, "record.published")) == 1  # nothing sent while unlinked
 
-        with session_scope() as session:  # Endod confirms the same account again
+        with platform_session() as session:  # Endod confirms the same account again
             link(session, session.get(Patient, linked["id"]), "DE482731", today())
         sent = events(bus, "record.published")
         assert [(e["version"], e["title"], e["dedan_id"]) for e in sent] == [
@@ -400,17 +400,17 @@ class TestCorrectionsWhileUnlinked:
         assert listed["published"] is True and listed["published_version"] == 2
 
         # Nothing more to send: Endod has the current version.
-        with session_scope() as session:
+        with platform_session() as session:
             assert records.publish_history(session, session.get(Patient, linked["id"]), today()) == 0
 
     def test_relinking_to_another_account_moves_the_record(self, client, doctor, desk, linked, bus):
-        from app.db import session_scope
+        from app.db import platform_session
         from app.linking import link
         from app.models import Patient
 
         record = add(client, doctor, linked["id"]).json()
         client.delete(f"/patients/{linked['id']}/link", headers=desk)
-        with session_scope() as session:
+        with platform_session() as session:
             link(session, session.get(Patient, linked["id"]), "DE111111", today())
         [retracted] = events(bus, "record.retracted")
         assert retracted["record_id"] == record["id"] and retracted["dedan_id"] == "DE482731"

@@ -14,7 +14,9 @@ import time
 
 import redis
 
-from app import bookings, chores, eventbus, linking, sharing
+from app import bookings, chores, dispensing, eventbus, linking, sharing
+from app.crypto import check_master_key, verify_master_key
+from app.db import check_connection_role
 
 logger = logging.getLogger("hospital.worker")
 _running = True
@@ -28,12 +30,14 @@ def _stop(*_args) -> None:
 #: Seconds between the slower chores.
 EXPIRE_EVERY = 60
 HOUSEKEEPING_EVERY = 3600
-_last = {"expire": 0.0, "housekeeping": 0.0}
+#: Seconds between deletions of the events every reader has acknowledged.
+PURGE_EVERY = 10
+_last = {"expire": 0.0, "housekeeping": 0.0, "purge": 0.0}
 
 
 def handlers() -> dict:
     """Every event this service handles from the patient platform."""
-    return {**bookings.HANDLERS, **linking.HANDLERS, **sharing.HANDLERS}
+    return {**bookings.HANDLERS, **linking.HANDLERS, **sharing.HANDLERS, **dispensing.HANDLERS}
 
 
 def run_once(client: redis.Redis, now: float | None = None) -> int:
@@ -48,6 +52,10 @@ def run_once(client: redis.Redis, now: float | None = None) -> int:
         _last["expire"] = now
     work += eventbus.publish_pending(client)
     work += eventbus.consume_once(client, handlers(), block_ms=1000)
+    if now - _last["purge"] >= PURGE_EVERY:
+        # Our events are plain text in Redis until every reader acknowledged them.
+        eventbus.purge_acknowledged(client, eventbus.STREAM_OUT)
+        _last["purge"] = now
     if now - _last["housekeeping"] >= HOUSEKEEPING_EVERY:
         eventbus.housekeeping(client)
         _last["housekeeping"] = now
@@ -58,6 +66,11 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
+    # Never run as a database role that row-level security does not hold, nor
+    # without the master key (HOSPITAL_MASTER_KEY_FILE).
+    check_master_key()
+    check_connection_role()
+    verify_master_key()  # this database's master key, or nothing starts
     backoff = 1.0
     client = None
     while _running:

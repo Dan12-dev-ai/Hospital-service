@@ -264,6 +264,7 @@ def retract_from_platform(session: Session, record: ClinicalRecord, dedan_id: st
     eventbus.emit(session, "record.retracted", {
         "record_id": record.id, "hospital_id": record.hospital_id, "dedan_id": dedan_id, "reason": reason,
     })
+    record.previous_dedan_id = dedan_id
     record.published_dedan_id = None
     record.published_version = None
 

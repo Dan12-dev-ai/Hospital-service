@@ -3,6 +3,7 @@ import {
   newDedanId,
   registerPatient,
   seedBooking,
+  seedDispense,
   seedHospital,
   seedLink,
   seedLinkReply,
@@ -379,4 +380,53 @@ test("yesterday's leftovers show on the queue page and are called first", async 
   await expect(leftovers.getByTestId("queue-entry")).toContainText("called");
   await leftovers.getByRole("button", { name: "Done" }).click();
   await expect(page.getByTestId("queue-leftovers")).toHaveCount(0);
+});
+
+test("a prescription shows what pharmacies gave through Endod: partly, then fully dispensed", async ({ page }) => {
+  await as(page, "doctor");
+  const patient = await registerPatient(page, "Tigist Dispensed");
+  seedLink(patient.id, newDedanId());
+  const created = await page.request.post(`/api/patients/${patient.id}/records`, {
+    data: {
+      category: "prescription",
+      title: "Pneumonia treatment",
+      details: {
+        items: [
+          { drug: "Amoxicillin", dose: "500 mg", frequency: "three times daily", quantity: "21 capsules" },
+          { drug: "Paracetamol", dose: "500 mg", quantity: "as needed" },
+        ],
+      },
+    },
+  });
+  expect(created.status(), await created.text()).toBe(201);
+  const record = (await created.json()) as { id: string; published: boolean };
+  expect(record.published).toBe(true);
+
+  await page.goto(`/patients/${patient.id}`);
+  const card = page.getByTestId("record-card").filter({ hasText: "Pneumonia treatment" });
+  await expect(card.getByTestId("dispensing-status")).toHaveText("Not dispensed");
+  await expect(card.getByTestId("dispense")).toHaveCount(0);
+
+  // 11:10 UTC is 14:10 in Addis Ababa, the hospital's time zone.
+  seedDispense(record.id, "Kenema Pharmacy", "2026-10-23T11:10:00+00:00", "open", [
+    { item_index: 0, amount: 14, complete: false, given_total: 14, status: "partly_given" },
+  ]);
+  await page.reload();
+  await expect(card.getByTestId("dispensing-status")).toHaveText("Partly dispensed");
+  const first = card.getByTestId("dispense").first();
+  await expect(first).toContainText("Kenema Pharmacy");
+  await expect(first).toContainText(/23 Oct, 2:10\s?pm/i);
+  await expect(first.getByTestId("dispense-item")).toHaveText(["Amoxicillin: 14 of 21"]);
+
+  seedDispense(record.id, "Bole Pharmacy", "2026-10-24T06:30:00+00:00", "completed", [
+    { item_index: 0, amount: 7, complete: false, given_total: 21, status: "given" },
+    { item_index: 1, amount: null, complete: true, given_total: null, status: "given" },
+  ]);
+  await page.reload();
+  await expect(card.getByTestId("dispensing-status")).toHaveText("Fully dispensed");
+  await expect(card.getByTestId("dispense")).toHaveCount(2);
+  const second = card.getByTestId("dispense").nth(1);
+  await expect(second).toContainText("Bole Pharmacy");
+  await expect(second).toContainText(/24 Oct, 9:30\s?am/i);
+  await expect(second.getByTestId("dispense-item")).toHaveText(["Amoxicillin: 21 of 21", "Paracetamol: Given"]);
 });

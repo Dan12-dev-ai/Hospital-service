@@ -166,11 +166,11 @@ class TestWizard:
     def test_a_hospital_that_signed_up_before_applications_existed(self, client):
         from sqlalchemy import delete
 
-        from app.db import session_scope
+        from app.db import platform_session
         from app.models import OnboardingApplication
 
         headers, _ = apply(client)
-        with session_scope() as session:
+        with platform_session() as session:
             session.execute(delete(OnboardingApplication))
         app = client.get("/onboarding/application", headers=headers).json()
         assert app["status"] == "draft" and app["contact"]["title"] is None
@@ -261,7 +261,8 @@ class TestDocuments:
         view = client.get("/onboarding/documents/moh_license", headers=headers)
         assert view.status_code == 200 and view.content == PNG
         assert view.headers["content-type"] == "image/png" and view.headers["x-content-type-options"] == "nosniff"
-        assert files.path_for(hospital_id, next(iter(now_files)).name).read_bytes() == PNG
+        stored = files.path_for(hospital_id, next(iter(now_files)).name).read_bytes()
+        assert stored.startswith(b"ENDODENC") and PNG not in stored  # encrypted at rest (app/crypto.py)
 
     @pytest.mark.parametrize("data,name,status", [
         (b"just text, not a document", "notes.pdf", 415),
@@ -380,11 +381,11 @@ class TestDemo:
         for t in threads:
             t.join()
         assert sorted(results) == [200, 409, 409, 409]
-        from app.db import session_scope
+        from app.db import platform_session
         from app.models import DemoBooking
         from sqlalchemy import func, select
 
-        with session_scope() as session:
+        with platform_session() as session:
             assert session.scalar(select(func.count()).select_from(DemoBooking)) == 1
 
     def test_the_contact_is_texted_through_the_platform(self, client, bus):
@@ -677,12 +678,12 @@ class TestReviewFixes:
     def test_a_demo_that_has_passed_must_be_booked_again(self, client):
         from sqlalchemy import update
 
-        from app.db import session_scope
+        from app.db import platform_session
         from app.models import DemoBooking
 
         headers, _ = apply(client)
         complete(client, headers)
-        with session_scope() as session:
+        with platform_session() as session:
             session.execute(update(DemoBooking).values(slot_start=FRIDAY_4PM_ADDIS - timedelta(days=1)))
         app = client.get("/onboarding/application", headers=headers).json()
         assert app["missing"]["demo"] == ["demo_at"] and app["next_step"] == "demo"
