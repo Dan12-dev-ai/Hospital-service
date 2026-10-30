@@ -88,7 +88,7 @@ function PageButton({ page, active }: { page: number; active?: boolean }) {
       type="button"
       className={`flex h-8 w-8 items-center justify-center rounded-lg text-label-md font-label-md transition-colors ${
         active
-          ? "bg-primary-container text-on-primary"
+          ? "bg-black text-white"
           : "bg-surface-container-lowest text-on-surface-variant shadow-soft hover:bg-surface-container"
       }`}
     >
@@ -193,8 +193,8 @@ function BillingRow({ record }: { record: BillingRecord }) {
             onClick={() => showToast(record.action.message)}
             className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-label-md font-label-md transition-colors ${
               record.action.variant === "primary"
-                ? "bg-primary-container text-on-primary hover:bg-primary"
-                : "bg-surface-container-low text-primary-container hover:bg-surface-container"
+                ? "bg-black text-white hover:bg-neutral-800"
+                : "bg-surface-container-low text-black hover:bg-surface-container"
             }`}
           >
             <Icon name={record.action.icon} className="text-[16px]" />

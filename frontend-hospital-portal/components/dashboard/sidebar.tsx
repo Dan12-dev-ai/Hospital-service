@@ -4,7 +4,10 @@ import { useEffect, useState } from "react";
 import { useSidebarMobile } from "@/components/dashboard/sidebar-mobile-context";
 import Link from "next/link";
 import { cn } from "cn";
-import { Icon } from "@/components/ui/icon";
+import { Building2, LogOut, Menu, PanelLeftClose, PanelRightOpen, X } from "lucide-react";
+
+
+
 import { useSession } from "@/components/session/session-context";
 import { navItems } from "@/lib/dashboard-data";
 import { initialsOf } from "@/lib/format";
@@ -44,7 +47,7 @@ export function Sidebar() {
           onClick={() => setMobileOpen(true)}
           className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-50 text-slate-600 transition-colors hover:bg-slate-100"
         >
-          <Icon name="menu" className="text-[22px]" />
+          <Menu className="text-[22px]" />
         </button>
         <Link href="/" className="flex min-w-0 items-center gap-3">
           <Image
@@ -57,7 +60,7 @@ export function Sidebar() {
           <div className="flex min-w-0 flex-col text-left">
             <span className="flex items-center gap-1 text-lg font-bold leading-tight tracking-tight text-slate-800">
               Endod{" "}
-              <span className="text-sm font-semibold text-pine-green">Health</span>
+              <span className="text-sm font-semibold text-black">Health</span>
             </span>
             <span className="text-[11px] font-medium uppercase tracking-wider text-slate-400">
               Health Portal
@@ -144,7 +147,7 @@ function SidebarBody({
             <div className="flex min-w-0 flex-col">
               <span className="flex items-center gap-1 text-base font-bold leading-tight tracking-tight text-slate-800">
                 Endod{" "}
-                <span className="text-xs font-semibold text-pine-green">
+                <span className="text-xs font-semibold text-black">
                   Health
                 </span>
               </span>
@@ -162,7 +165,7 @@ function SidebarBody({
                 onClick={onClose}
                 className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-50 hover:text-slate-700"
               >
-                <Icon name="close" className="text-[18px]" />
+                <X className="text-[18px]" />
               </button>
             )}
             {onToggleCollapse && (
@@ -173,10 +176,7 @@ function SidebarBody({
                 onClick={onToggleCollapse}
                 className="hidden h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-50 hover:text-slate-700 xl:flex"
               >
-                <Icon
-                  name={collapsed ? "right_panel_open" : "left_panel_close"}
-                  className="text-[18px]"
-                />
+                {collapsed ? <PanelRightOpen className="text-[18px]" /> : <PanelLeftClose className="text-[18px]" />}
               </button>
             )}
           </div>
@@ -185,8 +185,8 @@ function SidebarBody({
         {/* Facility Chip */}
         {!collapsed && (
           <div className="mb-4 flex items-center gap-2.5 rounded-2xl border border-slate-100 bg-slate-50/80 p-2.5">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-pine-green">
-              <Icon name="domain" className="text-[18px]" />
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-neutral-50 text-black">
+              <Building2 className="text-[18px]" />
             </div>
             <div className="flex min-w-0 flex-col">
               <span className="truncate text-[11px] font-semibold text-slate-800">
@@ -220,7 +220,7 @@ function SidebarBody({
           )}
           title={collapsed ? staff?.full_name : undefined}
         >
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-teal-800 text-xs font-bold text-teal-100">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-neutral-800 text-xs font-bold text-neutral-100">
             {staff ? initialsOf(staff.full_name) : "…"}
           </div>
           {!collapsed && (
@@ -247,7 +247,7 @@ function SidebarBody({
             collapsed && "px-0"
           )}
         >
-          <Icon name="logout" className="text-[16px]" />
+          <LogOut className="text-[16px]" />
           {!collapsed && <span>Sign Out</span>}
         </button>
       </div>

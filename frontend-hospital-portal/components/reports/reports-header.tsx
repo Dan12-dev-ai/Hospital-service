@@ -35,7 +35,7 @@ export function ReportsHeader() {
         <button
           type="button"
           onClick={() => showToast("Opening new report generator (አዲስ ሪፖርት)")}
-          className="flex items-center gap-2 rounded-xl bg-primary-container px-4 py-2.5 text-label-lg font-label-md text-on-primary shadow-glow transition-all hover:bg-primary"
+          className="flex items-center gap-2 rounded-xl bg-black px-4 py-2.5 text-label-lg font-label-md text-white shadow-glow transition-all hover:bg-neutral-800"
         >
           <Icon name="add_circle" className="text-[20px]" />
           <span>Generate Report (አዲስ ሪፖርት)</span>

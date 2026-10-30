@@ -41,10 +41,10 @@ export function SharedList({
         <li key={share.share_id} data-testid="share-card" className="flex flex-col gap-3 rounded-3xl border border-card-border/80 bg-white p-5 shadow-soft">
           <div className="flex flex-col justify-between gap-1 sm:flex-row sm:items-center">
             <div className="flex items-center gap-2 text-sm font-bold text-slate-800">
-              <Icon name="folder_shared" className="text-[18px] text-pine-green" />
+              <Icon name="folder_shared" className="text-[18px] text-black" />
               {showPatient ? (
                 share.patient ? (
-                  <Link href={`/patients/${share.patient.id}`} className="text-primary hover:underline">
+                  <Link href={`/patients/${share.patient.id}`} className="text-black hover:underline">
                     {share.patient.full_name} ({share.patient.mrn})
                   </Link>
                 ) : (

@@ -22,7 +22,7 @@ export function DoctorRow({
       {/* Doctor Profile & License */}
       <td className="px-5 py-3.5">
         <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-surface-container-high text-sm font-bold text-primary shadow-sm">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-surface-container-high text-sm font-bold text-black shadow-sm">
             {initialsOf(doctor.name)}
           </div>
           <div className="flex min-w-0 flex-col">
@@ -105,7 +105,7 @@ function ActionButton({ icon, title, onClick }: { icon: string; title: string; o
       title={title}
       aria-label={title}
       onClick={onClick}
-      className="rounded-lg p-1.5 text-outline transition-all hover:bg-surface-container hover:text-primary"
+      className="rounded-lg p-1.5 text-outline transition-all hover:bg-surface-container hover:text-black"
     >
       <Icon name={icon} className="text-[19px]" />
     </button>

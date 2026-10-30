@@ -18,10 +18,10 @@ const reportsKpis: ReportsKpi[] = [
     value: "1,248",
     badge: {
       text: "32 Automated",
-      className: "bg-surface-container-high text-primary",
+      className: "bg-surface-container-high text-black",
     },
     footerIcon: "check",
-    footerIconClassName: "text-primary",
+    footerIconClassName: "text-black",
     footerText: "Across 14 medical departments",
     icon: "receipt_long",
   },
@@ -30,10 +30,10 @@ const reportsKpis: ReportsKpi[] = [
     value: "87.4%",
     badge: {
       text: "+2.3% MoM",
-      className: "bg-secondary-container/50 text-on-secondary-container",
+      className: "bg-neutral-600-container/50 text-neutral-800",
     },
     footerIcon: "trending_up",
-    footerIconClassName: "text-secondary",
+    footerIconClassName: "text-neutral-600",
     footerText: "Above target IPD threshold",
     icon: "ward",
   },
@@ -45,7 +45,7 @@ const reportsKpis: ReportsKpi[] = [
       className: "bg-tertiary-fixed/30 text-tertiary",
     },
     footerIcon: "timer",
-    footerIconClassName: "text-primary",
+    footerIconClassName: "text-black",
     footerText: "-6 min versus last quarter",
     icon: "timelapse",
   },
@@ -54,10 +54,10 @@ const reportsKpis: ReportsKpi[] = [
     value: "100%",
     badge: {
       text: "MoH Validated",
-      className: "bg-secondary-container/50 text-on-secondary-container",
+      className: "bg-neutral-600-container/50 text-neutral-800",
     },
     footerIcon: "cloud_done",
-    footerIconClassName: "text-secondary",
+    footerIconClassName: "text-neutral-600",
     footerText: "DHIS-2 payload dispatched",
     icon: "verified",
   },
@@ -73,7 +73,7 @@ export function ReportsKpis() {
         >
           <div className="flex items-center justify-between text-outline">
             <div className="flex items-center gap-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-surface-container-low text-primary">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-surface-container-low text-black">
                 <Icon name={kpi.icon} className="text-[18px]" />
               </div>
               <span className="font-body-md text-label-md text-on-surface-variant">

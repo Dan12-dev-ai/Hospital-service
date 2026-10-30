@@ -28,8 +28,8 @@ const COLUMNS = [
 
 const STATUS_STYLES: Record<BookingStatus, { pill: string; dot: string }> = {
   awaiting_doctor: { pill: "bg-amber-50 text-amber-800", dot: "bg-amber-500 animate-pulse" },
-  confirmed: { pill: "bg-primary-fixed text-on-primary-fixed-variant", dot: "bg-primary" },
-  completed: { pill: "bg-surface-container-high text-primary-container", dot: "bg-primary-container" },
+  confirmed: { pill: "bg-neutral-200 text-neutral-800", dot: "bg-black" },
+  completed: { pill: "bg-surface-container-high text-black", dot: "bg-black" },
   rejected: { pill: "bg-rose-50 text-rose-700", dot: "bg-rose-500" },
   cancelled: { pill: "bg-slate-100 text-slate-600", dot: "bg-slate-400" },
 };
@@ -136,7 +136,7 @@ function BookingRow({
     <tr data-testid="booking-row" data-booking-id={booking.id} data-status={booking.status} className="transition-colors hover:bg-surface-container-low/70">
       <td className="px-space-lg py-4">
         <div className="flex items-center gap-space-sm">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-pine-light font-label-md text-label-md font-bold text-pine-green shadow-xs">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-neutral-100 font-label-md text-label-md font-bold text-black shadow-xs">
             {initialsOf(booking.patient.name)}
           </div>
           <div className="flex min-w-0 flex-col">
@@ -197,7 +197,7 @@ function BookingRow({
         <div className="inline-flex flex-wrap items-center justify-end gap-1">
           {joinable &&
             (windowOpen ? (
-              <Link href={`/visit/${booking.id}`} className="inline-flex items-center gap-1 rounded-lg bg-primary-container px-3 py-1.5 font-label-sm text-label-sm font-medium text-on-primary shadow-xs hover:bg-primary">
+              <Link href={`/visit/${booking.id}`} className="inline-flex items-center gap-1 rounded-lg bg-black px-3 py-1.5 font-label-sm text-label-sm font-medium text-white shadow-xs hover:bg-neutral-800">
                 <Icon name="videocam" className="text-[16px]" />
                 Join video
               </Link>
@@ -256,8 +256,8 @@ function ActionButton({
       className={cn(
         "rounded-lg px-3 py-1.5 font-label-sm text-label-sm font-medium transition-colors disabled:opacity-50",
         primary
-          ? "bg-primary-container text-on-primary shadow-xs hover:bg-primary"
-          : "bg-surface-container text-on-surface hover:bg-primary-container hover:text-on-primary"
+          ? "bg-black text-white shadow-xs hover:bg-neutral-800"
+          : "bg-surface-container text-on-surface hover:bg-black hover:text-white"
       )}
     >
       {children}

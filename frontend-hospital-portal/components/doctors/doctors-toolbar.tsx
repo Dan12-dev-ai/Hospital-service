@@ -3,6 +3,7 @@
 import { forwardRef } from "react";
 import { cn } from "cn";
 import { Icon } from "@/components/ui/icon";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { Department, DoctorList } from "@/lib/api-types";
 import { RANK_OPTIONS, type DoctorStatusFilter } from "@/lib/doctor-types";
 
@@ -59,7 +60,7 @@ export const DoctorsToolbar = forwardRef<HTMLInputElement, DoctorsToolbarProps>(
               value={query}
               onChange={(event) => onQueryChange(event.target.value)}
               placeholder="Search by doctor name, license ID, department, specialty, phone..."
-              className="w-full rounded-full border-none bg-surface-container-low py-2.5 pl-11 pr-14 text-body-md font-body-md text-on-surface placeholder:text-outline focus:outline-none focus:ring-2 focus:ring-primary-container"
+              className="w-full rounded-full border-none bg-surface-container-low py-2.5 pl-11 pr-14 text-body-md font-body-md text-on-surface placeholder:text-outline focus:outline-none focus:ring-2 focus:ring-black"
             />
             <div className="absolute right-3.5 top-1/2 flex -translate-y-1/2 items-center gap-1 rounded bg-surface-container-high px-1.5 py-0.5 text-label-sm font-label-sm text-on-surface-variant">
               <span>⌘</span>
@@ -97,7 +98,7 @@ export const DoctorsToolbar = forwardRef<HTMLInputElement, DoctorsToolbarProps>(
               className={cn(
                 "rounded-full px-3.5 py-1.5 text-label-md font-label-md transition-all",
                 status === filter.key
-                  ? "bg-primary-container text-on-primary"
+                  ? "bg-black text-white"
                   : "text-on-surface-variant hover:bg-surface-container"
               )}
             >
@@ -123,23 +124,17 @@ function SelectPill({
   ariaLabel: string;
 }) {
   return (
-    <div className="relative">
-      <select
-        aria-label={ariaLabel}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="cursor-pointer appearance-none rounded-full border-none bg-surface-container-low py-2 pl-3.5 pr-8 text-label-md font-label-md text-on-surface focus:ring-2 focus:ring-primary-container"
-      >
+    <Select value={value} onValueChange={(v) => onChange(v ?? value)}>
+      <SelectTrigger aria-label={ariaLabel} className="cursor-pointer rounded-full border-none bg-surface-container-low py-2 pl-3.5 pr-8 text-label-md font-label-md text-on-surface focus:ring-2 focus:ring-black">
+        <SelectValue>{(v) => options.find((o) => o.value === v)?.label ?? v}</SelectValue>
+      </SelectTrigger>
+      <SelectContent>
         {options.map((option) => (
-          <option key={option.value} value={option.value}>
+          <SelectItem key={option.value} value={option.value}>
             {option.label}
-          </option>
+          </SelectItem>
         ))}
-      </select>
-      <Icon
-        name="expand_more"
-        className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[18px] text-outline"
-      />
-    </div>
+      </SelectContent>
+    </Select>
   );
 }

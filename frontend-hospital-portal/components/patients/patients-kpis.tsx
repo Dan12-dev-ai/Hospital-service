@@ -12,14 +12,14 @@ type PatientKpi = {
 
 export function PatientsKpis({ stats }: { stats: PatientStats | null }) {
   const kpis: PatientKpi[] = [
-    { label: "Total Registered", value: stats?.total, icon: "group", iconClassName: "bg-surface-container-low text-primary" },
+    { label: "Total Registered", value: stats?.total, icon: "group", iconClassName: "bg-surface-container-low text-black" },
     {
       label: "Admitted / In-Patients",
       value: stats ? stats.by_status.admitted + stats.by_status.discharge : undefined,
       icon: "hotel",
-      iconClassName: "bg-surface-container-low text-primary",
+      iconClassName: "bg-surface-container-low text-black",
     },
-    { label: "Outpatients", value: stats?.by_status.opd, icon: "clinical_notes", iconClassName: "bg-surface-container-low text-secondary" },
+    { label: "Outpatients", value: stats?.by_status.opd, icon: "clinical_notes", iconClassName: "bg-surface-container-low text-neutral-600" },
     { label: "Emergency", value: stats?.by_status.emergency, icon: "medical_services", iconClassName: "bg-error-container/60 text-error" },
   ];
   return (

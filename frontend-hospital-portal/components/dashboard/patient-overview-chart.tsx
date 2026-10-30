@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Icon } from "@/components/ui/icon";
+import { ChevronDown } from "lucide-react";
+
 import {
   ChartLegend,
   PeriodToggle,
@@ -35,15 +36,15 @@ export function PatientOverviewChart() {
           <span className="text-sm font-bold text-slate-800">
             Patient Overview
           </span>
-          <Icon name="expand_more" className="text-[16px] text-slate-500" />
+          <ChevronDown className="text-[16px] text-slate-500" />
         </div>
         <PeriodToggle value={period} onChange={setPeriod} />
       </div>
 
       <ChartLegend
         items={[
-          { colorClass: "bg-pine-green", label: "In-Patient" },
-          { colorClass: "bg-[#a7f3d0]", label: "Outpatient / Clinic" },
+          { colorClass: "bg-black", label: "In-Patient" },
+          { colorClass: "bg-[#e5e7eb]", label: "Outpatient / Clinic" },
         ]}
       />
 
@@ -53,11 +54,11 @@ export function PatientOverviewChart() {
           {WEEKLY_VOLUMES.map((entry) => (
             <div key={entry.day} className="flex items-end gap-1">
               <div
-                className="w-2.5 rounded-t-sm bg-[#a7f3d0]"
+                className="w-2.5 rounded-t-sm bg-[#e5e7eb]"
                 style={{ height: entry.outpatient }}
               />
               <div
-                className="w-2.5 rounded-t-sm bg-pine-green"
+                className="w-2.5 rounded-t-sm bg-black"
                 style={{ height: entry.inPatient }}
               />
             </div>

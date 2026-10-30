@@ -2,7 +2,8 @@
 
 import { useEffect, useRef } from "react";
 import Image from "next/image";
-import { Icon } from "@/components/ui/icon";
+import { Play, Clock } from "lucide-react";
+
 import { useDashboard } from "@/components/dashboard/dashboard-context";
 import type { Appointment } from "@/lib/dashboard-types";
 
@@ -21,7 +22,7 @@ const STATUS_STYLES: Record<
   confirmed: {
     label: "Confirmed",
     badgeClass:
-      "border-emerald-100 bg-emerald-50 font-semibold text-pine-green",
+      "border-neutral-100 bg-neutral-50 font-semibold text-black",
   },
 };
 
@@ -34,7 +35,7 @@ function RowAction({ appointment }: { appointment: Appointment }) {
         <button
           type="button"
           onClick={() => showToast(appointment.actionMessage)}
-          className="h-8 rounded-full bg-pine-green px-3 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-[#145243]"
+          className="h-8 rounded-full bg-black px-3 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-[#1f2937]"
         >
           Review &amp; Confirm
         </button>
@@ -44,9 +45,9 @@ function RowAction({ appointment }: { appointment: Appointment }) {
         <button
           type="button"
           onClick={() => showToast(appointment.actionMessage)}
-          className="flex h-8 items-center gap-1 rounded-full bg-emerald-600 px-3 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-emerald-700"
+          className="flex h-8 items-center gap-1 rounded-full bg-neutral-600 px-3 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-neutral-700"
         >
-          <Icon name="play_arrow" className="text-[14px]" />
+          <Play className="text-[14px]" />
           Start Visit
         </button>
       );
@@ -80,7 +81,7 @@ export function AppointmentRow({ appointment }: { appointment: Appointment }) {
     <div
       ref={rowRef}
       className={`flex flex-col justify-between gap-3 rounded-2xl px-2 py-3 transition-all sm:flex-row sm:items-center ${
-        isHighlighted ? "bg-emerald-100/70" : "hover:bg-slate-50/70"
+        isHighlighted ? "bg-neutral-100/70" : "hover:bg-slate-50/70"
       }`}
     >
       <div className="flex items-center gap-3">
@@ -110,7 +111,7 @@ export function AppointmentRow({ appointment }: { appointment: Appointment }) {
       </div>
       <div className="flex items-center justify-between gap-3 sm:justify-end">
         <div className="flex items-center gap-1.5 text-xs text-slate-500">
-          <Icon name="schedule" className="text-[15px] text-slate-400" />
+          <Clock className="text-[15px] text-slate-400" />
           <span className="text-[11px] font-medium">{appointment.time}</span>
         </div>
         <span

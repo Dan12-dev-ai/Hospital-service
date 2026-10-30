@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { seedHospital, signIn, uniqueTag, type SeededHospital } from "./helpers";
+import { chooseOption, seedHospital, signIn, uniqueTag, type SeededHospital } from "./helpers";
 
 let hospital: SeededHospital;
 
@@ -29,7 +29,7 @@ test("an admin adds a doctor and sets their duty status", async ({ page }) => {
   await expect(yonas.getByTestId("duty-status")).toHaveText("Off Duty");
   await yonas.getByRole("button", { name: "Set duty status of Dr. Yonas Bekele" }).click();
   const duty = page.getByRole("dialog", { name: /Duty status/ });
-  await duty.getByLabel("Status").selectOption("on-duty");
+  await chooseOption(duty.getByRole("combobox", { name: "Status" }), "On Duty");
   await duty.getByLabel("Where (optional)").fill("OPD Rm 204");
   await duty.getByRole("button", { name: "Save" }).click();
   await expect(yonas.getByTestId("duty-status")).toHaveText("On Duty • OPD Rm 204");
@@ -60,7 +60,7 @@ test("reception registers a patient", async ({ page }) => {
   await page.getByRole("button", { name: /Register Patient/ }).click();
   const dialog = page.getByRole("dialog", { name: /Register New Patient/ });
   await dialog.getByLabel("Full name").fill("Almaz Tefera");
-  await dialog.getByLabel("Birth", { exact: true }).selectOption("age");
+  await chooseOption(dialog.getByRole("combobox", { name: "Birth", exact: true }), "Only the age is known");
   await dialog.getByLabel("Age (years)").fill("48");
   await dialog.getByLabel("Mobile").fill("0911 234 567");
   await dialog.getByRole("button", { name: "Complete Registration" }).click();
@@ -85,7 +85,7 @@ test("clinical staff move a patient through care", async ({ page }) => {
   await signIn(page, hospital.accounts.nurse.email, hospital.password);
   await page.goto("/patients");
   const row = page.getByTestId("patient-row").filter({ hasText: "Almaz Tefera" });
-  await row.getByLabel("Change status of Almaz Tefera").selectOption("emergency");
+  await chooseOption(row.getByRole("combobox", { name: "Change status of Almaz Tefera" }), "Emergency");
   await expect(row).toContainText("Emergency");
   await page.getByRole("button", { name: /^Emergency \(1\)$/ }).click();
   await expect(page.getByTestId("patient-row")).toHaveCount(1);

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { seedHospital, signIn, type SeededHospital } from "./helpers";
+import { chooseOption, seedHospital, signIn, type SeededHospital } from "./helpers";
 
 let hospital: SeededHospital;
 
@@ -20,7 +20,7 @@ test("an admin completes the listing, prices included", async ({ page }) => {
   await expect(page.getByTestId("missing-for-listing")).toContainText("location");
 
   await page.getByLabel("Name in Amharic").fill("ሰላም ሆስፒታል");
-  await page.getByLabel("Kind").selectOption("public");
+  await chooseOption(page.getByRole("combobox", { name: "Kind" }), "Public");
   await page.getByLabel("Address").fill("Bole Road, near Edna Mall");
   await page.getByLabel("Phone", { exact: true }).fill("011 551 7611");
   await page.getByLabel("Ambulance phone").fill("907");

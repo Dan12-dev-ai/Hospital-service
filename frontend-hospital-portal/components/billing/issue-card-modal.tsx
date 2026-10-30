@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Icon } from "@/components/ui/icon";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useDashboard } from "@/components/dashboard/dashboard-context";
 
 const CARD_TYPES = [
@@ -72,7 +73,7 @@ export function IssueCardModal({
               id="issue-card-name"
               type="text"
               placeholder="e.g. Abebe Bikila (አበበ ቢቂላ)"
-              className="w-full rounded-xl bg-surface-container-low px-3 py-2 text-body-md font-body-md text-on-surface placeholder:text-outline focus:outline-none focus:ring-2 focus:ring-primary-container"
+              className="w-full rounded-xl bg-surface-container-low px-3 py-2 text-body-md font-body-md text-on-surface placeholder:text-outline focus:outline-none focus:ring-2 focus:ring-black"
             />
           </div>
 
@@ -88,7 +89,7 @@ export function IssueCardModal({
                 id="issue-card-phone"
                 type="tel"
                 placeholder="091 100 0000"
-                className="w-full rounded-xl bg-surface-container-low px-3 py-2 text-body-md font-body-md text-on-surface placeholder:text-outline focus:outline-none focus:ring-2 focus:ring-primary-container"
+                className="w-full rounded-xl bg-surface-container-low px-3 py-2 text-body-md font-body-md text-on-surface placeholder:text-outline focus:outline-none focus:ring-2 focus:ring-black"
               />
             </div>
             <div className="flex flex-col gap-1.5">
@@ -103,16 +104,17 @@ export function IssueCardModal({
                   id="issue-card-age"
                   type="number"
                   placeholder="Age"
-                  className="w-full rounded-xl bg-surface-container-low px-3 py-2 text-body-md font-body-md text-on-surface placeholder:text-outline focus:outline-none focus:ring-2 focus:ring-primary-container"
+                  className="w-full rounded-xl bg-surface-container-low px-3 py-2 text-body-md font-body-md text-on-surface placeholder:text-outline focus:outline-none focus:ring-2 focus:ring-black"
                 />
-                <select
-                  aria-label="Gender"
-                  defaultValue="Male"
-                  className="w-full rounded-xl bg-surface-container-low px-2 py-2 text-body-md font-body-md text-on-surface focus:outline-none focus:ring-2 focus:ring-primary-container"
-                >
-                  <option>Male</option>
-                  <option>Female</option>
-                </select>
+                <Select defaultValue="Male">
+                  <SelectTrigger aria-label="Gender" className="w-full cursor-pointer">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Male">Male</SelectItem>
+                    <SelectItem value="Female">Female</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
             </div>
           </div>
@@ -124,17 +126,18 @@ export function IssueCardModal({
             >
               Card Type &amp; Department
             </label>
-            <select
-              id="issue-card-type"
-              defaultValue="adult"
-              className="w-full rounded-xl bg-surface-container-low px-3 py-2 text-body-md font-body-md text-on-surface focus:outline-none focus:ring-2 focus:ring-primary-container"
-            >
-              {CARD_TYPES.map((type) => (
-                <option key={type.value} value={type.value}>
-                  {type.label}
-                </option>
-              ))}
-            </select>
+            <Select defaultValue="adult">
+              <SelectTrigger id="issue-card-type" className="w-full cursor-pointer">
+                <SelectValue>{(v) => CARD_TYPES.find((type) => type.value === v)?.label ?? v}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {CARD_TYPES.map((type) => (
+                  <SelectItem key={type.value} value={type.value}>
+                    {type.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           <div className="flex flex-col gap-1.5">
@@ -145,7 +148,7 @@ export function IssueCardModal({
               {PAYMENT_CHANNELS.map((channel) => (
                 <label
                   key={channel.value}
-                  className="flex cursor-pointer flex-col items-center justify-center rounded-xl border border-transparent bg-surface-container-low p-2.5 text-on-surface transition-colors hover:bg-surface-container has-[:checked]:bg-secondary-fixed has-[:checked]:text-on-secondary-fixed-variant"
+                  className="flex cursor-pointer flex-col items-center justify-center rounded-xl border border-transparent bg-surface-container-low p-2.5 text-on-surface transition-colors hover:bg-surface-container has-[:checked]:bg-neutral-200 has-[:checked]:text-neutral-800"
                 >
                   <input
                     type="radio"
@@ -177,7 +180,7 @@ export function IssueCardModal({
           <button
             type="button"
             onClick={submit}
-            className="flex items-center gap-2 rounded-xl bg-primary-container px-5 py-2 text-label-lg font-label-lg text-on-primary shadow-soft transition-all hover:bg-primary"
+            className="flex items-center gap-2 rounded-xl bg-black px-5 py-2 text-label-lg font-label-lg text-white shadow-soft transition-all hover:bg-neutral-800"
           >
             <Icon name="print" className="text-[18px]" />
             <span>Issue &amp; Print Card</span>

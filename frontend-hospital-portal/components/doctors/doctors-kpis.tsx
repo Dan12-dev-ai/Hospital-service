@@ -11,8 +11,8 @@ type DoctorKpi = {
 
 export function DoctorsKpis({ counts }: { counts: DoctorList["counts"] | null }) {
   const kpis: DoctorKpi[] = [
-    { label: "Total Doctors", icon: "stethoscope", value: counts?.all, iconBgClass: "bg-surface-container-high", iconTextClass: "text-primary" },
-    { label: "On Duty", icon: "pulse_alert", value: counts?.["on-duty"], iconBgClass: "bg-secondary-fixed/40", iconTextClass: "text-secondary" },
+    { label: "Total Doctors", icon: "stethoscope", value: counts?.all, iconBgClass: "bg-surface-container-high", iconTextClass: "text-black" },
+    { label: "On Duty", icon: "pulse_alert", value: counts?.["on-duty"], iconBgClass: "bg-neutral-200", iconTextClass: "text-neutral-600" },
     { label: "In Consultation", icon: "schedule", value: counts?.["in-consultation"], iconBgClass: "bg-surface-variant", iconTextClass: "text-tertiary" },
     { label: "On-Call / Surgery", icon: "medical_services", value: counts?.["on-call"], iconBgClass: "bg-tertiary-fixed/30", iconTextClass: "text-tertiary-container" },
   ];

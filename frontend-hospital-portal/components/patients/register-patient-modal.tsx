@@ -10,6 +10,7 @@ import {
   secondaryButtonClass,
 } from "@/components/common/states";
 import { ApiError, apiFetch } from "@/lib/api";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { ApiPatient } from "@/lib/api-types";
 
 type Payer = "cash" | "cbhi" | "private" | "credit";
@@ -120,17 +121,27 @@ export function RegisterPatientModal({
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label htmlFor="patient-sex" className={labelClass}>Sex</label>
-            <select id="patient-sex" value={form.sex} onChange={(e) => set("sex", e.target.value)} className={inputClass}>
-              <option value="female">Female (ሴት)</option>
-              <option value="male">Male (ወንድ)</option>
-            </select>
+            <Select value={form.sex} onValueChange={(v) => set("sex", v ?? form.sex)}>
+              <SelectTrigger id="patient-sex" className="w-full cursor-pointer">
+                <SelectValue>{(v) => (v === "female" ? "Female (ሴት)" : "Male (ወንድ)")}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="female">Female (ሴት)</SelectItem>
+                <SelectItem value="male">Male (ወንድ)</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
           <div>
             <label htmlFor="patient-birth" className={labelClass}>Birth</label>
-            <select id="patient-birth" value={form.birth} onChange={(e) => set("birth", e.target.value)} className={inputClass}>
-              <option value="dob">Date of birth known</option>
-              <option value="age">Only the age is known</option>
-            </select>
+            <Select value={form.birth} onValueChange={(v) => set("birth", v ?? form.birth)}>
+              <SelectTrigger id="patient-birth" className="w-full cursor-pointer">
+                <SelectValue>{(v) => (v === "dob" ? "Date of birth known" : "Only the age is known")}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="dob">Date of birth known</SelectItem>
+                <SelectItem value="age">Only the age is known</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         </div>
         {form.birth === "dob" ? (
@@ -157,11 +168,18 @@ export function RegisterPatientModal({
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label htmlFor="patient-payer" className={labelClass}>Payer</label>
-            <select id="patient-payer" value={form.payer} onChange={(e) => set("payer", e.target.value)} className={inputClass}>
-              {PAYERS.map((p) => (
-                <option key={p.value} value={p.value}>{p.label}</option>
-              ))}
-            </select>
+            <Select value={form.payer} onValueChange={(v) => set("payer", v ?? form.payer)}>
+              <SelectTrigger id="patient-payer" className="w-full cursor-pointer">
+                <SelectValue>{(v) => (PAYERS.find((p) => p.value === v)?.label ?? v)}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {PAYERS.map((p) => (
+                  <SelectItem key={p.value} value={p.value}>
+                    {p.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div>
             <label htmlFor="patient-payer-number" className={labelClass}>Membership / policy no.</label>

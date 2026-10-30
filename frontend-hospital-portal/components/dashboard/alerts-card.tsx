@@ -1,4 +1,5 @@
-import { Icon } from "@/components/ui/icon";
+import { Info } from "lucide-react";
+
 import { hospitalAlerts } from "@/lib/dashboard-data";
 
 export function AlertsCard() {
@@ -13,7 +14,7 @@ export function AlertsCard() {
             Important hospital operational updates
           </span>
         </div>
-        <Icon name="info" className="text-[18px] text-slate-400" />
+        <Info className="text-[18px] text-slate-400" />
       </div>
 
       {/* Alert pills */}
@@ -21,9 +22,9 @@ export function AlertsCard() {
         {hospitalAlerts.map((alert) => (
           <div
             key={alert.id}
-            className="flex items-center gap-2.5 rounded-2xl border border-emerald-100 bg-emerald-50/70 p-3 text-xs text-pine-dark"
+            className="flex items-center gap-2.5 rounded-2xl border border-neutral-100 bg-neutral-50/70 p-3 text-xs text-neutral-800"
           >
-            <Icon name="info" className="text-[17px] text-pine-green" />
+            <Info className="text-[17px] text-black" />
             <span className="font-medium">{alert.message}</span>
           </div>
         ))}
@@ -40,7 +41,7 @@ export function AlertsCard() {
               248/300 beds occupied
             </span>
           </div>
-          <span className="text-lg font-extrabold text-pine-green">83%</span>
+          <span className="text-lg font-extrabold text-black">83%</span>
         </div>
         <div className="flex items-center justify-between rounded-2xl border border-slate-100 bg-slate-50 p-3">
           <div>

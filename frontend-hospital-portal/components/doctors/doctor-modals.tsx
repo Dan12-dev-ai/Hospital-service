@@ -11,6 +11,7 @@ import {
   secondaryButtonClass,
 } from "@/components/common/states";
 import { ApiError, apiFetch } from "@/lib/api";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { ApiDoctor, Department, DoctorRank, DutyStatus, Staff } from "@/lib/api-types";
 import { DUTY_LABELS, RANK_OPTIONS, type Doctor } from "@/lib/doctor-types";
 
@@ -109,12 +110,19 @@ export function AddDoctorModal({
         </div>
         <div>
           <label htmlFor="doctor-department" className={labelClass}>Department (optional)</label>
-          <select id="doctor-department" value={departmentId} onChange={(e) => setDepartmentId(e.target.value)} className={inputClass}>
-            <option value="">None</option>
-            {departments.map((d) => (
-              <option key={d.id} value={d.id}>{d.name}</option>
-            ))}
-          </select>
+          <Select value={departmentId || "__none__"} onValueChange={(v) => setDepartmentId(v === "__none__" ? "" : (v ?? ""))}>
+            <SelectTrigger id="doctor-department" className="w-full cursor-pointer">
+              <SelectValue>{(v) => (v && v !== "__none__" ? (departments.find((d) => d.id === v)?.name ?? v) : "None")}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__none__">None</SelectItem>
+              {departments.map((d) => (
+                <SelectItem key={d.id} value={d.id}>
+                  {d.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </div>
       <FormError message={error} />
@@ -160,11 +168,18 @@ export function DutyModal({ doctor, onClose, onSaved }: { doctor: Doctor; onClos
     >
       <div>
         <label htmlFor="duty-status" className={labelClass}>Status</label>
-        <select id="duty-status" value={status} onChange={(e) => setStatus(e.target.value as DutyStatus)} className={inputClass}>
-          {(Object.keys(DUTY_LABELS) as DutyStatus[]).map((key) => (
-            <option key={key} value={key}>{DUTY_LABELS[key]}</option>
-          ))}
-        </select>
+        <Select value={status} onValueChange={(v) => { if (v) setStatus(v as DutyStatus); }}>
+          <SelectTrigger id="duty-status" className="w-full cursor-pointer">
+            <SelectValue>{(v) => (v ? DUTY_LABELS[v as DutyStatus] : "")}</SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            {(Object.keys(DUTY_LABELS) as DutyStatus[]).map((key) => (
+              <SelectItem key={key} value={key}>
+                {DUTY_LABELS[key]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
       {status !== "off-duty" && (
         <div>
@@ -251,12 +266,19 @@ export function ProfileModal({ doctor, onClose, onSaved }: { doctor: Doctor; onC
         </div>
         <div>
           <label htmlFor="profile-rank" className={labelClass}>Rank</label>
-          <select id="profile-rank" value={form.rank} onChange={(e) => set("rank", e.target.value)} className={inputClass}>
-            <option value="">Not set</option>
-            {RANK_OPTIONS.map((r) => (
-              <option key={r.value} value={r.value}>{r.label}</option>
-            ))}
-          </select>
+          <Select value={form.rank || "__none__"} onValueChange={(v) => set("rank", v === "__none__" ? "" : (v ?? ""))}>
+            <SelectTrigger id="profile-rank" className="w-full cursor-pointer">
+              <SelectValue>{(v) => (v && v !== "__none__" ? (RANK_OPTIONS.find((r) => r.value === v)?.label ?? v) : "Not set")}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__none__">Not set</SelectItem>
+              {RANK_OPTIONS.map((r) => (
+                <SelectItem key={r.value} value={r.value}>
+                  {r.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
         <div>
           <label htmlFor="profile-extension" className={labelClass}>Extension</label>

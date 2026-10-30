@@ -2,6 +2,7 @@
 
 import { useState, type FormEvent, type ReactNode } from "react";
 import { Icon } from "@/components/ui/icon";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useDashboard } from "@/components/dashboard/dashboard-context";
 import { RoleGate, FormError, inputClass, labelClass, primaryButtonClass, secondaryButtonClass } from "@/components/common/states";
 import { useSession } from "@/components/session/session-context";
@@ -230,10 +231,15 @@ function SettingsForm({ hospital }: { hospital: Hospital }) {
           <input id="h-name-am" maxLength={160} value={form.name_am} onChange={(e) => set("name_am", e.target.value)} className={inputClass} />
         </Field>
         <Field label="Kind" htmlFor="h-kind">
-          <select id="h-kind" value={form.kind} onChange={(e) => set("kind", e.target.value as HospitalKind)} className={inputClass}>
-            <option value="public">Public</option>
-            <option value="private">Private</option>
-          </select>
+          <Select value={form.kind} onValueChange={(v) => set("kind", (v ?? form.kind) as HospitalKind)}>
+            <SelectTrigger id="h-kind" className="w-full cursor-pointer">
+              <SelectValue>{(v) => (v === "public" ? "Public" : v === "private" ? "Private" : v)}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="public">Public</SelectItem>
+              <SelectItem value="private">Private</SelectItem>
+            </SelectContent>
+          </Select>
         </Field>
         <Field label="City" htmlFor="h-city">
           <input id="h-city" maxLength={100} value={form.city} onChange={(e) => set("city", e.target.value)} className={inputClass} />
@@ -330,7 +336,7 @@ function ListingStatus({ hospital }: { hospital: Hospital }) {
       : hospital.status === "suspended"
         ? { label: "Suspended by Endod", tone: "bg-rose-50 text-rose-900 border-rose-200" }
         : hospital.listed
-          ? { label: "Listed in the Endod app", tone: "bg-emerald-50 text-emerald-900 border-emerald-200" }
+          ? { label: "Listed in the Endod app", tone: "bg-neutral-50 text-neutral-900 border-neutral-200" }
           : { label: "Approved, not listed yet", tone: "bg-sky-50 text-sky-900 border-sky-200" };
   return (
     <section data-testid="listing-status" className={`flex flex-col gap-1 rounded-2xl border px-5 py-3 text-xs ${status.tone}`}>
@@ -355,7 +361,7 @@ function Section({ title, icon, children }: { title: string; icon: string; child
   return (
     <section className="rounded-3xl border border-card-border/80 bg-white p-5 shadow-soft">
       <h2 className="mb-4 flex items-center gap-2 text-sm font-bold text-slate-800">
-        <Icon name={icon} className="text-[18px] text-pine-green" />
+        <Icon name={icon} className="text-[18px] text-black" />
         {title}
       </h2>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{children}</div>

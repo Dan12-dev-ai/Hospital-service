@@ -108,7 +108,7 @@ function MedicalRecords() {
                       onClick={() => setSelectedId(booking.id)}
                       className={`flex w-full items-center justify-between gap-3 rounded-2xl px-4 py-2.5 text-xs transition-colors ${
                         selectedId === booking.id
-                          ? "bg-pine-green text-white"
+                          ? "bg-black text-white"
                           : "bg-slate-50 text-slate-800 hover:bg-slate-100"
                       }`}
                     >

@@ -155,8 +155,8 @@ function Loaded() {
       )}
 
       {result && (
-        <section data-testid="import-result" className="flex flex-col gap-3 rounded-3xl border border-emerald-100 bg-emerald-50/50 p-5">
-          <p className="text-sm font-bold text-emerald-900">
+        <section data-testid="import-result" className="flex flex-col gap-3 rounded-3xl border border-neutral-100 bg-neutral-50/50 p-5">
+          <p className="text-sm font-bold text-neutral-900">
             Imported {result.imported} record{result.imported === 1 ? "" : "s"}. Linked patients see them in their Endod app.
           </p>
           <SkippedList skipped={result.skipped} />

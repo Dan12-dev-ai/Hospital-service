@@ -3,6 +3,7 @@
 import { forwardRef } from "react";
 import { cn } from "cn";
 import { Icon } from "@/components/ui/icon";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useDashboard } from "@/components/dashboard/dashboard-context";
 import type { Department, PatientStats } from "@/lib/api-types";
 import { PATIENT_TABS, type PatientTabKey } from "@/lib/patient-types";
@@ -77,7 +78,7 @@ export const PatientsToolbar = forwardRef<
               className={cn(
                 "whitespace-nowrap rounded-xl px-3.5 py-1.5 text-label-sm font-label-sm transition-all",
                 tab === item.key
-                  ? "bg-primary text-on-primary"
+                  ? "bg-black text-white"
                   : "text-on-surface-variant hover:text-on-surface"
               )}
             >
@@ -136,23 +137,20 @@ function SelectPill({
   ariaLabel: string;
 }) {
   return (
-    <div className="relative">
-      <select
+    <Select value={value} onValueChange={(v) => onChange(v ?? value)}>
+      <SelectTrigger
         aria-label={ariaLabel}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="cursor-pointer appearance-none rounded-xl bg-surface-container-low px-3 py-1.5 text-label-sm font-label-sm text-on-surface focus:outline-none"
+        className="cursor-pointer rounded-xl bg-surface-container-low px-3 py-1.5 text-label-sm font-label-sm text-on-surface"
       >
+        <SelectValue>{(v) => options.find((o) => o.value === v)?.label ?? v}</SelectValue>
+      </SelectTrigger>
+      <SelectContent>
         {options.map((option) => (
-          <option key={option.value} value={option.value}>
+          <SelectItem key={option.value} value={option.value}>
             {option.label}
-          </option>
+          </SelectItem>
         ))}
-      </select>
-      <Icon
-        name="expand_more"
-        className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[16px] text-outline"
-      />
-    </div>
+      </SelectContent>
+    </Select>
   );
 }

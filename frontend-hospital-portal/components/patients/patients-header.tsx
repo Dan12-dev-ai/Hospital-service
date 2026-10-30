@@ -14,7 +14,7 @@ export function PatientsHeader({
       <div className="flex min-w-0 flex-col">
         <div className="flex items-center gap-2.5">
           <h1 className="text-headline-lg font-headline-lg tracking-tight text-on-surface">Patients</h1>
-          <span className="inline-flex items-center rounded-full bg-surface-container-high px-2.5 py-0.5 text-label-sm font-label-sm text-primary">
+          <span className="inline-flex items-center rounded-full bg-surface-container-high px-2.5 py-0.5 text-label-sm font-label-sm text-black">
             Active Census
           </span>
         </div>
@@ -28,7 +28,7 @@ export function PatientsHeader({
           <button
             type="button"
             onClick={onRegister}
-            className="group flex items-center gap-2 rounded-2xl bg-primary px-4 py-2.5 text-label-lg font-label-lg text-on-primary shadow-glow transition-all hover:bg-surface-tint"
+            className="group flex items-center gap-2 rounded-2xl bg-black px-4 py-2.5 text-label-lg font-label-lg text-white shadow-glow transition-all hover:bg-neutral-800"
           >
             <Icon name="add" className="text-[20px] transition-transform group-hover:rotate-90" />
             <span>Register Patient (አዲስ ታካሚ)</span>
