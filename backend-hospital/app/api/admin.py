@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -19,17 +18,15 @@ from app.models import (
     PatientStatus, Role, Service, StaffUser,
 )
 from app.security import hash_password, temporary_password
-from app.validation import ContactNumber, Name, OptionalOpenHours, OptionalPhone, OptionalText
+from app.validation import (
+    Birr, ContactNumber, Name, OptionalOpenHours, OptionalPhone, OptionalText, birr, santim,
+)
 
 router = APIRouter(tags=["administration"])
 admin_only = require_roles(Role.ADMIN)
 
 
 # --- hospital -----------------------------------------------------------------
-
-def _birr(santim: Optional[int]) -> Optional[str]:
-    return None if santim is None else f"{Decimal(santim) / 100:.2f}"
-
 
 def hospital_payload(h: Hospital) -> Dict[str, Any]:
     return {
@@ -46,13 +43,13 @@ def hospital_payload(h: Hospital) -> Dict[str, Any]:
         "services": listing.services_of(h), "open_hours": h.open_hours,
         "video_enabled": h.video_enabled,
         # Birr, as text with two decimals (exact; never a float).
-        "price_in_person": _birr(h.price_in_person),
-        "price_video": _birr(h.price_video),
+        "price_in_person": birr(h.price_in_person),
+        "price_video": birr(h.price_video),
         "queue_notify_ahead": h.queue_notify_ahead,
     }
 
 
-Price = Optional[Decimal]
+Price = Optional[Birr]
 
 
 class HospitalUpdate(BaseModel):
@@ -72,8 +69,8 @@ class HospitalUpdate(BaseModel):
     open_hours: OptionalOpenHours = None
     video_enabled: Optional[bool] = None
     #: Birr, up to two decimals.
-    price_in_person: Price = Field(default=None, ge=0, le=1_000_000, decimal_places=2)
-    price_video: Price = Field(default=None, ge=0, le=1_000_000, decimal_places=2)
+    price_in_person: Price = None
+    price_video: Price = None
     #: Queue: people ahead that trigger the "get ready" SMS (0 = off).
     queue_notify_ahead: Optional[int] = Field(default=None, ge=0, le=20)
 
@@ -113,7 +110,7 @@ def update_hospital(body: HospitalUpdate, staff: Staff = Depends(admin_only)) ->
         changes["services"] = ",".join(changes["services"] or []) or None
     for field in ("price_in_person", "price_video"):
         if field in changes and changes[field] is not None:
-            changes[field] = int((changes[field] * 100).to_integral_value())
+            changes[field] = santim(changes[field])
     with session_scope(staff.hospital_id) as session:
         hospital = session.scalar(select(Hospital).where(Hospital.id == staff.hospital_id).with_for_update())
         for field, value in changes.items():

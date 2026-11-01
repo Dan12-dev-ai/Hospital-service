@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 from typing import Annotated, Any, Optional
 
-from pydantic import AfterValidator, BeforeValidator, StringConstraints
+from pydantic import AfterValidator, BeforeValidator, Field, StringConstraints
 
 
 def blank_to_none(value: Any) -> Any:
@@ -19,6 +20,21 @@ def blank_to_none(value: Any) -> Any:
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=2)]
 #: An optional text field where "" means none.
 OptionalText = Annotated[Optional[str], BeforeValidator(blank_to_none)]
+
+#: A visit price in birr, up to two decimals, 0 (free) to 1,000,000. Stored in
+#: santim (an integer): see santim() and birr().
+Birr = Annotated[Decimal, Field(ge=0, le=1_000_000, decimal_places=2)]
+
+
+def santim(value: Decimal) -> int:
+    """A price in birr as the integer santim it is stored as."""
+    return int((value * 100).to_integral_value())
+
+
+def birr(value: Optional[int]) -> Optional[str]:
+    """Stored santim as birr, text with two decimals (exact; never a float)."""
+    return None if value is None else f"{Decimal(value) / 100:.2f}"
+
 
 _DIGITS = re.compile(r"\D")
 

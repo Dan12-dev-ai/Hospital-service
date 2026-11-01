@@ -6,7 +6,9 @@ here is visible to patients. The steps, in the order the portal shows them:
 
 1. ``contact``: the contact person, who is also the first admin account
    (created by ``POST /onboarding``, so uploads have an owner);
-2. ``facility``: kind, ownership, name, city, phone, services, opening hours;
+2. ``facility``: kind, ownership, name, city, phone, services, opening hours
+   and the in-person visit price (the hospital's own price, as in Settings,
+   so approval lists it for patients at once);
 3. ``location``: address and a pin on the map;
 4. ``documents``: the four required documents and the license number;
 5. ``demo``: a 30-minute demo with Endod;
@@ -28,6 +30,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db import ensure_aware, utcnow
+from app.validation import birr
 from app.models import (
     ApplicationStatus, DemoBooking, DocumentKind, Hospital, HospitalStatus, OnboardingApplication,
     OnboardingDocument, Role, Service, StaffUser,
@@ -215,6 +218,9 @@ def missing(session: Session, hospital: Hospital, app: OnboardingApplication) ->
             result["facility"].append(field)
     if not services_list(hospital):
         result["facility"].append("services")
+    # 0 is a price (free visits); only no price at all is missing.
+    if hospital.price_in_person is None:
+        result["facility"].append("price_in_person")
     if not hospital.address:
         result["location"].append("address")
     if hospital.latitude is None or hospital.longitude is None:
@@ -286,6 +292,11 @@ def application_payload(session: Session, hospital: Hospital) -> Dict[str, Any]:
             "phone": hospital.phone,
             "services": services_list(hospital),
             "open_hours": hospital.open_hours,
+            # Birr, as text with two decimals, or None (not given yet).
+            "price_in_person": birr(hospital.price_in_person),
+            # Set in Settings after approval (video visits are optional).
+            "price_video": birr(hospital.price_video),
+            "video_enabled": bool(hospital.video_enabled and hospital.price_video is not None),
         },
         "location": {"address": hospital.address, "latitude": hospital.latitude, "longitude": hospital.longitude},
         "documents": {

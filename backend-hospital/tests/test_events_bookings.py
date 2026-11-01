@@ -164,7 +164,8 @@ class TestApprovalAndListing:
             "address": "Bole Road", "latitude": 9.03, "longitude": 38.74}).status_code == 200
         assert client.patch("/onboarding/facility", headers=headers, json={
             "facility_type": "hospital", "ownership": "public", "name": "Tikur Anbessa", "city": "Addis Ababa",
-            "phone": "011 551 7611", "services": ["general_medicine"], "open_hours": "24/7"}).status_code == 200
+            "phone": "011 551 7611", "services": ["general_medicine"], "open_hours": "24/7",
+            "price_in_person": "200"}).status_code == 200
         run_worker(bus)
         assert stream(bus) == []
 

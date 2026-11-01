@@ -54,6 +54,11 @@ export type Application = {
     phone: string | null;
     services: ServiceKey[];
     open_hours: string | null;
+    /** Birr, as text with two decimals ("0.00": free visits); null until given. */
+    price_in_person: string | null;
+    /** Set in Settings after approval (video visits are optional). */
+    price_video: string | null;
+    video_enabled: boolean;
   };
   location: { address: string | null; latitude: number | null; longitude: number | null };
   documents: { license_number: string | null; items: ApplicationDocument[] };

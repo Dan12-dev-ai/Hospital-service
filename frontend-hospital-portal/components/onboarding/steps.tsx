@@ -7,6 +7,7 @@ import { Icon } from "@/components/ui/icon";
 import { ApiError, apiFetch, apiUpload, fileUrl } from "@/lib/api";
 import { SERVICES, type FacilityType, type HospitalKind, type ServiceKey } from "@/lib/api-types";
 import { passwordProblem } from "@/lib/password";
+import { BIRR_PATTERN, formatBirr } from "@/lib/format";
 import {
   formatDemo,
   formatSize,
@@ -284,6 +285,7 @@ export function FacilityStep({ application, onSaved, onBack }: StepProps) {
     phone: f.phone ?? "",
     services: f.services,
     open_hours: f.open_hours ?? "",
+    price_in_person: f.price_in_person ?? "",
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -305,13 +307,24 @@ export function FacilityStep({ application, onSaved, onBack }: StepProps) {
     const hoursProblem = openHoursTextProblem(form.open_hours, true);
     if (hoursProblem) return setError(hoursProblem);
     if (form.services.length === 0) return setError("Choose at least one service.");
+    const price = form.price_in_person.trim();
+    if (price === "") return setError("Enter the in-person visit price in birr (0 if visits are free).");
+    if (!BIRR_PATTERN.test(price) || Number(price) > 1_000_000) {
+      return setError("The price is in birr, e.g. 150 or 150.50 (at most 1,000,000).");
+    }
     setBusy(true);
     setError(null);
     try {
       onSaved(
         await apiFetch<Application>("onboarding/facility", {
           method: "PATCH",
-          body: { ...form, name: form.name.trim(), name_am: form.name_am.trim() || null, city: form.city.trim() },
+          body: {
+            ...form,
+            name: form.name.trim(),
+            name_am: form.name_am.trim() || null,
+            city: form.city.trim(),
+            price_in_person: price,
+          },
         })
       );
     } catch (err) {
@@ -372,6 +385,22 @@ export function FacilityStep({ application, onSaved, onBack }: StepProps) {
             inputClassName={fieldClass}
           />
         </fieldset>
+        <div className="sm:max-w-xs">
+          <Field
+            id="facility-price-in-person"
+            label="In-person visit price (ETB)"
+            hint="What a patient pays for a visit; 0 if visits are free. Patients see it in the Endod app once you are approved. You can change it, and add video visits, in Settings later."
+          >
+            <input
+              id="facility-price-in-person"
+              className={fieldClass}
+              inputMode="decimal"
+              placeholder="150.00"
+              value={form.price_in_person}
+              onChange={(e) => setForm({ ...form, price_in_person: e.target.value })}
+            />
+          </Field>
+        </div>
       </div>
       <StepError message={error} />
       <StepNav onBack={onBack} busy={busy} />
@@ -667,6 +696,19 @@ export function ReviewStep({ application, onBack, onEdit, onSubmitted }: {
           </p>
           <p className="text-xs text-slate-500">{services}</p>
           <p className="text-xs text-slate-500">{facility.open_hours}</p>
+          {facility.price_in_person !== null ? (
+            <p data-testid="review-price" className="text-xs text-slate-500">
+              In-person visit: {formatBirr(facility.price_in_person)}
+            </p>
+          ) : (
+            <p data-testid="review-price" className="text-xs font-semibold text-red-600">
+              <Icon name="error" className="mr-1 align-middle text-[14px]" />
+              In-person visit price not given yet: add it to submit.{" "}
+              <button type="button" onClick={() => onEdit(1)} className="underline">
+                Add the price
+              </button>
+            </p>
+          )}
         </Section>
         <Section title="Location" onEdit={() => onEdit(2)}>
           <p>{location.address}</p>

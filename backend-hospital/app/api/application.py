@@ -38,7 +38,7 @@ from app.models import (
     ApplicationStatus, DemoBooking, DocumentKind, Hospital, HospitalStatus, OnboardingApplication,
     OnboardingDocument, Role, Service,
 )
-from app.validation import ContactNumber, Name, OpenHours, OptionalText, normalize_phone
+from app.validation import Birr, ContactNumber, Name, OpenHours, OptionalText, birr, normalize_phone, santim
 
 router = APIRouter(tags=["onboarding"])
 
@@ -127,6 +127,9 @@ class FacilityStep(BaseModel):
     phone: ContactNumber
     services: List[str] = Field(min_length=1, max_length=len(Service.ALL))
     open_hours: OpenHours
+    #: Birr (0: free). Stored as the hospital's price, as Settings does: once
+    #: Endod approves, the hospital is listed for patients straight away.
+    price_in_person: Birr
 
     @field_validator("services")
     @classmethod
@@ -192,6 +195,7 @@ def save_facility(body: FacilityStep, staff: Staff = Depends(applicant)) -> Dict
         hospital.city, hospital.phone = body.city, body.phone
         hospital.services = ",".join(body.services)
         hospital.open_hours = body.open_hours
+        hospital.price_in_person = santim(body.price_in_person)
 
     return _save_step(staff, "facility", apply)
 
@@ -399,6 +403,13 @@ STEP_NAMES = {"contact": "contact person", "facility": "facility", "location": "
               "documents": "documents", "demo": "demo booking"}
 
 
+def _unfinished(step: str, gaps: List[str]) -> str:
+    # The price is named: drafts saved before it was asked for miss only it.
+    if step == "facility" and "price_in_person" in gaps:
+        return "facility (the in-person visit price)"
+    return STEP_NAMES[step]
+
+
 @router.post("/onboarding/submit")
 def submit(staff: Staff = Depends(applicant)) -> Dict[str, Any]:
     with session_scope(staff.hospital_id) as session:
@@ -406,7 +417,7 @@ def submit(staff: Staff = Depends(applicant)) -> Dict[str, Any]:
         app = onboarding.application_for(session, hospital, lock=True)
         onboarding.require_editable(hospital, app)
         gaps = onboarding.missing(session, hospital, app)
-        unfinished = [STEP_NAMES[step] for step in onboarding.STEPS if gaps[step]]
+        unfinished = [_unfinished(step, gaps[step]) for step in onboarding.STEPS if gaps[step]]
         if unfinished:
             raise HTTPException(status_code=400, detail=f"Finish these steps first: {', '.join(unfinished)}.")
         app.status = ApplicationStatus.SUBMITTED
@@ -432,6 +443,7 @@ def _summary(session, hospital: Hospital, app: Optional[OnboardingApplication]) 
         "facility_type": hospital.facility_type,
         "ownership": hospital.kind,
         "city": hospital.city,
+        "price_in_person": birr(hospital.price_in_person),
         "status": status_value,
         "hospital_status": hospital.status,
         "created_at": ensure_aware(hospital.created_at).isoformat(),

@@ -29,7 +29,8 @@ ACCOUNT = {"hospital_name": "Bethel Teaching Hospital", "facility_type": "hospit
            "password": "Strong-pass-123"}
 FACILITY = {"facility_type": "hospital", "ownership": "private", "name": "Bethel Teaching Hospital",
             "name_am": "ቤቴል ሆስፒታል", "city": "Addis Ababa", "phone": "011 551 7611",
-            "services": ["general_medicine", "pediatrics"], "open_hours": "Mon-Sat 08:00-17:00"}
+            "services": ["general_medicine", "pediatrics"], "open_hours": "Mon-Sat 08:00-17:00",
+            "price_in_person": "150.50"}
 LOCATION = {"address": "Gulele, near the stadium", "latitude": 9.0612, "longitude": 38.7321}
 
 
@@ -93,6 +94,22 @@ def complete(client, headers, demo_at=None):
     return resp.json()
 
 
+def stored_price(hospital_id):
+    from app.db import platform_session
+    from app.models import Hospital
+
+    with platform_session() as session:
+        return session.get(Hospital, hospital_id).price_in_person
+
+
+def set_price(hospital_id, santim):
+    from app.db import platform_session
+    from app.models import Hospital
+
+    with platform_session() as session:
+        session.get(Hospital, hospital_id).price_in_person = santim
+
+
 def published(bus, event_type="onboarding.demo_booked"):
     from app import eventbus
 
@@ -107,11 +124,13 @@ class TestWizard:
         assert app["status"] == "draft" and app["next_step"] == "facility"
         assert app["contact"] == {"full_name": "Selam Bekele", "title": "Medical Director",
                                   "phone": "+251911234567", "email": "selam@bethel.example"}
-        assert set(app["missing"]["facility"]) == {"city", "phone", "open_hours", "services"}
+        assert set(app["missing"]["facility"]) == {"city", "phone", "open_hours", "services", "price_in_person"}
+        assert app["facility"]["price_in_person"] is None
 
         saved = client.patch("/onboarding/facility", headers=headers, json=FACILITY).json()
         assert saved["next_step"] == "location"
         assert saved["facility"]["ownership"] == "private" and saved["facility"]["name_am"] == "ቤቴል ሆስፒታል"
+        assert saved["facility"]["price_in_person"] == "150.50" and saved["missing"]["facility"] == []
         assert client.patch("/onboarding/location", headers=headers, json=LOCATION).json()["next_step"] == "documents"
         for kind in KINDS[:3]:
             upload(client, headers, kind)
@@ -133,10 +152,43 @@ class TestWizard:
     @pytest.mark.parametrize("change", [
         {"facility_type": "pharmacy"}, {"ownership": "military"}, {"services": []}, {"services": ["astrology"]},
         {"phone": ""}, {"open_hours": ""}, {"city": " "}, {"open_hours": "100:00"}, {"open_hours": "Mon 9-5"},
+        # The in-person price: required, in birr (0 to 1,000,000, two decimals at most).
+        {"price_in_person": None}, {"price_in_person": ""}, {"price_in_person": "-1"}, {"price_in_person": -0.5},
+        {"price_in_person": "abc"}, {"price_in_person": "10.555"}, {"price_in_person": "1000000.01"},
+        {"price_in_person": "NaN"}, {"price_in_person": "Infinity"}, {"price_in_person": [150]},
     ])
     def test_invalid_facility(self, client, change):
         headers, _ = apply(client)
         assert client.patch("/onboarding/facility", headers=headers, json={**FACILITY, **change}).status_code == 422
+
+    def test_the_facility_step_needs_the_in_person_price(self, client):
+        headers, hospital_id = apply(client)
+        body = {k: v for k, v in FACILITY.items() if k != "price_in_person"}
+        refused = client.patch("/onboarding/facility", headers=headers, json=body)
+        assert refused.status_code == 422 and "price_in_person" in refused.json()["error"]
+        # Stored as the hospital's own price, in santim, as Settings stores it.
+        for typed, shown, stored in (("0", "0.00", 0), (150, "150.00", 15000), ("99.9", "99.90", 9990)):
+            saved = client.patch("/onboarding/facility", headers=headers, json={**FACILITY, "price_in_person": typed})
+            assert saved.status_code == 200, saved.text
+            assert saved.json()["facility"]["price_in_person"] == shown
+            assert saved.json()["next_step"] == "location"  # 0 (free visits) is a price
+            assert stored_price(hospital_id) == stored
+
+    def test_a_draft_saved_without_a_price_is_asked_for_it(self, client):
+        """Drafts from before the price was asked for: the wizard resumes at the
+        facility step, and submitting names what is missing."""
+        headers, hospital_id = apply(client)
+        complete(client, headers)
+        set_price(hospital_id, None)
+        app = client.get("/onboarding/application", headers=headers).json()
+        assert app["next_step"] == "facility" and app["missing"]["facility"] == ["price_in_person"]
+        assert app["complete"] is False
+        refused = client.post("/onboarding/submit", headers=headers)
+        assert refused.status_code == 400
+        assert refused.json()["error"] == "Finish these steps first: facility (the in-person visit price)."
+        saved = client.patch("/onboarding/facility", headers=headers, json={**FACILITY, "price_in_person": "0"})
+        assert saved.json()["complete"] is True
+        assert client.post("/onboarding/submit", headers=headers).json()["status"] == "submitted"
 
     def test_nonsense_opening_hours_get_a_clear_message(self, client):
         headers, _ = apply(client)
@@ -170,7 +222,7 @@ class TestWizard:
         headers, _ = apply(client)
         refused = client.post("/onboarding/submit", headers=headers)
         assert refused.status_code == 400
-        assert refused.json()["error"] == "Finish these steps first: facility, location, documents, demo booking."
+        assert refused.json()["error"] == "Finish these steps first: facility (the in-person visit price), location, documents, demo booking."
         complete(client, headers)
         submitted = client.post("/onboarding/submit", headers=headers).json()
         assert submitted["status"] == "submitted" and submitted["submitted_at"]
@@ -262,6 +314,19 @@ class TestLockout:
         assert client.post("/onboarding/demo", headers=headers, json={"demo_at": addis(28, 9)}).status_code == 409
         # An approved hospital (the conftest one) is untouched by all this.
         assert client.get("/hospital", headers=admin).json()["status"] == "approved"
+
+    def test_approval_lists_the_hospital_for_patients_at_once(self, client, bus):
+        """The price was given while applying, so approval announces the listing."""
+        headers, hospital_id = apply(client)
+        complete(client, headers)
+        client.post("/onboarding/submit", headers=headers)
+        approved = client.post(f"/platform/hospitals/{hospital_id}/approve", headers=KEY).json()
+        assert approved["listed"] is True and approved["missing_for_listing"] == []
+        assert approved["price_in_person"] == "150.50"
+        listed = [p for p in published(bus, "hospital.listed") if p["hospital_id"] == hospital_id]
+        assert len(listed) == 1 and listed[0]["price_in_person"] == 15050
+        assert listed[0]["latitude"] == LOCATION["latitude"] and listed[0]["video_enabled"] is False
+        assert not [p for p in published(bus, "hospital.unlisted") if p["hospital_id"] == hospital_id]
 
     def test_a_suspended_hospital_keeps_its_records(self, client, admin, hospital):
         client.post(f"/platform/hospitals/{hospital}/suspend", headers=KEY)
@@ -471,7 +536,12 @@ class TestEndodReview:
         assert [a["hospital_id"] for a in only] == [hospital_id]
         assert client.get("/platform/applications?status=nope", headers=KEY).status_code == 400
 
+        assert mine["price_in_person"] == "150.50" and draft["price_in_person"] is None
         detail = client.get(f"/platform/applications/{hospital_id}", headers=KEY).json()
+        # Endod's reviewer sees the price the hospital will be listed with.
+        assert detail["facility"]["price_in_person"] == "150.50"
+        assert detail["facility"]["price_video"] is None and detail["facility"]["video_enabled"] is False
+        assert client.get(f"/platform/applications/{draft_id}", headers=KEY).json()["facility"]["price_in_person"] is None
         assert detail["documents"]["license_number"] == "MOH/AA/1234" and detail["location"] == LOCATION
         document = detail["documents"]["items"][0]
         assert document["download"] == f"/platform/applications/{hospital_id}/documents/moh_license"
@@ -521,6 +591,7 @@ class TestEndodReview:
         out = capsys.readouterr().out
         assert "Bethel Teaching Hospital (BTH)" in out and "Medical Director" in out
         assert "Mon 26 Oct 2026 10:00 Addis Ababa time" in out and "MOH/AA/1234" in out
+        assert "in-person:   150.50 birr" in out
         assert str(tmp_path / "files" / hospital_id) in out and "MISSING" not in out
         with pytest.raises(SystemExit):
             cli.main(["application", "--code", "NOPE"])
