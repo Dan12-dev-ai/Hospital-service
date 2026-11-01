@@ -55,7 +55,7 @@ function toForm(h: Hospital): Form {
 type Payload = Record<string, string | number | boolean | string[] | null>;
 
 /** Checks the form and builds the PATCH body, or returns the first problem. */
-export function buildPayload(form: Form): { payload: Payload } | { problem: string } {
+export function buildPayload(form: Form, savedHours: string | null = null): { payload: Payload } | { problem: string } {
   if (form.name.trim().length < 2) return { problem: "Enter the hospital's name." };
   const lat = form.latitude.trim();
   const lng = form.longitude.trim();
@@ -87,33 +87,36 @@ export function buildPayload(form: Form): { payload: Payload } | { problem: stri
   if (form.video_enabled && prices.price_video === null) {
     return { problem: "Set a video visit price before turning video visits on." };
   }
-  const hoursProblem = openHoursTextProblem(form.open_hours, false);
+  // Hours saved before they were checked (e.g. "100:00") and left as they are
+  // are not sent: they do not block saving the other settings.
+  const hoursUnchanged = savedHours !== null && form.open_hours === savedHours;
+  const hoursProblem = hoursUnchanged ? null : openHoursTextProblem(form.open_hours, false);
   if (hoursProblem) return { problem: hoursProblem };
   const ahead = form.queue_notify_ahead.trim();
   if (!/^\d{1,2}$/.test(ahead) || Number(ahead) > 20) {
     return { problem: "The queue SMS setting is a number of people from 0 (off) to 20." };
   }
-  return {
-    payload: {
-      name: form.name.trim(),
-      name_am: form.name_am.trim() || null,
-      kind: form.kind,
-      city: form.city.trim() || null,
-      address: form.address.trim() || null,
-      phone: form.phone.trim() || null,
-      ambulance_phone: form.ambulance_phone.trim() || null,
-      emergency: form.emergency,
-      latitude,
-      longitude,
-      services: form.services,
-      open_hours: form.open_hours.trim() || null,
-      video_enabled: form.video_enabled,
-      // Birr as text: the API takes decimals and stores santim, so no float rounding.
-      price_in_person: prices.price_in_person,
-      price_video: prices.price_video,
-      queue_notify_ahead: Number(ahead),
-    },
+  const payload: Payload = {
+    name: form.name.trim(),
+    name_am: form.name_am.trim() || null,
+    kind: form.kind,
+    city: form.city.trim() || null,
+    address: form.address.trim() || null,
+    phone: form.phone.trim() || null,
+    ambulance_phone: form.ambulance_phone.trim() || null,
+    emergency: form.emergency,
+    latitude,
+    longitude,
+    services: form.services,
+    open_hours: form.open_hours.trim() || null,
+    video_enabled: form.video_enabled,
+    // Birr as text: the API takes decimals and stores santim, so no float rounding.
+    price_in_person: prices.price_in_person,
+    price_video: prices.price_video,
+    queue_notify_ahead: Number(ahead),
   };
+  if (hoursUnchanged) delete payload.open_hours;
+  return { payload };
 }
 
 export function HospitalSettings() {
@@ -200,7 +203,7 @@ function SettingsForm({ hospital }: { hospital: Hospital }) {
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    const built = buildPayload(form);
+    const built = buildPayload(form, saved.open_hours);
     if ("problem" in built) {
       setError(built.problem);
       return;

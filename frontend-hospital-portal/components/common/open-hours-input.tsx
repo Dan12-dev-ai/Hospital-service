@@ -70,7 +70,7 @@ export function OpenHoursInput({
     <div id={id} data-testid="open-hours" className="flex flex-col gap-2">
       {unreadable && (
         <p data-testid="open-hours-unreadable" className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">
-          The saved opening hours (&ldquo;{unreadable}&rdquo;) are not valid times. Set them again below.
+          The saved opening hours (&ldquo;{unreadable}&rdquo;) are not valid times. Patients still see them until you set them again below.
         </p>
       )}
       <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-on-surface">
@@ -94,7 +94,13 @@ export function OpenHoursInput({
                 <DaySelect label={`From${suffix}`} value={period.from} onChange={(from) => setPeriod(index, { from })} />
                 <DaySelect label={`To${suffix}`} value={period.to} onChange={(to) => setPeriod(index, { to })} />
                 <TimeField label={`Opens at${suffix}`} value={period.opens} onChange={(opens) => setPeriod(index, { opens })} className={inputClassName} />
-                <TimeField label={`Closes at${suffix}`} value={period.closes} onChange={(closes) => setPeriod(index, { closes })} className={inputClassName} />
+                <TimeField
+                  label={`Closes at${suffix}`}
+                  // Midnight closes the day: stored as 24:00, shown as 00:00.
+                  value={period.closes === "24:00" ? "00:00" : period.closes}
+                  onChange={(closes) => setPeriod(index, { closes: closes === "00:00" ? "24:00" : closes })}
+                  className={inputClassName}
+                />
                 <button
                   type="button"
                   aria-label={`Remove opening hours${suffix || " (line 1)"}`}
@@ -158,7 +164,7 @@ function TimeField({
         type="time"
         aria-label={label}
         required
-        value={value === "24:00" ? "23:59" : value}
+        value={value}
         onChange={(e) => onChange(e.target.value)}
         className={className}
       />

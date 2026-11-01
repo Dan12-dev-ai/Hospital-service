@@ -180,6 +180,7 @@ class TestApprovalAndListing:
         {"open_hours": "Mon-Fri 08:00-25:00"},
         {"open_hours": "Funday 08:00-17:00"},
         {"open_hours": "whenever"},
+        {"open_hours": "Fri-Mon 08:00-17:00"},  # days running backwards
     ])
     def test_invalid_hospital_settings(self, client, admin, body):
         assert client.patch("/hospital", headers=admin, json=body).status_code in (400, 422)

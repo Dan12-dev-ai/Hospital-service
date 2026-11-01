@@ -184,7 +184,12 @@ def normalize_open_hours(value: str) -> str:
             label = "Daily"
         else:
             first, _, last = days.partition("-")
-            label = _day(first) + (f"-{_day(last)}" if last else "")
+            label = _day(first)
+            if last:
+                if DAYS.index(_day(last)) < DAYS.index(label):
+                    raise ValueError(f'{part}: the days must run forward, e.g. "Mon-Fri" (write "Sat-Sun, Mon-Tue" '
+                                     f'for a weekend into the week); {OPEN_HOURS_HELP}')
+                label += f"-{_day(last)}"
         opens, closes = _clock(match.group("open")), _clock(match.group("close"))
         if opens == closes or opens == "24:00":
             raise ValueError(f"{part}: the closing time must differ from the opening time; {OPEN_HOURS_HELP}")
