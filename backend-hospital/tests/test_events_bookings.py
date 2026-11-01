@@ -176,9 +176,21 @@ class TestApprovalAndListing:
         {"price_in_person": "-1"},
         {"price_in_person": "10.555"},
         {"ambulance_phone": "call us"},
+        {"open_hours": "100:00"},
+        {"open_hours": "Mon-Fri 08:00-25:00"},
+        {"open_hours": "Funday 08:00-17:00"},
+        {"open_hours": "whenever"},
     ])
     def test_invalid_hospital_settings(self, client, admin, body):
         assert client.patch("/hospital", headers=admin, json=body).status_code in (400, 422)
+
+    def test_opening_hours_are_checked_and_stored_in_one_form(self, client, admin):
+        resp = client.patch("/hospital", headers=admin, json={"open_hours": "100:00"})
+        assert resp.status_code == 422 and "is not a period of opening hours" in resp.json()["error"]
+        saved = client.patch("/hospital", headers=admin, json={"open_hours": "mon-fri 8:00-17:00; Sat 8:00-12:00"})
+        assert saved.json()["open_hours"] == "Mon-Fri 08:00-17:00, Sat 08:00-12:00"
+        assert client.patch("/hospital", headers=admin, json={"open_hours": "24/7"}).json()["open_hours"] == "24/7"
+        assert client.patch("/hospital", headers=admin, json={"open_hours": ""}).json()["open_hours"] is None
 
     def test_cli_approves(self, client, capsys):
         hid = client.post("/onboarding", json=SIGNUP).json()["hospital"]["id"]
@@ -313,6 +325,31 @@ class TestBookingsFromThePlatform:
         assert types.count("appointment.rejected") == 1 and types.count("appointment.cancelled") == 1
         assert types.count("appointment.completed") == 1
         assert [p for t, p in stream(bus) if t == "appointment.cancelled"][0]["by"] == "hospital"
+
+    def test_a_request_without_payment_was_paid_online(self, client, admin, bus, hospital_ready):
+        payload = request_payload(hospital_ready)
+        assert "payment" not in payload  # as the platform sends it before the field existed
+        send(bus, "appointment.requested", payload)
+        run_worker(bus)
+        assert client.get("/bookings", headers=admin).json()["items"][0]["payment"] == "online"
+
+    @pytest.mark.parametrize("payment", ["online", "at_hospital"])
+    def test_the_payment_is_stored_and_shown(self, client, admin, bus, hospital_ready, payment):
+        payload = {**request_payload(hospital_ready), "payment": payment}
+        send(bus, "appointment.requested", payload)
+        run_worker(bus)
+        [booking] = client.get("/bookings", headers=admin).json()["items"]
+        assert booking["status"] == "confirmed" and booking["payment"] == payment and booking["price"] == "150.00"
+        assert client.get(f"/bookings/{booking['id']}", headers=admin).json()["payment"] == payment
+
+    def test_an_unanswered_booking_paid_at_the_hospital_promises_no_refund(self, client, admin, bus,
+                                                                          hospital_ready):
+        payload = {**request_payload(hospital_ready, mode="video"), "payment": "at_hospital"}
+        send(bus, "appointment.requested", payload)
+        send(bus, "appointment.cancelled", {"appointment_id": payload["appointment_id"], "by": "endod"})
+        run_worker(bus)
+        booking = client.get("/bookings", headers=admin).json()["items"][0]
+        assert booking["reason"] == "Cancelled by Endod: not answered in time."
 
     def test_patient_cancellation_closes_the_booking(self, client, admin, bus, hospital_ready):
         payload = request_payload(hospital_ready)
@@ -467,6 +504,8 @@ class TestReviewFixes:
         {"price": -5},
         {"duration_minutes": 100000},
         {"patient": {"dedan_id": "DE1", "name": "A", "phone": "x" * 50}},
+        {"payment": "card"},  # neither online nor at_hospital
+        {"payment": None},
     ])
     def test_malformed_paid_requests_are_declined_so_the_patient_is_refunded(self, client, admin, bus,
                                                                               hospital_ready, change):

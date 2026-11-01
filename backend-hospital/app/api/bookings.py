@@ -45,6 +45,8 @@ def _payload(b: Booking, doctors: Dict[str, str]) -> Dict[str, Any]:
         "duration_minutes": b.duration_minutes,
         "notes": b.notes,
         "price": f"{Decimal(b.price) / 100:.2f}",
+        #: "online" (paid to Endod) or "at_hospital" (the patient pays here, at the visit).
+        "payment": b.payment,
         "status": b.status,
         "doctor": {"id": b.doctor_id, "full_name": doctors.get(b.doctor_id, "")} if b.doctor_id else None,
         "has_video_room": bool(b.meeting_room),

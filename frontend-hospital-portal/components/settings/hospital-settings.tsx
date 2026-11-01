@@ -1,14 +1,15 @@
 "use client";
 
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Icon } from "@/components/ui/icon";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useDashboard } from "@/components/dashboard/dashboard-context";
 import { RoleGate, FormError, inputClass, labelClass, primaryButtonClass, secondaryButtonClass } from "@/components/common/states";
 import { useSession } from "@/components/session/session-context";
 import { missingText } from "@/components/session/hospital-status-banner";
+import { OpenHoursInput, openHoursTextProblem } from "@/components/common/open-hours-input";
 import { ApiError, apiFetch } from "@/lib/api";
-import { SERVICES, type Hospital, type HospitalKind, type ServiceKey } from "@/lib/api-types";
+import { MISSING_LABELS, SERVICES, type Hospital, type HospitalKind, type ServiceKey } from "@/lib/api-types";
 import { BIRR_PATTERN } from "@/lib/format";
 
 type Form = {
@@ -86,6 +87,8 @@ export function buildPayload(form: Form): { payload: Payload } | { problem: stri
   if (form.video_enabled && prices.price_video === null) {
     return { problem: "Set a video visit price before turning video visits on." };
   }
+  const hoursProblem = openHoursTextProblem(form.open_hours, false);
+  if (hoursProblem) return { problem: hoursProblem };
   const ahead = form.queue_notify_ahead.trim();
   if (!/^\d{1,2}$/.test(ahead) || Number(ahead) > 20) {
     return { problem: "The queue SMS setting is a number of people from 0 (off) to 20." };
@@ -137,6 +140,19 @@ function SettingsForm({ hospital }: { hospital: Hospital }) {
   const [busy, setBusy] = useState(false);
   const [locating, setLocating] = useState(false);
   const [locationNote, setLocationNote] = useState<string | null>(null);
+
+  // /settings?focus=price_in_person (or location): from the "not listed yet" call to action.
+  useEffect(() => {
+    const focus = new URLSearchParams(window.location.search).get("focus");
+    const field = focus ? FOCUS_TARGETS[focus] : undefined;
+    const element = field ? document.getElementById(field) : null;
+    if (element) {
+      element.scrollIntoView({ block: "center" });
+      element.focus({ preventScroll: true });
+    }
+  }, []);
+
+  const missing = new Set(saved.status === "approved" ? saved.missing_for_listing : []);
 
   function set<K extends keyof Form>(key: K, value: Form[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -206,6 +222,7 @@ function SettingsForm({ hospital }: { hospital: Hospital }) {
 
   return (
     <form onSubmit={submit} noValidate className="flex flex-col gap-5" data-testid="settings-form">
+      <ListingStatus hospital={saved} />
       <header className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-wider text-outline">Administration</p>
@@ -220,7 +237,6 @@ function SettingsForm({ hospital }: { hospital: Hospital }) {
         </button>
       </header>
 
-      <ListingStatus hospital={saved} />
       <FormError message={error} />
 
       <Section title="Hospital" icon="domain">
@@ -253,23 +269,24 @@ function SettingsForm({ hospital }: { hospital: Hospital }) {
         <Field label="Ambulance phone" htmlFor="h-ambulance">
           <input id="h-ambulance" type="tel" placeholder="907" value={form.ambulance_phone} onChange={(e) => set("ambulance_phone", e.target.value)} className={inputClass} />
         </Field>
-        <Field label="Open hours" htmlFor="h-hours">
-          <input id="h-hours" maxLength={80} placeholder="Mon–Sat 8:00–17:00" value={form.open_hours} onChange={(e) => set("open_hours", e.target.value)} className={inputClass} />
-        </Field>
-        <div className="flex items-end">
+        <div className="sm:col-span-2">
           <Toggle id="h-emergency" label="24-hour emergency department" checked={form.emergency} onChange={(value) => set("emergency", value)} />
         </div>
+        <fieldset className="sm:col-span-2">
+          <legend className={labelClass}>Open hours</legend>
+          <OpenHoursInput id="h-hours" value={form.open_hours} onChange={(value) => set("open_hours", value)} inputClassName={inputClass} />
+        </fieldset>
       </Section>
 
-      <Section title="Location" icon="location_on">
+      <Section title="Location" icon="location_on" needed={missing.has("location")}>
         <p className="text-xs text-slate-500 sm:col-span-2">
           Patients find nearby hospitals by this point. Stand at the hospital and use your current location, or enter
           the coordinates (decimal degrees) by hand.
         </p>
-        <Field label="Latitude" htmlFor="h-lat">
+        <Field label="Latitude" htmlFor="h-lat" needed={missing.has("location")}>
           <input id="h-lat" inputMode="decimal" placeholder="9.0320" value={form.latitude} onChange={(e) => set("latitude", e.target.value)} className={inputClass} />
         </Field>
-        <Field label="Longitude" htmlFor="h-lng">
+        <Field label="Longitude" htmlFor="h-lng" needed={missing.has("location")}>
           <input id="h-lng" inputMode="decimal" placeholder="38.7469" value={form.longitude} onChange={(e) => set("longitude", e.target.value)} className={inputClass} />
         </Field>
         <div className="flex flex-col gap-2 sm:col-span-2 sm:flex-row sm:items-center">
@@ -301,11 +318,12 @@ function SettingsForm({ hospital }: { hospital: Hospital }) {
         </div>
       </Section>
 
-      <Section title="Visits and prices" icon="payments">
+      <Section title="Visits and prices" icon="payments" needed={missing.has("price_in_person")}>
         <p className="text-xs text-slate-500 sm:col-span-2">
-          Prices are in birr. Patients pay Endod when they book; Endod pays the hospital.
+          Prices are in birr. <strong>0 is allowed</strong>: enter 0 if visits are free. Patients pay either online
+          through Endod when they book (Endod pays the hospital) or at the hospital; each booking shows which.
         </p>
-        <Field label="In-person visit price (birr)" htmlFor="h-price-in-person">
+        <Field label="In-person visit price (birr)" htmlFor="h-price-in-person" needed={missing.has("price_in_person")}>
           <input id="h-price-in-person" inputMode="decimal" placeholder="150.00" value={form.price_in_person} onChange={(e) => set("price_in_person", e.target.value)} className={inputClass} />
         </Field>
         <Field label="Video visit price (birr)" htmlFor="h-price-video">
@@ -329,26 +347,55 @@ function SettingsForm({ hospital }: { hospital: Hospital }) {
   );
 }
 
+/** The settings field each missing listing item is filled in (/settings?focus=...). */
+const FOCUS_TARGETS: Record<string, string> = { price_in_person: "h-price-in-person", location: "h-lat" };
+
+function missingLabel(key: string): string {
+  const text = MISSING_LABELS[key] ?? key.replace(/_/g, " ");
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 function ListingStatus({ hospital }: { hospital: Hospital }) {
+  const unlisted = hospital.status === "approved" && !hospital.listed;
   const status =
     hospital.status === "pending"
-      ? { label: "Pending approval by Endod", tone: "bg-amber-50 text-amber-900 border-amber-200" }
+      ? { label: "Pending approval by Endod", tone: "border bg-amber-50 text-amber-900 border-amber-200" }
       : hospital.status === "suspended"
-        ? { label: "Suspended by Endod", tone: "bg-rose-50 text-rose-900 border-rose-200" }
+        ? { label: "Suspended by Endod", tone: "border bg-rose-50 text-rose-900 border-rose-200" }
         : hospital.listed
-          ? { label: "Listed in the Endod app", tone: "bg-neutral-50 text-neutral-900 border-neutral-200" }
-          : { label: "Approved, not listed yet", tone: "bg-sky-50 text-sky-900 border-sky-200" };
+          ? { label: "Listed in the Endod app", tone: "border bg-neutral-50 text-neutral-900 border-neutral-200" }
+          : { label: "Approved, not listed yet", tone: "border-2 border-amber-400 bg-amber-50 text-amber-950" };
   return (
-    <section data-testid="listing-status" className={`flex flex-col gap-1 rounded-2xl border px-5 py-3 text-xs ${status.tone}`}>
+    <section data-testid="listing-status" className={`flex flex-col gap-2 rounded-2xl px-5 py-4 text-sm ${status.tone}`}>
       <p className="font-bold">
         {status.label} <span className="font-normal opacity-70">• hospital code {hospital.code}</span>
       </p>
-      {hospital.missing_for_listing.length > 0 ? (
-        <p data-testid="missing-for-listing">
-          Still missing before patients can see this hospital: {missingText(hospital)}.
+      {unlisted && (
+        <p data-testid="listing-explainer">
+          Patients can&apos;t find {hospital.name} in the Endod app until you set <strong>{missingText(hospital)}</strong>{" "}
+          and save.
         </p>
+      )}
+      {hospital.missing_for_listing.length > 0 ? (
+        <div data-testid="missing-for-listing">
+          <p className="text-xs font-semibold">Still missing before patients can see this hospital:</p>
+          <ul className="mt-1 flex flex-col gap-1">
+            {hospital.missing_for_listing.map((key) => (
+              <li key={key} className="flex items-center gap-2 text-xs">
+                <Icon name="warning" className="text-[14px] text-amber-600" />
+                {FOCUS_TARGETS[key] ? (
+                  <a href={`#${FOCUS_TARGETS[key]}`} className="font-semibold underline">
+                    {missingLabel(key)}
+                  </a>
+                ) : (
+                  missingLabel(key)
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
       ) : (
-        <p data-testid="missing-for-listing">
+        <p data-testid="missing-for-listing" className="text-xs">
           Nothing is missing for the listing.
           {hospital.status === "pending" && " Patients will see the hospital once Endod approves it."}
         </p>
@@ -357,24 +404,48 @@ function ListingStatus({ hospital }: { hospital: Hospital }) {
   );
 }
 
-function Section({ title, icon, children }: { title: string; icon: string; children: ReactNode }) {
+function Section({ title, icon, needed, children }: { title: string; icon: string; needed?: boolean; children: ReactNode }) {
   return (
-    <section className="rounded-3xl border border-card-border/80 bg-white p-5 shadow-soft">
-      <h2 className="mb-4 flex items-center gap-2 text-sm font-bold text-slate-800">
+    <section
+      data-needed={needed ? "true" : undefined}
+      className={`rounded-3xl bg-white p-5 shadow-soft ${needed ? "border-2 border-amber-400" : "border border-card-border/80"}`}
+    >
+      <h2 className="mb-4 flex flex-wrap items-center gap-2 text-sm font-bold text-slate-800">
         <Icon name={icon} className="text-[18px] text-black" />
         {title}
+        {needed && (
+          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-900">
+            Needed before patients can see you
+          </span>
+        )}
       </h2>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{children}</div>
     </section>
   );
 }
 
-function Field({ label, htmlFor, wide, children }: { label: string; htmlFor: string; wide?: boolean; children: ReactNode }) {
+function Field({
+  label,
+  htmlFor,
+  wide,
+  needed,
+  children,
+}: {
+  label: string;
+  htmlFor: string;
+  wide?: boolean;
+  needed?: boolean;
+  children: ReactNode;
+}) {
   return (
-    <div className={wide ? "sm:col-span-2" : undefined}>
+    <div
+      data-needed={needed ? "true" : undefined}
+      className={`${wide ? "sm:col-span-2" : ""} ${needed ? "rounded-xl bg-amber-50 p-2 ring-2 ring-amber-400" : ""}`}
+    >
       <label htmlFor={htmlFor} className={labelClass}>
         {label}
       </label>
+      {needed && <p className="mb-1 text-[11px] font-semibold text-amber-800">Required before patients can see you</p>}
       {children}
     </div>
   );

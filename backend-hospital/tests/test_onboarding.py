@@ -132,11 +132,30 @@ class TestWizard:
 
     @pytest.mark.parametrize("change", [
         {"facility_type": "pharmacy"}, {"ownership": "military"}, {"services": []}, {"services": ["astrology"]},
-        {"phone": ""}, {"open_hours": ""}, {"city": " "},
+        {"phone": ""}, {"open_hours": ""}, {"city": " "}, {"open_hours": "100:00"}, {"open_hours": "Mon 9-5"},
     ])
     def test_invalid_facility(self, client, change):
         headers, _ = apply(client)
         assert client.patch("/onboarding/facility", headers=headers, json={**FACILITY, **change}).status_code == 422
+
+    def test_nonsense_opening_hours_get_a_clear_message(self, client):
+        headers, _ = apply(client)
+        resp = client.patch("/onboarding/facility", headers=headers, json={**FACILITY, "open_hours": "100:00"})
+        assert resp.status_code == 422
+        assert resp.json()["error"] == ('open_hours: "100:00" is not a period of opening hours; use "24/7", '
+                                        'or days and times like "Mon-Fri 08:00-17:00, Sat 08:00-12:00"')
+
+    @pytest.mark.parametrize("typed,stored", [
+        ("24/7", "24/7"), ("24 hours", "24/7"), ("Mon-Sat 08:00-17:00", "Mon-Sat 08:00-17:00"),
+        ("Mon–Sat 8:00–17:00", "Mon-Sat 08:00-17:00"),
+        ("monday - friday 8.30-17.30; Sat 9:00-12:00", "Mon-Fri 08:30-17:30, Sat 09:00-12:00"),
+        ("Daily 00:00-24:00", "Daily 00:00-24:00"),
+    ])
+    def test_opening_hours_are_stored_in_one_form(self, client, typed, stored):
+        headers, _ = apply(client)
+        saved = client.patch("/onboarding/facility", headers=headers, json={**FACILITY, "open_hours": typed})
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["facility"]["open_hours"] == stored
 
     @pytest.mark.parametrize("change", [{"latitude": 91}, {"longitude": None}, {"address": ""}])
     def test_invalid_location(self, client, change):

@@ -208,3 +208,39 @@ def test_migration_turns_typed_endod_ids_into_claims(tmp_path, monkeypatch):
         rows = connection.execute(text("SELECT id, dedan_id FROM patients ORDER BY id")).all()
     dbmod.reset_engine()
     assert [tuple(r) for r in rows] == [("p1", "DE-482731"), ("p2", "some typo"), ("p3", None)]
+
+
+def test_migration_0011_marks_existing_bookings_paid_online(tmp_path, monkeypatch):
+    """Every booking before 0011 was paid online; downgrading drops the column again."""
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import inspect, text
+
+    from app import db as dbmod
+    from app.db import get_engine
+
+    monkeypatch.setenv("HOSPITAL_DATABASE_URL", f"sqlite:///{tmp_path / 'payment.db'}")
+    dbmod.reset_engine()
+    root = Path(__file__).resolve().parents[1]
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "migrations"))
+    command.upgrade(config, "0010")
+    with get_engine().begin() as connection:
+        connection.execute(text("INSERT INTO hospitals (id, code, name, timezone, created_at) "
+                                "VALUES ('h1', 'SPH', 'St. Paul', 'Africa/Addis_Ababa', '2026-01-01 00:00:00')"))
+        connection.execute(text(
+            "INSERT INTO bookings (id, hospital_id, external_id, patient_dedan_id, patient_name, visit_mode, "
+            "scheduled_at, duration_minutes, price, status, created_at, updated_at) VALUES ('b1', 'h1', 'apt-1', "
+            "'DE123456', 'Almaz', 'in_person', '2026-01-02 09:00:00', 30, 15000, 'confirmed', "
+            "'2026-01-01 00:00:00', '2026-01-01 00:00:00')"))
+    command.upgrade(config, "head")
+    with get_engine().connect() as connection:
+        assert connection.execute(text("SELECT payment FROM bookings WHERE id = 'b1'")).scalar() == "online"
+    command.downgrade(config, "0010")
+    with get_engine().connect() as connection:
+        columns = {c["name"] for c in inspect(connection).get_columns("bookings")}
+        kept = connection.execute(text("SELECT count(*) FROM bookings")).scalar()
+    dbmod.reset_engine()
+    assert "payment" not in columns and kept == 1

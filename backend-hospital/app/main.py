@@ -21,6 +21,13 @@ from app.db import check_connection_role
 logger = logging.getLogger("hospital")
 
 
+def _message(msg):
+    """A validation message as staff read it (without pydantic's "Value error, " prefix)."""
+    if isinstance(msg, str) and msg.startswith("Value error, "):
+        return msg[len("Value error, "):]
+    return msg
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     # Never serve as a database role that row-level security does not hold,
@@ -70,8 +77,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         first = exc.errors()[0] if exc.errors() else {}
         field = ".".join(str(part) for part in first.get("loc", [])[1:]) or "request"
         return JSONResponse(status_code=422, content={
-            "error": f"{field}: {first.get('msg', 'invalid value')}", "error_code": "VALIDATION_ERROR",
-            "details": [{"field": ".".join(str(p) for p in e.get("loc", [])[1:]), "message": e.get("msg")}
+            "error": f"{field}: {_message(first.get('msg', 'invalid value'))}", "error_code": "VALIDATION_ERROR",
+            "details": [{"field": ".".join(str(p) for p in e.get("loc", [])[1:]), "message": _message(e.get("msg"))}
                         for e in exc.errors()],
         })
 

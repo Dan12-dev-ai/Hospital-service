@@ -131,3 +131,76 @@ def _dedan(value: Optional[str]) -> Optional[str]:
 
 #: An optional Endod ID, stored as DE + 6 digits.
 OptionalDedanId = Annotated[Optional[str], BeforeValidator(blank_to_none), AfterValidator(_dedan)]
+
+
+# --- opening hours --------------------------------------------------------------------------------
+
+#: Day names as stored (and shown to patients in the Endod app).
+DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+#: Always open.
+ALWAYS_OPEN = "24/7"
+_ALWAYS_OPEN_SPELLINGS = {"24/7", "24 hours", "24h", "24hrs", "24 hrs", "open 24 hours", "24 hours, 7 days"}
+_DAY_NAMES = {name.lower(): name for name in DAYS}
+_DAY_NAMES.update({full: short for full, short in (
+    ("monday", "Mon"), ("tuesday", "Tue"), ("wednesday", "Wed"), ("thursday", "Thu"), ("friday", "Fri"),
+    ("saturday", "Sat"), ("sunday", "Sun"), ("tues", "Tue"), ("thur", "Thu"), ("thurs", "Thu"))})
+_DASHES = re.compile(r"\s*[-–—]\s*")
+_PERIOD = re.compile(r"^(?P<days>[A-Za-z]+(?:-[A-Za-z]+)?)\s+(?P<open>\d{1,2}[:.]\d{2})-(?P<close>\d{1,2}[:.]\d{2})$")
+OPEN_HOURS_HELP = 'use "24/7", or days and times like "Mon-Fri 08:00-17:00, Sat 08:00-12:00"'
+
+
+def _clock(value: str) -> str:
+    hours, minutes = (int(part) for part in re.split(r"[:.]", value))
+    if not (0 <= hours <= 24 and 0 <= minutes <= 59) or (hours == 24 and minutes):
+        raise ValueError(f"{value} is not a time of day; {OPEN_HOURS_HELP}")
+    return f"{hours:02d}:{minutes:02d}"
+
+
+def _day(value: str) -> str:
+    day = _DAY_NAMES.get(value.lower())
+    if day is None:
+        raise ValueError(f'"{value}" is not a day (use Mon, Tue, Wed, Thu, Fri, Sat, Sun); {OPEN_HOURS_HELP}')
+    return day
+
+
+def normalize_open_hours(value: str) -> str:
+    """Opening hours as patients see them: "24/7", or periods such as
+    "Mon-Fri 08:00-17:00, Sat 08:00-12:00" ("Daily 08:00-20:00" for every day).
+
+    Accepts the usual spellings (8:00, 8.00, en dashes, full day names, ";"
+    between periods) and stores the form above; anything else (e.g. "100:00")
+    raises ValueError with a message staff can act on.
+    """
+    text = re.sub(r"\s+", " ", value).strip()
+    if text.lower() in _ALWAYS_OPEN_SPELLINGS:
+        return ALWAYS_OPEN
+    periods = []
+    for part in re.split(r"\s*[,;]\s*", text):
+        match = _PERIOD.match(_DASHES.sub("-", part))
+        if not match:
+            raise ValueError(f'"{part}" is not a period of opening hours; {OPEN_HOURS_HELP}')
+        days = match.group("days")
+        if days.lower() in ("daily", "everyday"):
+            label = "Daily"
+        else:
+            first, _, last = days.partition("-")
+            label = _day(first) + (f"-{_day(last)}" if last else "")
+        opens, closes = _clock(match.group("open")), _clock(match.group("close"))
+        if opens == closes or opens == "24:00":
+            raise ValueError(f"{part}: the closing time must differ from the opening time; {OPEN_HOURS_HELP}")
+        periods.append(f"{label} {opens}-{closes}")
+    result = ", ".join(periods)
+    if len(result) > 80:
+        raise ValueError("opening hours are too long (80 characters at most); combine days, e.g. Mon-Fri")
+    return result
+
+
+def _open_hours(value: Optional[str]) -> Optional[str]:
+    return normalize_open_hours(value) if value else None
+
+
+#: Optional opening hours ("" means none), stored as normalize_open_hours writes them.
+OptionalOpenHours = Annotated[Optional[str], BeforeValidator(blank_to_none), AfterValidator(_open_hours)]
+#: Required opening hours.
+OpenHours = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120),
+                      AfterValidator(normalize_open_hours)]

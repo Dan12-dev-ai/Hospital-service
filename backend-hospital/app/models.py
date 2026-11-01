@@ -201,6 +201,16 @@ class BookingStatus:
     OPEN = (AWAITING_DOCTOR, CONFIRMED)
 
 
+class BookingPayment:
+    """How the patient pays for a booking."""
+
+    #: Paid to Endod when booking (Endod pays the hospital; refunds go through Endod).
+    ONLINE = "online"
+    #: The patient pays the hospital at the visit (nothing to refund through Endod).
+    AT_HOSPITAL = "at_hospital"
+    ALL = (ONLINE, AT_HOSPITAL)
+
+
 class Hospital(Base):
     __tablename__ = "hospitals"
 
@@ -461,8 +471,9 @@ class Booking(Base):
     """An appointment a patient booked at this hospital through the Endod app.
 
     Created from the platform's ``appointment.requested`` event; every change
-    here is sent back as an event. The patient has already paid Endod (the
-    price in ``price``); Endod pays the hospital.
+    here is sent back as an event. ``payment`` says how the patient pays the
+    price in ``price``: already paid to Endod (``online``; Endod pays the
+    hospital), or to the hospital at the visit (``at_hospital``).
     """
 
     __tablename__ = "bookings"
@@ -481,8 +492,11 @@ class Booking(Base):
     duration_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     #: The patient's note when booking (often symptoms): encrypted at rest.
     notes: Mapped[Optional[str]] = mapped_column(Text)
-    #: Santim the patient paid for the visit (Endod's fee is not included).
+    #: Santim the visit costs (Endod's fee is not included).
     price: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: BookingPayment: paid online to Endod, or paid at the hospital.
+    payment: Mapped[str] = mapped_column(String(12), nullable=False, default=BookingPayment.ONLINE,
+                                         server_default=text("'online'"))
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     #: The doctor who approved (video) or was assigned.
     doctor_id: Mapped[Optional[str]] = mapped_column(ForeignKey("staff_users.id", ondelete="SET NULL"))

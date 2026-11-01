@@ -38,7 +38,7 @@ from app.models import (
     ApplicationStatus, DemoBooking, DocumentKind, Hospital, HospitalStatus, OnboardingApplication,
     OnboardingDocument, Role, Service,
 )
-from app.validation import ContactNumber, Name, OptionalText, normalize_phone
+from app.validation import ContactNumber, Name, OpenHours, OptionalText, normalize_phone
 
 router = APIRouter(tags=["onboarding"])
 
@@ -126,7 +126,7 @@ class FacilityStep(BaseModel):
     city: Name = Field(max_length=100)
     phone: ContactNumber
     services: List[str] = Field(min_length=1, max_length=len(Service.ALL))
-    open_hours: Name = Field(max_length=80)
+    open_hours: OpenHours
 
     @field_validator("services")
     @classmethod

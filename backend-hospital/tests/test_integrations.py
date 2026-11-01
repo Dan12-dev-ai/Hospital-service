@@ -728,8 +728,15 @@ class TestIsolation:
         items = client.get(f"{API}/bookings", headers=auth).json()["items"]
         assert [b["id"] for b in items] == [mine]
         assert "notes" not in items[0] and items[0]["patient"]["endod_id"] == "DE123456"
+        assert items[0]["payment"] == "online" and items[0]["price"] == "150.00"
         assert client.get(f"{API}/bookings/{theirs}", headers=auth).status_code == 404
         assert client.get(f"{API}/bookings/{mine}", headers=auth).status_code == 200
+
+    def test_a_booking_paid_at_the_hospital_says_so(self, client, admin, hospital):
+        booked = book(hospital, payment="at_hospital")
+        auth = get_token(client, connected(client, admin, scopes=["bookings.read"]))
+        found = client.get(f"{API}/bookings/{booked}", headers=auth).json()
+        assert found["payment"] == "at_hospital" and found["price"] == "150.00"
 
     def test_connections_are_the_hospitals_own(self, client, admin, conn):
         other = make_hospital(code="BET", name="Bethel Hospital")
@@ -742,12 +749,12 @@ class TestIsolation:
                            json={}).status_code == 404
 
 
-def book(hospital_id, mode="in_person"):
+def book(hospital_id, mode="in_person", **extra):
     payload = {"appointment_id": uuid.uuid4().hex, "hospital_id": hospital_id,
                "patient": {"dedan_id": "DE123456", "name": "Almaz Tefera", "phone": "+251911234567"},
                "visit_mode": mode, "service": "general_medicine",
                "scheduled_at": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
-               "duration_minutes": 30, "notes": f"Headache {MARK}", "price": 15000}
+               "duration_minutes": 30, "notes": f"Headache {MARK}", "price": 15000, **extra}
     with platform_session() as session:
         bookings.on_requested(session, payload)
     with platform_session() as session:

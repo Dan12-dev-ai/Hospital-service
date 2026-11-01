@@ -1,18 +1,21 @@
 """Appointments patients book through the Endod app, as this hospital sees them.
 
-They arrive as ``appointment.requested`` events (already paid to Endod). An
-in-person visit is confirmed at once; a video visit waits for a doctor to
-approve it, which opens a video room. Every decision goes back to the patient
-platform as an event: ``appointment.confirmed``, ``appointment.rejected``,
-``appointment.cancelled`` (each of the last two refunds the patient there) and
-``appointment.completed``.
+They arrive as ``appointment.requested`` events. ``payment`` says how the
+patient pays: ``online`` (already paid to Endod; the default, for requests
+sent before the field existed) or ``at_hospital`` (the patient pays the
+hospital at the visit). An in-person visit is confirmed at once; a video visit
+waits for a doctor to approve it, which opens a video room. Every decision goes
+back to the patient platform as an event: ``appointment.confirmed``,
+``appointment.rejected``, ``appointment.cancelled`` (for an online payment,
+each of the last two refunds the patient there; a booking paid at the hospital
+has nothing to refund) and ``appointment.completed``.
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 
 from pydantic import AwareDatetime, BaseModel, Field, ValidationError
 from sqlalchemy import select
@@ -22,7 +25,7 @@ from app import eventbus, jitsi
 from app.integrations import webhooks
 from app.db import ensure_aware, platform_session, utcnow
 from app.eventbus import PermanentEventError, RetryLater
-from app.models import Booking, BookingStatus, Hospital, HospitalStatus, Service, StaffUser, VisitMode
+from app.models import Booking, BookingPayment, BookingStatus, Hospital, HospitalStatus, Service, StaffUser, VisitMode
 
 logger = logging.getLogger("hospital.bookings")
 
@@ -54,6 +57,9 @@ class Requested(BaseModel):
     notes: Optional[str] = Field(default=None, max_length=2000)
     #: Santim, an integer (a birr amount sent as 150.0 is refused, not misread).
     price: int = Field(ge=0, strict=True)
+    #: Paid to Endod when booking, or to the hospital at the visit. Missing
+    #: means online (requests sent before the platform added the field).
+    payment: Literal["online", "at_hospital"] = BookingPayment.ONLINE
 
 
 class _Ref(BaseModel):
@@ -62,7 +68,7 @@ class _Ref(BaseModel):
 
 class _Cancelled(_Ref):
     #: "patient" (in the app), or "endod" (the booking was never answered in
-    #: time and the patient was refunded).
+    #: time; a patient who paid online was refunded).
     by: str = Field(default="patient", max_length=20)
 
 
@@ -74,14 +80,14 @@ def _parse(model, payload: Dict[str, Any]):
 
 
 def on_requested(session: Session, payload: Dict[str, Any]) -> None:
-    """A patient booked (and paid for) a visit here."""
+    """A patient booked a visit here (paid online, or paying at the hospital)."""
     try:
         request = _parse(Requested, payload)
     except PermanentEventError:
         ids = (payload.get("appointment_id"), payload.get("hospital_id"))
         if all(isinstance(v, str) and 0 < len(v) <= 64 for v in ids):
-            # The patient has paid: answer, so the platform refunds them,
-            # rather than drop the request where no one sees it.
+            # Answer (so the platform refunds a patient who paid online, and
+            # tells them either way) rather than drop the request where no one sees it.
             _reject_unknown(session, payload, "The booking details could not be accepted.")
             return
         raise
@@ -103,7 +109,7 @@ def on_requested(session: Session, payload: Dict[str, Any]) -> None:
         # Stored in UTC: SQLite would otherwise drop the offset and keep the
         # wall-clock time, moving the visit by the offset (3 hours in Addis).
         scheduled_at=request.scheduled_at.astimezone(timezone.utc), duration_minutes=request.duration_minutes,
-        notes=request.notes, price=request.price,
+        notes=request.notes, price=request.price, payment=request.payment,
         status=BookingStatus.CONFIRMED if mode == VisitMode.IN_PERSON else BookingStatus.AWAITING_DOCTOR,
     )
     session.add(booking)
@@ -115,7 +121,7 @@ def on_requested(session: Session, payload: Dict[str, Any]) -> None:
 
 
 def on_patient_cancelled(session: Session, payload: Dict[str, Any]) -> None:
-    """The patient cancelled in the Endod app (and has been refunded there)."""
+    """The patient cancelled in the Endod app (and, if they paid online, was refunded there)."""
     ref = _parse(_Cancelled, payload)
     booking = session.scalar(select(Booking).where(Booking.external_id == ref.appointment_id).with_for_update())
     if booking is None:
@@ -125,8 +131,11 @@ def on_patient_cancelled(session: Session, payload: Dict[str, Any]) -> None:
     if booking.status not in BookingStatus.OPEN:
         return
     booking.status = BookingStatus.CANCELLED
-    booking.reason = ("Cancelled by Endod: not answered in time; the patient was refunded."
-                      if ref.by == "endod" else "Cancelled by the patient.")
+    if ref.by == "endod":
+        booking.reason = ("Cancelled by Endod: not answered in time; the patient was refunded."
+                          if booking.payment == BookingPayment.ONLINE else "Cancelled by Endod: not answered in time.")
+    else:
+        booking.reason = "Cancelled by the patient."
     booking.decided_at = utcnow()
     webhooks.booking_event(session, booking, "booking.cancelled")
 
@@ -209,7 +218,7 @@ APPROVAL_GRACE = timedelta(minutes=15)
 
 def expire_unapproved() -> int:
     """Decline video visits whose time passed without a doctor's approval
-    (the patient is refunded on the platform). Returns how many."""
+    (a patient who paid online is refunded on the platform). Returns how many."""
     cutoff = utcnow() - APPROVAL_GRACE
     expired = 0
     with platform_session() as session:  # every hospital's, for the worker

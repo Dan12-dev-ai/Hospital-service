@@ -25,6 +25,10 @@ export type Appointment = {
   meta: string;
   time: string;
   status: AppointmentStatus;
+  /** How the patient pays (Endod bookings): online already, or at the hospital. */
+  payment: "online" | "at_hospital";
+  /** Birr, as text with two decimals. */
+  price: string;
   avatar: string;
   /** Message shown in the toast when the row action is clicked */
   actionMessage: string;

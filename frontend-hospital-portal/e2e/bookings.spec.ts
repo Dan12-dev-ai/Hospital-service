@@ -188,3 +188,32 @@ test("the dashboard shows real counts and flags visits awaiting a doctor", async
   await expect(page.getByTestId("status-tab-awaiting_doctor")).toHaveAttribute("aria-selected", "true");
   await expect(bookingRow(page, "Hana Waiting")).toHaveCount(1);
 });
+
+test("the front desk sees who pays at the hospital, and no refund is promised for them", async ({ page }) => {
+  seedBooking(hospital.hospital_id, "in_person", 200, "Meron Cash", "at_hospital");
+  seedBooking(hospital.hospital_id, "in_person", 210, "Yonas Online", "online");
+  await openBookings(page, hospital.accounts.reception.email);
+
+  const cash = bookingRow(page, "Meron Cash");
+  await expect(cash.getByTestId("booking-payment")).toHaveText("Pays at the hospital: ETB 150.00");
+  const online = bookingRow(page, "Yonas Online");
+  await expect(online.getByTestId("booking-payment")).toHaveText("Paid online");
+  await expect(online).toContainText("ETB 150.00");
+
+  await cash.getByRole("button", { name: "Cancel" }).click();
+  let dialog = page.getByRole("dialog", { name: "Cancel booking" });
+  await expect(dialog.getByTestId("booking-payment")).toHaveText("Pays at the hospital: ETB 150.00");
+  await expect(dialog.getByTestId("refund-note")).toContainText("no refund");
+  await expect(dialog.getByTestId("refund-note")).not.toContainText("will be refunded");
+  await dialog.getByRole("button", { name: "Keep booking" }).click();
+
+  await online.getByRole("button", { name: "Cancel" }).click();
+  dialog = page.getByRole("dialog", { name: "Cancel booking" });
+  await expect(dialog.getByTestId("refund-note")).toContainText("will be refunded by Endod");
+  await dialog.getByRole("button", { name: "Keep booking" }).click();
+
+  // The API says the same.
+  const list = (await (await page.request.get("/api/bookings")).json()).items as { patient: { name: string }; payment: string }[];
+  expect(list.find((b) => b.patient.name === "Meron Cash")!.payment).toBe("at_hospital");
+  expect(list.find((b) => b.patient.name === "Yonas Online")!.payment).toBe("online");
+});

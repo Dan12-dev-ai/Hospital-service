@@ -4,6 +4,7 @@ import Link from "next/link";
 import { cn } from "cn";
 import { Icon } from "@/components/ui/icon";
 import { EmptyState } from "@/components/common/states";
+import { PaymentLabel } from "@/components/bookings/payment";
 import type { Booking, BookingStatus, Staff } from "@/lib/api-types";
 import {
   BOOKING_STATUS_LABELS,
@@ -22,7 +23,7 @@ const COLUMNS = [
   { label: "Scheduled Time & Type", px: "px-space-md" },
   { label: "Doctor", px: "px-space-md" },
   { label: "Status", px: "px-space-md" },
-  { label: "Price / Notes", px: "px-space-md" },
+  { label: "Payment / Notes", px: "px-space-md" },
   { label: "Actions", px: "px-space-lg", alignRight: true },
 ];
 
@@ -183,7 +184,10 @@ function BookingRow({
 
       <td className="max-w-[16rem] px-space-md py-4">
         <div className="flex flex-col gap-0.5">
-          <span className="font-label-md text-label-md text-on-surface">{formatBirr(booking.price)}</span>
+          {booking.payment !== "at_hospital" && (
+            <span className="font-label-md text-label-md text-on-surface">{formatBirr(booking.price)}</span>
+          )}
+          <PaymentLabel payment={booking.payment} price={booking.price} />
           {booking.notes && <span className="truncate font-body-sm text-body-sm text-outline" title={booking.notes}>{booking.notes}</span>}
           {booking.reason && (
             <span data-testid="booking-reason" className="font-body-sm text-body-sm text-rose-700">

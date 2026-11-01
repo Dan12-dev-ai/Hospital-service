@@ -22,6 +22,7 @@ import hmac
 import ipaddress
 import logging
 import time
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs
@@ -223,6 +224,8 @@ def create_app() -> FastAPI:
             "id": b.id, "endod_appointment_id": b.external_id, "status": b.status, "visit_mode": b.visit_mode,
             "service": b.service, "scheduled_at": ensure_aware(b.scheduled_at).isoformat(),
             "duration_minutes": b.duration_minutes,
+            # "online" (paid to Endod) or "at_hospital" (collect `price`, in birr, at the visit).
+            "payment": b.payment, "price": f"{Decimal(b.price) / 100:.2f}",
             "patient": {"endod_id": b.patient_dedan_id, "name": b.patient_name, "phone": b.patient_phone},
             "reason": b.reason, "created_at": ensure_aware(b.created_at).isoformat(),
             "updated_at": ensure_aware(b.updated_at).isoformat(),
@@ -240,7 +243,7 @@ def create_app() -> FastAPI:
             rows.append({
                 "id": f"sample{n + 1:0>26}", "endod_appointment_id": f"sample-appointment-{n + 1}",
                 "status": status, "visit_mode": mode, "service": "general_medicine", "scheduled_at": at,
-                "duration_minutes": 30,
+                "duration_minutes": 30, "payment": "at_hospital" if n == 0 else "online", "price": "150.00",
                 "patient": {"endod_id": f"DE00000{n + 1}", "name": f"Sample Patient {n + 1}", "phone": None},
                 "reason": "Cancelled by the patient." if status == "cancelled" else None,
                 "created_at": base.isoformat(), "updated_at": base.isoformat(), "sample": True,
