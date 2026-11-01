@@ -77,6 +77,17 @@ test("a clinic applies step by step, resumes after a reload, and waits for Endod
   await page.getByRole("button", { name: "Add opening hours" }).click();
   await chooseOption(page.getByRole("combobox", { name: "To", exact: true }), "Saturday");
   await page.getByLabel("Closes at", { exact: true }).fill("18:00");
+  // The in-person price is required (birr; patients see it once approved).
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByTestId("form-error")).toHaveText("Enter the in-person visit price in birr (0 if visits are free).");
+  const price = page.getByLabel("In-person visit price (ETB)");
+  for (const wrong of ["-5", "abc", "10.555"]) {
+    await price.fill(wrong);
+    await page.getByRole("button", { name: "Continue" }).click();
+    await expect(page.getByTestId("form-error")).toHaveText("The price is in birr, e.g. 150 or 150.50 (at most 1,000,000).");
+    await expect(stepOf(page)).toHaveText("Step 2 of 6");
+  }
+  await price.fill("250");
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(stepOf(page)).toHaveText("Step 3 of 6");
 
@@ -142,6 +153,7 @@ test("a clinic applies step by step, resumes after a reload, and waits for Endod
   await expect(summary).toContainText("Public clinic in Addis Ababa");
   await expect(summary).toContainText("Bole Road, near Edna Mall");
   await expect(summary).toContainText("MOH/AA/7781");
+  await expect(summary.getByTestId("review-price")).toHaveText("In-person visit: ETB 250.00");
   await page.getByRole("button", { name: "Submit application" }).click();
 
   // Under review: the facility, the demo in Addis Ababa time, what happens next.
@@ -208,11 +220,53 @@ test("a clinic applies step by step, resumes after a reload, and waits for Endod
   await expect(page.getByTestId("recovery-code")).toHaveCount(10);
   await page.getByLabel("I have saved my recovery codes").check();
   await page.getByRole("button", { name: "Continue to the portal" }).click();
-  // Approved but without a price: the admin is sent straight to it.
-  await expect(page).toHaveURL(/\/settings\?focus=price_in_person$/);
-  await expect(page.getByTestId("listing-explainer")).toContainText("until you set the in-person visit price");
-  await expect(page.getByLabel("In-person visit price (birr)")).toBeFocused();
-  expect((await page.request.get("/api/hospital")).status()).toBe(200);
+  // The price and the pin came with the application: listed for patients at
+  // once, so nothing sends the admin to Settings.
+  await expect(page).toHaveURL(/\/$/);
+  const hospital = await page.request.get("/api/hospital");
+  expect(hospital.status()).toBe(200);
+  const listing = (await hospital.json()) as { listed: boolean; price_in_person: string; missing_for_listing: string[] };
+  expect(listing).toMatchObject({ listed: true, price_in_person: "250.00", missing_for_listing: [] });
+  await expect(page.getByTestId("hospital-status-banner")).toHaveCount(0);
+});
+
+test("a draft saved before the price was asked for is asked for it", async ({ page }) => {
+  test.setTimeout(90_000);
+  const draft = seedApplicant("np", "complete", { noPrice: true, demo: true });
+  await signIn(page, draft.email, draft.password);
+  // Every other step is done: the wizard resumes at the facility, for the price.
+  await page.goto("/onboarding");
+  await expect(stepOf(page)).toHaveText("Step 2 of 6");
+  await expect(page.getByLabel("In-person visit price (ETB)")).toHaveValue("");
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByTestId("form-error")).toHaveText("Enter the in-person visit price in birr (0 if visits are free).");
+
+  // Had it got to the review anyway, the review says what is missing, links
+  // to it, and does not submit.
+  await page.route("**/api/onboarding/application", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({ response, json: { ...body, next_step: "review" } });
+  });
+  await page.reload();
+  await expect(stepOf(page)).toHaveText("Step 6 of 6");
+  await page.unroute("**/api/onboarding/application");
+  await expect(page.getByTestId("review-price")).toContainText("In-person visit price not given yet");
+  await expect(page.getByRole("button", { name: "Submit application" })).toBeDisabled();
+  await page.getByRole("button", { name: "Add the price" }).click();
+  await expect(stepOf(page)).toHaveText("Step 2 of 6");
+  // 0 is a price: free visits.
+  await page.getByLabel("In-person visit price (ETB)").fill("0");
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(stepOf(page)).toHaveText("Step 3 of 6");
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(stepOf(page)).toHaveText("Step 4 of 6");
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(stepOf(page)).toHaveText("Step 5 of 6");
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByTestId("review-price")).toHaveText("In-person visit: ETB 0.00");
+  await page.getByRole("button", { name: "Submit application" }).click();
+  await expect(page).toHaveURL(/\/under-review$/);
 });
 
 test("a demo time goes to one hospital only", async ({ page, request }) => {

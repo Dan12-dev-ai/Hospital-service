@@ -41,8 +41,14 @@ export type SeededApplicant = { hospital_id: string; name: string; email: string
  * A hospital applying to join Endod (pending). `complete`: every step done
  * but the demo; `submitted`: the demo booked and the application submitted.
  */
-export function seedApplicant(prefix: string, stage: "draft" | "complete" | "submitted" = "draft"): SeededApplicant {
+export function seedApplicant(
+  prefix: string,
+  stage: "draft" | "complete" | "submitted" = "draft",
+  options: { noPrice?: boolean; demo?: boolean } = {}
+): SeededApplicant {
   const flags = stage === "complete" ? ["--complete"] : stage === "submitted" ? ["--submitted"] : [];
+  if (options.noPrice) flags.push("--no-price");
+  if (options.demo) flags.push("--demo");
   return seed<SeededApplicant>("applicant", uniqueTag(prefix), ...flags);
 }
 

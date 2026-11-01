@@ -201,6 +201,8 @@ def show_application(code: str) -> int:
         print(f"  facility:    {facility['facility_type']}, {facility['ownership']}; {facility['city'] or '-'}; "
               f"phone {facility['phone'] or '-'}; hours {facility['open_hours'] or '-'}")
         print(f"  services:    {', '.join(facility['services']) or '-'}")
+        price = facility["price_in_person"]
+        print(f"  in-person:   {price + ' birr' if price is not None else '-'}")
         print(f"  location:    {location['address'] or '-'} ({location['latitude']}, {location['longitude']})")
         print(f"  contact:     {contact['full_name']}, {contact['title'] or '-'}, {contact['phone'] or '-'}, "
               f"{contact['email']}")

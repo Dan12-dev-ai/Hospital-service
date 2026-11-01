@@ -35,11 +35,13 @@ HOSPITAL_DATABASE_URL as the server under test. Prints JSON.
         is ISO-8601 with its offset; the items are the event's
         [{"item_index", "amount", "complete", "given_total", "status"}].
 
-    python seed.py applicant <tag> [--complete] [--submitted]
+    python seed.py applicant <tag> [--complete] [--submitted] [--no-price] [--demo]
         A hospital applying to join Endod (pending), with its admin (the
         contact person, with a mobile). --complete fills in every step but
-        the demo (facility, location, the four documents as small PDFs);
-        --submitted also books the first free demo slot and submits.
+        the demo (facility with its in-person price, location, the four
+        documents as small PDFs); --submitted also books the first free demo
+        slot and submits. --no-price leaves the price out (a draft saved
+        before the wizard asked for it); --demo books the demo without submitting.
         Each applicant's contact has its own mobile (one demo per number).
 
     python seed.py applicant-staff <hospital_id> <email> <role>
@@ -225,7 +227,7 @@ def queue_yesterday(hospital_id: str, doctor_email: str, patient: str) -> dict:
         return {"entry_id": entry.id, "ticket": entry.ticket, "day": yesterday.isoformat()}
 
 
-def seed_applicant(tag: str, complete: bool, submitted: bool) -> dict:
+def seed_applicant(tag: str, complete: bool, submitted: bool, price: bool = True, demo: bool = False) -> dict:
     from app import crypto, files, onboarding
     from app.db import new_id
     from app.models import (
@@ -250,6 +252,8 @@ def seed_applicant(tag: str, complete: bool, submitted: bool) -> dict:
         if complete or submitted:
             hospital.city, hospital.phone, hospital.open_hours = "Adama", "022 111 2233", "Mon-Fri 08:00-18:00"
             hospital.services = "general_medicine"
+            if price:
+                hospital.price_in_person = 15000
             hospital.address, hospital.latitude, hospital.longitude = "Main Street", 8.54, 39.27
             application.license_number = f"MOH/{code}/1"
             pdf = b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n"
@@ -261,14 +265,15 @@ def seed_applicant(tag: str, complete: bool, submitted: bool) -> dict:
                                                content_type=content_type, size=size, sha256=sha256,
                                                key_version=key.version, uploaded_by=admin.id))
         demo_at = None
-        if submitted:
+        if submitted or demo:
             taken = onboarding.taken_slots(session)
             slot = next(s for s in onboarding.slot_grid() if s.astimezone(timezone.utc) not in taken)
             session.add(DemoBooking(id=new_id(), hospital_id=hospital.id, slot_start=slot.astimezone(timezone.utc),
                                     phone=admin.phone))
+            demo_at = slot.isoformat()
+        if submitted:
             application.status = ApplicationStatus.SUBMITTED
             application.submitted_at = datetime.now(timezone.utc)
-            demo_at = slot.isoformat()
         return {"hospital_id": hospital.id, "name": hospital.name, "email": email, "password": PASSWORD,
                 "demo_at": demo_at}
 
@@ -309,7 +314,8 @@ def main() -> None:
     elif args[:1] == ["queue-yesterday"] and len(args) == 4:
         print(json.dumps(queue_yesterday(args[1], args[2], args[3])))
     elif args[:1] == ["applicant"] and len(args) >= 2:
-        print(json.dumps(seed_applicant(args[1], "--complete" in args[2:], "--submitted" in args[2:])))
+        print(json.dumps(seed_applicant(args[1], "--complete" in args[2:], "--submitted" in args[2:],
+                                        price="--no-price" not in args[2:], demo="--demo" in args[2:])))
     elif args[:1] == ["applicant-staff"] and len(args) == 4:
         print(json.dumps(seed_applicant_staff(args[1], args[2], args[3])))
     elif args[:1] == ["dispense"] and len(args) == 6:
