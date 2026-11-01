@@ -5,6 +5,7 @@ import Image from "next/image";
 import { Play, Clock } from "lucide-react";
 
 import { useDashboard } from "@/components/dashboard/dashboard-context";
+import { PaymentLabel } from "@/components/bookings/payment";
 import type { Appointment } from "@/lib/dashboard-types";
 
 const STATUS_STYLES: Record<
@@ -107,6 +108,7 @@ export function AppointmentRow({ appointment }: { appointment: Appointment }) {
           <span className="text-[11px] text-slate-500">
             {appointment.doctor} • {appointment.meta}
           </span>
+          <PaymentLabel payment={appointment.payment} price={appointment.price} className="mt-1" />
         </div>
       </div>
       <div className="flex items-center justify-between gap-3 sm:justify-end">

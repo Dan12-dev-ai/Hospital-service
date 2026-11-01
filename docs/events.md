@@ -68,10 +68,12 @@ In-person visits are confirmed on receipt; video visits when a doctor approves
 ### `appointment.rejected`
 A video visit was declined (by a doctor, or automatically 15 minutes after its
 start time with no approval), or the hospital cannot take the booking. The
-platform refunds the patient. `{"appointment_id", "hospital_id", "status", "reason", …}`
+platform refunds a patient who paid online (nothing to refund for `"payment": "at_hospital"`).
+`{"appointment_id", "hospital_id", "status", "reason", …}`
 
 ### `appointment.cancelled`
-Cancelled by the hospital (`"by": "hospital"`). The platform refunds the patient.
+Cancelled by the hospital (`"by": "hospital"`). The platform refunds a patient who
+paid online (nothing to refund for `"payment": "at_hospital"`).
 
 ### `appointment.completed`
 The visit took place. The platform records it and the hospital's payout is due.
@@ -102,21 +104,26 @@ until the hospital is approved.
 ## Patient platform → hospital service (`endod:patient`)
 
 ### `appointment.requested`
-A patient booked and paid. `price` is what the hospital is owed (Endod's
-service fee is not included).
+A patient booked. `price` is the visit's price in santim (Endod's service fee
+is not included). `payment` says how the patient pays it: `"online"` (paid to
+Endod when booking; Endod pays the hospital) or `"at_hospital"` (the patient
+pays the hospital at the visit). A request without `payment` is `"online"`
+(requests sent before the field existed). Any other value is refused (the
+booking is answered with `appointment.rejected`).
 
 ```json
 {"appointment_id": "…", "hospital_id": "…",
  "patient": {"dedan_id": "DE123456", "name": "…", "phone": "+2519…"},
  "visit_mode": "in_person|video", "service": "general_medicine",
  "scheduled_at": "2026-10-21T09:30:00+00:00", "duration_minutes": 30,
- "notes": "…", "price": 15000}
+ "notes": "…", "price": 15000, "payment": "online|at_hospital"}
 ```
 
 ### `appointment.cancelled`
 `{"appointment_id", "hospital_id", "by": "patient" | "endod"}`: the patient
-cancelled (and was refunded), or Endod refunded a booking the hospital had not
-confirmed or declined two hours after its time.
+cancelled (and was refunded, if they paid online), or Endod cancelled (and
+refunded, if paid online) a booking the hospital had not confirmed or declined
+two hours after its time.
 
 ## Patient history, follow-ups, queues and shared records
 

@@ -86,12 +86,14 @@ export type Hospital = {
 };
 
 export const MISSING_LABELS: Record<string, string> = {
-  price_in_person: "an in-person visit price",
-  location: "the hospital's location (latitude and longitude)",
+  price_in_person: "the in-person visit price",
+  location: "the hospital's location on the map",
 };
 
 export type BookingStatus = "awaiting_doctor" | "confirmed" | "rejected" | "cancelled" | "completed";
 export type VisitMode = "in_person" | "video";
+/** Paid online to Endod when booking, or paid to the hospital at the visit. */
+export type BookingPayment = "online" | "at_hospital";
 
 export type Booking = {
   id: string;
@@ -104,6 +106,7 @@ export type Booking = {
   notes: string | null;
   /** Birr, as text with two decimals. */
   price: string;
+  payment: BookingPayment;
   status: BookingStatus;
   doctor: { id: string; full_name: string } | null;
   has_video_room: boolean;

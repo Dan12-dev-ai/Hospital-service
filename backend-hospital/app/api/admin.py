@@ -19,7 +19,7 @@ from app.models import (
     PatientStatus, Role, Service, StaffUser,
 )
 from app.security import hash_password, temporary_password
-from app.validation import ContactNumber, Name, OptionalPhone, OptionalText
+from app.validation import ContactNumber, Name, OptionalOpenHours, OptionalPhone, OptionalText
 
 router = APIRouter(tags=["administration"])
 admin_only = require_roles(Role.ADMIN)
@@ -68,7 +68,8 @@ class HospitalUpdate(BaseModel):
     latitude: Optional[float] = Field(default=None, ge=-90, le=90)
     longitude: Optional[float] = Field(default=None, ge=-180, le=180)
     services: Optional[List[str]] = Field(default=None, max_length=len(Service.ALL))
-    open_hours: OptionalText = Field(default=None, max_length=80)
+    #: "24/7" or periods like "Mon-Fri 08:00-17:00, Sat 08:00-12:00" (app.validation).
+    open_hours: OptionalOpenHours = None
     video_enabled: Optional[bool] = None
     #: Birr, up to two decimals.
     price_in_person: Price = Field(default=None, ge=0, le=1_000_000, decimal_places=2)

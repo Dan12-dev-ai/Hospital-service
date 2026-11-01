@@ -56,9 +56,10 @@ export function seedBooking(
   hospitalId: string,
   mode: "video" | "in_person",
   minutesFromNow: number,
-  patientName: string
+  patientName: string,
+  payment?: "online" | "at_hospital"
 ): SeededBooking {
-  return seed<SeededBooking>("booking", hospitalId, mode, String(minutesFromNow), patientName);
+  return seed<SeededBooking>("booking", hospitalId, mode, String(minutesFromNow), patientName, ...(payment ? [payment] : []));
 }
 
 /** Endod answering the patient's pending link request (patient.linked / patient.link_refused). */

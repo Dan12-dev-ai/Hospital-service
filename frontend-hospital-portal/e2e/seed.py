@@ -9,7 +9,7 @@ HOSPITAL_DATABASE_URL as the server under test. Prints JSON.
         change a temporary password. Listed (price, location, video visits)
         unless --unlisted.
 
-    python seed.py booking <hospital_id> <in_person|video> <minutes_from_now> <patient name>
+    python seed.py booking <hospital_id> <in_person|video> <minutes_from_now> <patient name> [online|at_hospital]
         A patient's booking arriving from the Endod app: the
         appointment.requested event handled the way the worker handles it
         (app.bookings.on_requested inside one session, with the event id
@@ -121,7 +121,7 @@ def seed_hospital(tag: str, unlisted: bool) -> dict:
                 "temporary_password": TEMPORARY_PASSWORD, "accounts": accounts}
 
 
-def seed_booking(hospital_id: str, mode: str, minutes: int, patient: str) -> dict:
+def seed_booking(hospital_id: str, mode: str, minutes: int, patient: str, payment: str = "") -> dict:
     appointment_id = f"apt-{uuid.uuid4().hex[:16]}"
     payload = {
         "appointment_id": appointment_id,
@@ -134,6 +134,8 @@ def seed_booking(hospital_id: str, mode: str, minutes: int, patient: str) -> dic
         "notes": "Booked in the Endod app",
         "price": 12000 if mode == "video" else 15000,
     }
+    if payment:  # else as the platform sent it before the field existed (online)
+        payload["payment"] = payment
     event_id = uuid.uuid4().hex
     # As app.eventbus does for each event from the patient platform.
     with platform_session() as session:
@@ -298,8 +300,8 @@ def main() -> None:
     args = sys.argv[1:]
     if args[:1] == ["hospital"] and len(args) >= 2:
         print(json.dumps(seed_hospital(args[1], "--unlisted" in args[2:])))
-    elif args[:1] == ["booking"] and len(args) == 5:
-        print(json.dumps(seed_booking(args[1], args[2], int(args[3]), args[4])))
+    elif args[:1] == ["booking"] and len(args) in (5, 6):
+        print(json.dumps(seed_booking(args[1], args[2], int(args[3]), args[4], *args[5:])))
     elif args[:1] == ["link-reply"] and len(args) in (3, 4):
         print(json.dumps(link_reply(args[1], args[2], args[3] if len(args) == 4 else "")))
     elif args[:1] == ["link"] and len(args) == 3:

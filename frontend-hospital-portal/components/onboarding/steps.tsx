@@ -23,6 +23,7 @@ import {
   stepHeadingClass,
 } from "@/components/onboarding/onboarding-frame";
 import { DemoPicker } from "@/components/onboarding/demo-picker";
+import { OpenHoursInput, openHoursTextProblem } from "@/components/common/open-hours-input";
 import type { Point } from "@/components/onboarding/location-map";
 
 // Leaflet touches `window` as it loads: the map is rendered in the browser only.
@@ -301,6 +302,8 @@ export function FacilityStep({ application, onSaved, onBack }: StepProps) {
     if (!form.name.trim() || !form.city.trim() || !form.phone.trim() || !form.open_hours.trim()) {
       return setError("Fill in the name, city, phone and opening hours.");
     }
+    const hoursProblem = openHoursTextProblem(form.open_hours, true);
+    if (hoursProblem) return setError(hoursProblem);
     if (form.services.length === 0) return setError("Choose at least one service.");
     setBusy(true);
     setError(null);
@@ -360,9 +363,15 @@ export function FacilityStep({ application, onSaved, onBack }: StepProps) {
             })}
           </div>
         </fieldset>
-        <Field id="facility-hours" label="Opening hours" hint="For example: Mon–Sat 08:00–17:00, emergency 24/7">
-          <input id="facility-hours" className={fieldClass} maxLength={80} value={form.open_hours} onChange={(e) => setForm({ ...form, open_hours: e.target.value })} />
-        </Field>
+        <fieldset>
+          <legend className={fieldLabelClass}>Opening hours</legend>
+          <OpenHoursInput
+            id="facility-hours"
+            value={form.open_hours}
+            onChange={(value) => setForm((current) => ({ ...current, open_hours: value }))}
+            inputClassName={fieldClass}
+          />
+        </fieldset>
       </div>
       <StepError message={error} />
       <StepNav onBack={onBack} busy={busy} />

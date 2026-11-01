@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { BACKEND_URL } from "./env";
 import {
+  chooseOption,
   platform,
   seedApplicant,
   seedApplicantStaff,
@@ -73,7 +74,9 @@ test("a clinic applies step by step, resumes after a reload, and waits for Endod
   await page.getByLabel("Facility phone").fill("011 551 7611");
   await page.getByLabel("General medicine").check();
   await page.getByLabel("Pediatrics").check();
-  await page.getByLabel("Opening hours").fill("Mon–Sat 08:00–18:00");
+  await page.getByRole("button", { name: "Add opening hours" }).click();
+  await chooseOption(page.getByRole("combobox", { name: "To", exact: true }), "Saturday");
+  await page.getByLabel("Closes at", { exact: true }).fill("18:00");
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(stepOf(page)).toHaveText("Step 3 of 6");
 
@@ -205,8 +208,10 @@ test("a clinic applies step by step, resumes after a reload, and waits for Endod
   await expect(page.getByTestId("recovery-code")).toHaveCount(10);
   await page.getByLabel("I have saved my recovery codes").check();
   await page.getByRole("button", { name: "Continue to the portal" }).click();
-  await expect(page).toHaveURL(/\/$/);
-  await expect(page.getByTestId("hospital-status-banner")).toHaveAttribute("data-status", "unlisted");
+  // Approved but without a price: the admin is sent straight to it.
+  await expect(page).toHaveURL(/\/settings\?focus=price_in_person$/);
+  await expect(page.getByTestId("listing-explainer")).toContainText("until you set the in-person visit price");
+  await expect(page.getByLabel("In-person visit price (birr)")).toBeFocused();
   expect((await page.request.get("/api/hospital")).status()).toBe(200);
 });
 

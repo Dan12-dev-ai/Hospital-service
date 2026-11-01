@@ -13,10 +13,15 @@ import {
 import { useApi } from "@/lib/api";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { Booking, DoctorList } from "@/lib/api-types";
+import { PaymentLabel } from "@/components/bookings/payment";
 
 export type ReasonAction = "reject" | "cancel";
 
-/** Reject (not yet approved) or cancel (confirmed): the patient is refunded, so a reason is required. */
+/**
+ * Reject (not yet approved) or cancel (confirmed): the reason is sent to the
+ * patient. Only a booking paid online is refunded (by Endod); one paid at the
+ * hospital has nothing to refund, so the dialog promises no refund.
+ */
 export function ReasonDialog({
   action,
   booking,
@@ -60,9 +65,12 @@ export function ReasonDialog({
         </>
       }
     >
-      <p className="text-xs text-slate-600">
-        {booking.patient.name} ({booking.patient.dedan_id}) paid through Endod and will be refunded. The reason is sent
-        to the patient.
+      <PaymentLabel payment={booking.payment} price={booking.price} />
+      <p data-testid="refund-note" className="text-xs text-slate-600">
+        {booking.payment === "at_hospital"
+          ? `${booking.patient.name} (${booking.patient.dedan_id}) was going to pay at the hospital, so there is no refund. Endod tells the patient the booking is off.`
+          : `${booking.patient.name} (${booking.patient.dedan_id}) paid online through Endod and will be refunded by Endod.`}{" "}
+        The reason is sent to the patient.
       </p>
       <div>
         <label htmlFor="booking-reason" className={labelClass}>
@@ -124,6 +132,7 @@ export function ApproveDialog({
         </>
       }
     >
+      <PaymentLabel payment={booking.payment} price={booking.price} />
       <p className="text-xs text-slate-600">
         Choose the doctor who will see {booking.patient.name}. The doctor runs the call.
       </p>

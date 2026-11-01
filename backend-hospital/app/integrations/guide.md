@@ -298,8 +298,19 @@ curl -s "https://api.endod-health.com/hospital/v1/bookings?status=confirmed&from
 Filters: `status` (`awaiting_doctor`, `confirmed`, `rejected`, `cancelled`,
 `completed`), `from` and `to` (scheduled time), `updated_since`, `limit` (at most
 500). `GET /bookings/{id}` reads one. A booking carries its id, Endod's appointment
-id, status, visit mode, service, time and duration, and the patient's Endod ID, name
-and phone; never the note the patient typed.
+id, status, visit mode, service, time and duration, how the patient pays and the
+price, and the patient's Endod ID, name and phone; never the note the patient typed.
+
+```json
+{"id": "9f0c...", "endod_appointment_id": "...", "status": "confirmed", "visit_mode": "in_person",
+ "service": "general_medicine", "scheduled_at": "2026-10-02T06:30:00+00:00", "duration_minutes": 30,
+ "payment": "at_hospital", "price": "150.00",
+ "patient": {"endod_id": "DE482731", "name": "...", "phone": "+251911234567"},
+ "reason": null, "created_at": "...", "updated_at": "..."}
+```
+
+`payment` is `online` (the patient paid Endod when booking; Endod pays the hospital)
+or `at_hospital` (collect `price`, in birr, from the patient at the visit).
 
 ## 5. Webhooks (`webhooks`)
 
