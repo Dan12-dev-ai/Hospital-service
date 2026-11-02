@@ -141,7 +141,7 @@ def connect(body: NewConnection, staff: Staff = Depends(fresh_admin)) -> Dict[st
     if S.WEBHOOKS in granted:
         webhook_url = _webhook_url(body.webhook_url)
     elif body.webhook_url:
-        raise HTTPException(status_code=400, detail="An address for notifications needs \"Get notified of bookings\".")
+        raise HTTPException(status_code=400, detail="An address for notifications needs \"Get notified of changes\".")
     secret = clients.new_secret()
     webhook_secret = clients.new_webhook_secret() if webhook_url else None
     with session_scope(staff.hospital_id) as session:

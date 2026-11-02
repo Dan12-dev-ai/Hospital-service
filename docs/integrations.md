@@ -1,15 +1,25 @@
 # Endod Hospital Integration API
 
-Connect your hospital's own system (EMR, LIS, RIS, pharmacy system) to Endod:
-send lab results, prescriptions, diagnoses, visit notes, documents and imaging
-reports as FHIR R4 resources, read the bookings patients make through Endod,
-and get notified when bookings or patient links change.
+Connect your hospital's own system (EMR, LIS, RIS, pharmacy system) to Endod.
+Your hospital keeps its own system and uses Endod as a layer: everything the
+Endod hospital portal does in the patient journey can be done through this API.
+
+- register patients (Endod issues the hospital number) and link them to their
+  Endod account;
+- read the bookings patients make through Endod, approve or decline video
+  visits, cancel them, mark visits completed;
+- run the doctors' queues (check in, call the next patient, done, skip);
+- send lab results, prescriptions, diagnoses, visit notes, documents and imaging
+  reports as FHIR R4 resources, and read them back;
+- set and cancel follow-ups (the patient gets an SMS and a reminder);
+- see what pharmacies gave from your prescriptions;
+- get notified (webhooks) when bookings, patient links or dispensing change.
 
 - **Base URL:** `https://api.endod-health.com/hospital/v1`
 - **Token URL:** `https://api.endod-health.com/hospital/v1/oauth/token`
 - **Signing keys of access tokens:** `https://api.endod-health.com/hospital/v1/.well-known/jwks.json`
 - **OpenAPI:** `https://api.endod-health.com/hospital/v1/openapi.json` (this guide, with every
-  endpoint, at `/docs`)
+  endpoint, its scope, request and answer with examples, and every webhook event, at `/docs`)
 
 Only hospitals approved by Endod can connect a system; a suspended hospital's
 connections stop working at once.
@@ -30,8 +40,17 @@ clicks **Connect a system**:
    | Send visit notes | `records.visits.write` | `Encounter` |
    | Send documents | `records.documents.write` | `DocumentReference` (PDF, JPEG, PNG or WebP, inline base64) |
    | Send imaging reports | `records.imaging.write` | `DiagnosticReport` (category `RAD`) |
-   | See bookings | `bookings.read` | `GET /bookings` |
-   | Get notified of bookings | `webhooks` | events sent to your webhook URL |
+   | See patients | `patients.read` | `GET /patients/{mrn}` |
+   | Register and link patients | `patients.write` | `POST /patients`, `POST` and `DELETE /patients/{mrn}/link` |
+   | See bookings | `bookings.read` | `GET /bookings`, `GET /bookings/{id}` |
+   | Decide on bookings | `bookings.write` | `POST /bookings/{id}/approve`, `/decline`, `/cancel`, `/complete`; `GET /doctors` |
+   | Set follow-ups | `followups.write` | `POST` and `GET /patients/{mrn}/follow-ups`, `POST /follow-ups/{id}/cancel`; `GET /doctors` |
+   | See what pharmacies gave | `prescriptions.read` | `GET /prescriptions/{id}` |
+   | Run the queue | `queue.write` | `GET /queue`, `POST /queue/check-in`, `/queue/{doctor}/call-next`, `/queue/entries/{id}/done`, `/skip`, `/cancel`; `GET /doctors` |
+   | Get notified of changes | `webhooks` | events sent to your webhook URL |
+
+   Each `records.*.write` scope also reads back what was sent with it
+   (`GET /fhir/{Type}/{id}`).
 
    and **Live** (real records) or **Test** (everything is checked, nothing is stored);
 3. the **client ID** and **client secret**, shown once. Save the secret in your
@@ -123,9 +142,9 @@ Idempotency-Key: <optional, your unique id for this request>
 
 ### Patients
 
-Records are filed for patients **already registered at your hospital**: Endod never
-creates a patient through this API, and never matches by name. Name the patient in
-`subject` by:
+Records are filed for patients **already registered at your hospital** (in the
+portal, or with `POST /patients`, section 4): FHIR never creates a patient, and
+Endod never matches by name. Name the patient in `subject` by:
 
 - the hospital number (MRN) Endod issued, with your hospital's MRN system,
   `https://endod-health.com/hospital/<your hospital code, lower case>/mrn` (shown
@@ -260,6 +279,21 @@ entry sent, in order:
 A single resource gets `201 Created` (or `200 OK` for a correction or a repeat) with
 a `Location` header, or an OperationOutcome.
 
+`Location` is `Type/<record id>/_history/<version>`. Read back what Endod stored
+with the scope you sent it with:
+
+```bash
+curl -s https://api.endod-health.com/hospital/v1/fhir/Observation/5f0c... -H "Authorization: Bearer $TOKEN"
+```
+
+by the record id, or by your own resource id (`GET /fhir/Observation/hb-000123`).
+The answer is the record Endod made from your resource (not your resource itself):
+its id and version (`meta.versionId`), the patient, the title and date, `status`
+`entered-in-error` once it was retracted at the hospital, and the extension
+`published-to-endod` (whether the patient's Endod app has this version). A record is
+served only as the type it was sent as; records entered in the portal or imported
+from a file are not served here.
+
 ### Corrections and retries
 
 - Give your resources an `id` (`PUT Type/id`) and a `meta.versionId`: sending the same
@@ -283,12 +317,66 @@ patients' data:
 
 - it never looks a patient up: the answer is the same whether the hospital number or
   Endod ID belongs to a registered patient or not (and never contains a hospital number);
-- `GET /bookings` answers made-up sample bookings (marked `"sample": true`);
+- `GET /bookings` answers made-up sample bookings (marked `"sample": true`), and
+  approve, decline, cancel and complete are tried on them with the real rules
+  (nothing changes, nothing is sent); a real booking is "not found";
+- patients, follow-ups, prescriptions and the queue are checked as in Live
+  (dates, Endod IDs, cards, doctors) and answer made-up data (`"sample": true`):
+  `POST /patients` answers the hospital number `TEST-000001`, `GET /patients/{mrn}`
+  the same made-up patient whatever the number, `GET /prescriptions/sample-prescription-1`
+  a made-up prescription, and the queue the hospital's doctors each with a made-up
+  patient (`sample-entry-<doctor id>`);
+- `GET /fhir/{Type}/{id}` is always "not found" (nothing was stored);
 - its webhook receives only `endpoint.test` ("Send test event"), never a real event.
 
 Use it while you build; connect a Live system when you are ready.
 
-## 4. Read bookings (`bookings.read`)
+## 4. Patients (`patients.write`, `patients.read`)
+
+Register a patient as the portal's registration form does (the same checks).
+Endod issues the hospital number (MRN): keep it in your system and name the
+patient by it everywhere (in FHIR `subject`, and in the paths below).
+
+```bash
+curl -s https://api.endod-health.com/hospital/v1/patients \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -H "Idempotency-Key: emr-reg-2026-10-01-0042" \
+  -d '{"full_name": "Almaz Tefera", "sex": "female", "date_of_birth": "1990-04-12",
+       "phone": "+251911234567", "payer": "cash", "claimed_endod_id": "DE482731"}'
+```
+
+`201` with the patient (`mrn`, e.g. `SPH-000124`). `full_name` and `sex` (`female`,
+`male`) are required; `date_of_birth` or `age_years` (not both); `phone`,
+`address`, `emergency_contact_name` and `_phone`, `payer` (`cash`, `cbhi`,
+`private`, `credit`), `payer_number`, `full_name_am`. A patient with the same name
+and phone number is refused (`409`, naming their number) unless
+`"confirm_duplicate": true`. An Endod ID the patient gives is kept as a claim
+(`claimed_endod_id`), never sent to Endod until the patient is linked.
+
+`GET /patients/{mrn}` (`patients.read`) reads the patient, with `link.status`:
+`not_linked`, `pending`, `linked` (records reach the patient's Endod app) or
+`refused` (`link.request.reason`). Opening a patient is audited, as in the portal.
+
+### Link a patient to their Endod account
+
+The same check as the portal: by the Endod ID and the phone number on the
+account, or by the health card's QR.
+
+```bash
+curl -s https://api.endod-health.com/hospital/v1/patients/SPH-000124/link \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"endod_id": "DE482731", "phone": "+251911234567"}'
+# or: -d '{"card_url": "https://endod-health.com/card/DE482731?s=..."}'
+```
+
+`202 Accepted` with `status: pending`: Endod checks the account and answers with
+the webhook `patient.linked` or `patient.link_refused` (also in `GET
+/patients/{mrn}`). Once linked, the patient's records and upcoming follow-ups are
+sent to their Endod app. A patient already linked is refused (`409`: unlink
+first). `DELETE /patients/{mrn}/link` unlinks (or withdraws a pending request):
+nothing more is sent; webhook `patient.unlinked`.
+
+## 5. Bookings (`bookings.read`, `bookings.write`)
 
 ```bash
 curl -s "https://api.endod-health.com/hospital/v1/bookings?status=confirmed&from=2026-10-01T00:00:00Z" \
@@ -299,20 +387,102 @@ Filters: `status` (`awaiting_doctor`, `confirmed`, `rejected`, `cancelled`,
 `completed`), `from` and `to` (scheduled time), `updated_since`, `limit` (at most
 500). `GET /bookings/{id}` reads one. A booking carries its id, Endod's appointment
 id, status, visit mode, service, time and duration, how the patient pays and the
-price, and the patient's Endod ID, name and phone; never the note the patient typed.
+price, the patient's Endod ID, name and phone, the doctor of an approved video
+visit, the reason it was declined or cancelled, and when it was decided; never the
+note the patient typed.
 
 ```json
 {"id": "9f0c...", "endod_appointment_id": "...", "status": "confirmed", "visit_mode": "in_person",
  "service": "general_medicine", "scheduled_at": "2026-10-02T06:30:00+00:00", "duration_minutes": 30,
  "payment": "at_hospital", "price": "150.00",
  "patient": {"endod_id": "DE482731", "name": "...", "phone": "+251911234567"},
- "reason": null, "created_at": "...", "updated_at": "..."}
+ "doctor": null, "reason": null, "decided_at": null, "created_at": "...", "updated_at": "..."}
 ```
 
 `payment` is `online` (the patient paid Endod when booking; Endod pays the hospital)
 or `at_hospital` (collect `price`, in birr, from the patient at the visit).
 
-## 5. Webhooks (`webhooks`)
+### Decide (`bookings.write`)
+
+Exactly as in the portal; Endod tells the patient and, for a booking paid online,
+refunds them when it is declined or cancelled.
+
+| Call | Body | Does |
+|---|---|---|
+| `POST /bookings/{id}/approve` | `{"doctor_id": "..."}` | a video visit `awaiting_doctor` is confirmed with that doctor and a video room (`409` once its time passed) |
+| `POST /bookings/{id}/decline` | `{"reason": "..."}` | a video visit `awaiting_doctor` is declined (`rejected`) |
+| `POST /bookings/{id}/cancel` | `{"reason": "..."}` | a confirmed booking is cancelled (one awaiting a doctor is declined) |
+| `POST /bookings/{id}/complete` | none | a confirmed visit that has started is `completed` |
+
+Each answers the booking. The reason (2 to 300 characters) is told to the patient.
+A decision the booking's state does not allow is `409` (e.g. "This visit is already
+closed."). `GET /doctors` (`bookings.write`, `queue.write` or `followups.write`)
+lists the hospital's doctors with their ids.
+
+## 6. The queue (`queue.write`)
+
+The doctors' queues for the day, as at the portal's front desk:
+
+```bash
+curl -s https://api.endod-health.com/hospital/v1/queue/check-in \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"doctor_id": "c0ffee...", "patient_mrn": "SPH-000124"}'
+```
+
+Check in by a confirmed in-person booking (`booking_id`: this links the hospital
+patient to Endod without asking again), a registered patient (`patient_mrn`), or
+a walk-in (`"walk_in": {"name": "...", "phone": "+2519..."}`); `doctor_id` defaults
+to the booking's doctor. A patient named together with a booking must already be
+the booking's patient (the same confirmed or claimed Endod ID, or the same phone
+number); otherwise `409`: check in by the booking alone, or link the patient first. The answer is the doctor's queue with the new `ticket`.
+`POST /queue/{doctor_id}/call-next` calls the next patient (yesterday's leftovers
+first; `409` while someone is still called), `POST /queue/entries/{id}/done`,
+`/skip` and `/cancel` close an entry, and `GET /queue?day=&doctor_id=` reads the
+board. Linked patients follow their place in the Endod app; anyone with a phone
+gets an SMS when their turn is near and when they are called.
+
+## 7. Follow-ups (`followups.write`)
+
+```bash
+curl -s https://api.endod-health.com/hospital/v1/patients/SPH-000124/follow-ups \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"date": "2026-10-15", "note": "Review the blood film result.", "doctor_id": "c0ffee..."}'
+```
+
+As a doctor sets one in the portal: `date` after today and within two years (the
+hospital's date), an optional `note` (at most 500 characters) shown to the patient,
+an optional `doctor_id` and `booking_id`. A linked patient gets an SMS now and a
+reminder before the day (a patient linked later gets it then). `GET
+/patients/{mrn}/follow-ups` lists the scheduled ones; `POST /follow-ups/{id}/cancel`
+cancels one (Endod is told).
+
+## 8. Prescriptions dispensed (`prescriptions.read`)
+
+When a pharmacy gives medicine from one of your prescriptions through Endod, the
+webhook `prescription.dispensed` names it (ids and statuses only). Read the
+details with the prescription's id (the record id of the `Location` of the
+MedicationRequest you sent):
+
+```json
+{"id": "6e5d...", "patient": {"mrn": "SPH-000124", "endod_id": "DE482731"},
+ "title": "Amoxicillin 500 mg capsule", "version": 1, "retracted": false, "status": "partly",
+ "items": [{"index": 0, "drug": "Amoxicillin 500 mg capsule", "quantity": "21 capsules", "quantity_total": 21,
+            "status": "partly_given", "given_total": 14, "remaining": 7,
+            "last_given_at": "2026-10-01T10:15:00+00:00", "last_pharmacy": "Kenema Pharmacy No. 4"}],
+ "dispenses": [{"dispense_id": "dsp_01J9", "at": "2026-10-01T10:15:00+00:00",
+                "pharmacy_name": "Kenema Pharmacy No. 4", "status": "open", "items": [...]}]}
+```
+
+`status`: `not_dispensed`, `partly` or `fully`; each item `not_given`,
+`partly_given` or `given`.
+
+### Retries (`Idempotency-Key`)
+
+Every `POST` above takes an `Idempotency-Key`, as the FHIR endpoints do: the same
+key with the same request answers the first answer again for 24 hours
+(`Idempotent-Replayed: true`); the same key with another request is refused (`422`).
+
+## 9. Webhooks (`webhooks`)
 
 Endod POSTs JSON events to your webhook URL (https only, a public address):
 
@@ -320,9 +490,11 @@ Endod POSTs JSON events to your webhook URL (https only, a public address):
 |---|---|
 | `booking.created` | a patient booked a visit |
 | `booking.confirmed` | an in-person booking arrived (confirmed at once), or a doctor approved a video visit |
-| `booking.cancelled` | the patient or the hospital cancelled, or a video visit was declined (`data.status` says which) |
-| `patient.linked` | a patient was linked to their Endod account |
+| `booking.cancelled` | the patient, the hospital or Endod cancelled, or a video visit was declined (`data.status` says which) |
+| `patient.linked` | Endod confirmed a link request, or a booking's check-in linked the patient |
+| `patient.link_refused` | Endod refused a link request (`data.reason`: `not_found`, `not_verified`, `already_linked`, ...) |
 | `patient.unlinked` | a patient was unlinked |
+| `prescription.dispensed` | a pharmacy gave medicine from one of your prescriptions |
 | `endpoint.test` | "Send test event" in the portal |
 
 ```json
@@ -333,8 +505,16 @@ Endod POSTs JSON events to your webhook URL (https only, a public address):
           "patient": {"endod_id": "DE482731"}}}
 ```
 
-Events are thin (ids, statuses, times): fetch the booking with `bookings.read` for
-the rest. Answer any **2xx** within 10 seconds. Anything else, a timeout or a redirect
+Patient events carry `{"patient_id", "mrn", "endod_id"}`, with `request_id` (the
+link request answered; null when a booking's check-in linked the patient) for
+`patient.linked` and `patient.link_refused`, and `reason` for the refusal.
+`prescription.dispensed` carries `{"prescription_id", "dispense_id",
+"dispense_status": "open"|"completed", "dispensing_status": "partly"|"fully",
+"dispensed_at", "patient": {"patient_id", "mrn", "endod_id"}}`, never a drug or an
+amount. The OpenAPI document (`webhooks`) has every event's payload and an example.
+
+Events are thin (ids, statuses, times): fetch the booking with `bookings.read`, the
+patient with `patients.read`, the prescription with `prescriptions.read` for the rest. Answer any **2xx** within 10 seconds. Anything else, a timeout or a redirect
 (never followed) is retried with backoff (1 min, 5 min, 15 min, 30 min, 1 h, 2 h,
 4 h, then every 6 h) for up to **24 hours**; then the event is dropped. Events can
 arrive more than once and out of order: use `id` to skip repeats.
@@ -401,7 +581,7 @@ static bool Verify(string secret, string header, byte[] rawBody, int tolerance =
 }
 ```
 
-## 6. Errors
+## 10. Errors
 
 Everything but the token endpoint answers errors as a FHIR OperationOutcome:
 
@@ -416,15 +596,15 @@ Everything but the token endpoint answers errors as a FHIR OperationOutcome:
 | 400 | malformed JSON or Bundle, an unsupported resource type, a bad id |
 | 401 | no token, an invalid or expired token, a disconnected client, or credentials changed since the token was issued (`WWW-Authenticate: Bearer error="invalid_token"`) |
 | 403 | a scope not granted (`insufficient_scope`), a call from an address not allowed, or a hospital not approved or suspended |
-| 404 | not found (another hospital's booking is never visible) |
-| 409 | a conflicting correction, or the same request processed at the same moment (send it again) |
+| 404 | not found (another hospital's patient, booking, prescription or record is never visible) |
+| 409 | a conflicting correction, a change the current state does not allow (a booking already closed, a patient already linked or registered, someone still called), or the same request processed at the same moment (send it again) |
 | 413 | more than 100 entries, or more than 10 MB |
 | 415 | not `application/fhir+json` (or `application/json`) |
-| 422 | a resource that cannot be used (unknown patient, missing date, wrong document type, ...) or an Idempotency-Key reused for another request |
+| 422 | a resource or a field that cannot be used (unknown patient, missing date, wrong document type, a reason too short, ...) or an Idempotency-Key reused for another request |
 | 429 | too many requests: wait `Retry-After` seconds |
 | 503 | the API is not available |
 
-## 7. Limits
+## 11. Limits
 
 - A bundle: at most **100 entries** and **10 MB**.
 - **60 requests per minute** per connection (token requests not counted).
@@ -435,13 +615,14 @@ Everything but the token endpoint answers errors as a FHIR OperationOutcome:
 - Dates in the future are refused; a date without a time is midnight at the hospital,
   a time without an offset is the hospital's time.
 
-## 8. What Endod keeps
+## 12. What Endod keeps
 
 - Records are stored like records entered in the portal: encrypted at rest, kept apart
   per hospital by the database, and published to the patient's Endod app only when
   the patient is linked.
 - Every write is audited with the connection, the action and the record ids (never
-  a clinical value).
+  a clinical value), as the same action in the portal is; so is opening a patient or a
+  prescription.
 - The request log keeps method, path, status, connection, time, duration and address
   for 30 days; never a body or a query string.
 - Webhook deliveries keep status and attempts; an event's body is deleted once it is

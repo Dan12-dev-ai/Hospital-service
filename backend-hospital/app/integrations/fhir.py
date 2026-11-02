@@ -343,6 +343,10 @@ def _replay(session, caller: Caller, key: str, fingerprint: str) -> Optional[Tup
     return row.status_code, json.loads(row.response)
 
 
+#: The stored answer to an Idempotency-Key (also used by the JSON endpoints, app/integrations/calls.py).
+replay = _replay
+
+
 def handle(caller: Caller, data: bytes, path_type: Optional[str], idempotency_key: Optional[str],
            method: str, path: str) -> Tuple[int, Dict[str, Any], Dict[str, str]]:
     """Process a write. Returns (status, body, headers). Raises FhirError."""

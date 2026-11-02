@@ -95,8 +95,9 @@ def request_link(session: Session, patient: Patient, dedan_id: str, staff_id: Op
     return request
 
 
-def link(session: Session, patient: Patient, dedan_id: str, today: date) -> None:
-    """Store the confirmed Endod ID and send the patient's history (``patient`` is locked)."""
+def link(session: Session, patient: Patient, dedan_id: str, today: date, request_id: Optional[str] = None) -> None:
+    """Store the confirmed Endod ID and send the patient's history (``patient`` is locked).
+    ``request_id``: the link request Endod answered (None when a booking's check-in linked them)."""
     if patient.dedan_id == dedan_id:
         return
     if patient.dedan_id:
@@ -110,7 +111,7 @@ def link(session: Session, patient: Patient, dedan_id: str, today: date) -> None
     session.flush()
     _close_pending(session, patient.id, LinkStatus.SUPERSEDED, "linked")
     records.publish_history(session, patient, today)
-    webhooks.patient_event(session, patient, "patient.linked", dedan_id)
+    webhooks.patient_event(session, patient, "patient.linked", dedan_id, request_id=request_id)
 
 
 def unlink(session: Session, patient: Patient) -> Optional[str]:
@@ -170,11 +171,12 @@ def on_linked(session: Session, payload: Dict[str, Any]) -> None:
     patient = session.scalar(select(Patient).where(Patient.id == request.patient_id).with_for_update())
     request.decided_at, request.linked_name = utcnow(), reply.name
     try:
-        link(session, patient, dedan_id, records.hospital_today(session, patient.hospital_id))
+        link(session, patient, dedan_id, records.hospital_today(session, patient.hospital_id), request.id)
     except LinkError:
         # Linked to someone else meanwhile (another patient holds the ID, or
         # this one was linked through a booking): one Endod ID per patient.
         request.status, request.reason = LinkStatus.REFUSED, "already_linked"
+        _refused_event(session, request)
         return
     request.status = LinkStatus.LINKED
 
@@ -185,6 +187,15 @@ def on_refused(session: Session, payload: Dict[str, Any]) -> None:
     if request is None or request.status != LinkStatus.PENDING:
         return
     request.status, request.reason, request.decided_at = LinkStatus.REFUSED, reply.reason, utcnow()
+    _refused_event(session, request)
+
+
+def _refused_event(session: Session, request: PatientLinkRequest) -> None:
+    """Tell the hospital's systems (webhook ``patient.link_refused``)."""
+    patient = session.get(Patient, request.patient_id)
+    if patient is not None:
+        webhooks.patient_event(session, patient, "patient.link_refused", request.dedan_id,
+                               request_id=request.id, reason=request.reason)
 
 
 HANDLERS = {

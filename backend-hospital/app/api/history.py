@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -83,7 +83,7 @@ class LinkBody(BaseModel):
     phone: OptionalPhone = None
 
 
-def _link_payload(session, patient: Patient) -> Dict[str, Any]:
+def link_payload(session, patient: Patient) -> Dict[str, Any]:
     latest = session.scalar(select(PatientLinkRequest).where(PatientLinkRequest.patient_id == patient.id)
                             .order_by(PatientLinkRequest.created_at.desc(), PatientLinkRequest.id).limit(1))
     request = None
@@ -93,6 +93,53 @@ def _link_payload(session, patient: Patient) -> Dict[str, Any]:
                    "created_at": _iso(latest.created_at), "decided_at": _iso(latest.decided_at)}
     return {"patient_id": patient.id, "dedan_id": patient.dedan_id, "claimed_dedan_id": patient.claimed_dedan_id,
             "request": request}
+
+
+_link_payload = link_payload
+
+
+def link_target(body: LinkBody) -> Tuple[str, Optional[str]]:
+    """(Endod ID, card signature or None) from a link request, checked; HTTPException otherwise."""
+    if body.card_url:
+        try:
+            return linking.parse_card_url(body.card_url)
+        except linking.LinkError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    if not body.dedan_id or not body.phone:
+        raise HTTPException(status_code=400, detail="Give the Endod ID and the phone number on the account, "
+                                                    "or scan the health card.")
+    try:
+        return normalize_dedan_id(body.dedan_id), None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Not a valid Endod ID, e.g. DE482731.") from exc
+
+
+def ask_link(session, patient: Patient, body: LinkBody, actor_id: Optional[str],
+             audit_extra: Optional[Dict[str, Any]] = None) -> PatientLinkRequest:
+    """Ask Endod to confirm the patient's account (``patient`` locked) and audit
+    it. Shared by the portal and the integration API."""
+    dedan_id, signature = link_target(body)
+    try:
+        request = linking.request_link(session, patient, dedan_id, actor_id, card_signature=signature,
+                                       phone=body.phone)
+    except linking.LinkError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    audit(session, patient.hospital_id, actor_id, "patient_link_requested", "patient", patient.id,
+          {"dedan_id": dedan_id, "method": request.method, "request_id": request.id, **(audit_extra or {})})
+    session.flush()
+    return request
+
+
+def end_link(session, patient: Patient, actor_id: Optional[str],
+             audit_extra: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """Unlink (nothing more is sent to Endod), or withdraw a pending request, and audit it."""
+    old = linking.unlink(session, patient)
+    detail: Dict[str, Any] = {"identity": {"dedan_id": {"from": old, "to": None}}} if old else {}
+    detail.update(audit_extra or {})
+    audit(session, patient.hospital_id, actor_id, "patient_unlinked" if old else "patient_link_withdrawn",
+          "patient", patient.id, detail or None)
+    session.flush()
+    return old
 
 
 @router.get("/patients/{patient_id}/link")
@@ -105,30 +152,10 @@ def link_status(patient_id: str, staff: Staff = Depends(current_staff)) -> Dict[
 def request_link(patient_id: str, body: LinkBody, staff: Staff = Depends(require_roles(*LINKERS))) -> Dict[str, Any]:
     """Ask Endod to confirm the patient's account: by the card's QR, or by the
     Endod ID and the account's phone number. The answer arrives as an event."""
-    signature = None
-    if body.card_url:
-        try:
-            dedan_id, signature = linking.parse_card_url(body.card_url)
-        except linking.LinkError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-    else:
-        if not body.dedan_id or not body.phone:
-            raise HTTPException(status_code=400, detail="Give the Endod ID and the phone number on the account, "
-                                                        "or scan the health card.")
-        try:
-            dedan_id = normalize_dedan_id(body.dedan_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail="Not a valid Endod ID, e.g. DE482731.") from exc
+    link_target(body)  # refused before any database work
     with session_scope(staff.hospital_id) as session:
         patient = _patient(session, staff, patient_id, lock=True)
-        try:
-            request = linking.request_link(session, patient, dedan_id, staff.id, card_signature=signature,
-                                           phone=body.phone)
-        except linking.LinkError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-        audit(session, staff.hospital_id, staff.id, "patient_link_requested", "patient", patient.id,
-              {"dedan_id": dedan_id, "method": request.method, "request_id": request.id})
-        session.flush()
+        ask_link(session, patient, body, staff.id)
         return _link_payload(session, patient)
 
 
@@ -137,10 +164,7 @@ def unlink(patient_id: str, staff: Staff = Depends(require_roles(*LINKERS))) -> 
     """Unlink (nothing more is sent to Endod), or withdraw a pending request."""
     with session_scope(staff.hospital_id) as session:
         patient = _patient(session, staff, patient_id, lock=True)
-        old = linking.unlink(session, patient)
-        audit(session, staff.hospital_id, staff.id, "patient_unlinked" if old else "patient_link_withdrawn",
-              "patient", patient.id, {"identity": {"dedan_id": {"from": old, "to": None}}} if old else None)
-        session.flush()
+        end_link(session, patient, staff.id)
         return _link_payload(session, patient)
 
 
@@ -439,14 +463,62 @@ def _visit_payload(session, v: Visit) -> Dict[str, Any]:
     }
 
 
+def check_follow_up_date(session, hospital_id: str, on: Optional[date]) -> None:
+    if on is None:
+        return
+    today = records.hospital_today(session, hospital_id)
+    if on <= today or on > today + timedelta(days=730):
+        raise HTTPException(status_code=400, detail="The follow-up must be after today and within two years.")
+
+
 def _check_follow_up(session, staff: Staff, on: Optional[date]) -> None:
     if on is None:
         return
     if staff.role not in FOLLOW_UP_SETTERS:
         raise HTTPException(status_code=403, detail="Only a doctor sets a follow-up.")
-    today = records.hospital_today(session, staff.hospital_id)
-    if on <= today or on > today + timedelta(days=730):
-        raise HTTPException(status_code=400, detail="The follow-up must be after today and within two years.")
+    check_follow_up_date(session, staff.hospital_id, on)
+
+
+def open_visit(session, hospital_id: str, patient: Patient, *, doctor_id: Optional[str], booking_id: Optional[str],
+               started_at: Optional[datetime], follow_up_on: Optional[date], follow_up_note: Optional[str],
+               actor_id: Optional[str], audit_extra: Optional[Dict[str, Any]] = None) -> Visit:
+    """Open a visit (with its follow-up, sent to Endod for a linked patient) and
+    audit it; the follow-up date is checked by the caller. Shared by the portal
+    and the integration API."""
+    if doctor_id and session.scalar(select(StaffUser.id).where(
+            StaffUser.id == doctor_id, StaffUser.hospital_id == hospital_id,
+            StaffUser.role == Role.DOCTOR)) is None:
+        raise HTTPException(status_code=400, detail="Unknown doctor.")
+    if booking_id and session.scalar(select(Booking.id).where(
+            Booking.id == booking_id, Booking.hospital_id == hospital_id)) is None:
+        raise HTTPException(status_code=400, detail="Unknown booking.")
+    visit = Visit(hospital_id=hospital_id, patient_id=patient.id, doctor_id=doctor_id,
+                  booking_id=booking_id, started_at=_when(started_at), created_by=actor_id)
+    session.add(visit)
+    session.flush()
+    if follow_up_on:
+        records.set_follow_up(session, visit, patient, session.get(Hospital, hospital_id),
+                              follow_up_on, follow_up_note)
+    audit(session, hospital_id, actor_id, "visit_opened", "patient", patient.id,
+          {"visit_id": visit.id, **(audit_extra or {})})
+    session.flush()
+    return visit
+
+
+def change_follow_up(session, hospital_id: str, visit: Visit, on: Optional[date], note: Optional[str],
+                     actor_id: Optional[str], audit_extra: Optional[Dict[str, Any]] = None) -> None:
+    """Set, move or cancel a visit's follow-up (``visit`` locked; the date is
+    checked by the caller), tell Endod, and audit it."""
+    if on is None and visit.follow_up_on is None:
+        raise HTTPException(status_code=400, detail="This visit has no follow-up.")
+    patient = session.scalar(select(Patient).where(Patient.id == visit.patient_id,
+                                                   Patient.hospital_id == hospital_id).with_for_update())
+    if patient is None:
+        raise HTTPException(status_code=404, detail="Patient not found.")
+    records.set_follow_up(session, visit, patient, session.get(Hospital, hospital_id), on, note)
+    audit(session, hospital_id, actor_id, "follow_up_set" if on else "follow_up_cancelled", "patient", patient.id,
+          {"visit_id": visit.id, "on": on.isoformat() if on else None, **(audit_extra or {})})
+    session.flush()
 
 
 @router.get("/patients/{patient_id}/visits")
@@ -463,23 +535,10 @@ def create_visit(patient_id: str, body: VisitCreate,
     with session_scope(staff.hospital_id) as session:
         patient = _patient(session, staff, patient_id, lock=True)
         doctor_id = body.doctor_id or (staff.id if staff.role == Role.DOCTOR else None)
-        if doctor_id and session.scalar(select(StaffUser.id).where(
-                StaffUser.id == doctor_id, StaffUser.hospital_id == staff.hospital_id,
-                StaffUser.role == Role.DOCTOR)) is None:
-            raise HTTPException(status_code=400, detail="Unknown doctor.")
-        if body.booking_id and session.scalar(select(Booking.id).where(
-                Booking.id == body.booking_id, Booking.hospital_id == staff.hospital_id)) is None:
-            raise HTTPException(status_code=400, detail="Unknown booking.")
         _check_follow_up(session, staff, body.follow_up_on)
-        visit = Visit(hospital_id=staff.hospital_id, patient_id=patient.id, doctor_id=doctor_id,
-                      booking_id=body.booking_id, started_at=_when(body.started_at), created_by=staff.id)
-        session.add(visit)
-        session.flush()
-        if body.follow_up_on:
-            records.set_follow_up(session, visit, patient, session.get(Hospital, staff.hospital_id),
-                                  body.follow_up_on, body.follow_up_note)
-        audit(session, staff.hospital_id, staff.id, "visit_opened", "patient", patient.id, {"visit_id": visit.id})
-        session.flush()
+        visit = open_visit(session, staff.hospital_id, patient, doctor_id=doctor_id, booking_id=body.booking_id,
+                           started_at=body.started_at, follow_up_on=body.follow_up_on,
+                           follow_up_note=body.follow_up_note, actor_id=staff.id)
         return _visit_payload(session, visit)
 
 
@@ -492,14 +551,5 @@ def set_follow_up(visit_id: str, body: FollowUp,
         if visit is None:
             raise HTTPException(status_code=404, detail="Visit not found.")
         _check_follow_up(session, staff, body.follow_up_on)
-        if body.follow_up_on is None and visit.follow_up_on is None:
-            raise HTTPException(status_code=400, detail="This visit has no follow-up.")
-        patient = _patient(session, staff, visit.patient_id, lock=True)
-        records.set_follow_up(session, visit, patient, session.get(Hospital, staff.hospital_id),
-                              body.follow_up_on, body.follow_up_note)
-        audit(session, staff.hospital_id, staff.id,
-              "follow_up_set" if body.follow_up_on else "follow_up_cancelled", "patient", patient.id,
-              {"visit_id": visit.id, "on": body.follow_up_on.isoformat() if body.follow_up_on else None})
-        session.flush()
+        change_follow_up(session, staff.hospital_id, visit, body.follow_up_on, body.follow_up_note, staff.id)
         return _visit_payload(session, visit)
-

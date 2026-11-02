@@ -163,7 +163,7 @@ class BookingError(RuntimeError):
         self.status_code = status_code
 
 
-def approve_video(session: Session, booking: Booking, doctor: StaffUser, decided_by: str) -> None:
+def approve_video(session: Session, booking: Booking, doctor: StaffUser, decided_by: Optional[str]) -> None:
     if booking.visit_mode != VisitMode.VIDEO:
         raise BookingError("Only video visits need a doctor's approval.")
     if booking.status != BookingStatus.AWAITING_DOCTOR:
@@ -178,7 +178,7 @@ def approve_video(session: Session, booking: Booking, doctor: StaffUser, decided
     webhooks.booking_event(session, booking, "booking.confirmed")
 
 
-def reject(session: Session, booking: Booking, reason: str, decided_by: str) -> None:
+def reject(session: Session, booking: Booking, reason: str, decided_by: Optional[str]) -> None:
     if booking.status != BookingStatus.AWAITING_DOCTOR:
         raise BookingError("Only a visit waiting for approval can be rejected; cancel a confirmed one.", 409)
     booking.status = BookingStatus.REJECTED
@@ -188,7 +188,7 @@ def reject(session: Session, booking: Booking, reason: str, decided_by: str) -> 
     webhooks.booking_event(session, booking, "booking.cancelled")
 
 
-def cancel(session: Session, booking: Booking, reason: str, decided_by: str) -> None:
+def cancel(session: Session, booking: Booking, reason: str, decided_by: Optional[str]) -> None:
     if booking.status == BookingStatus.AWAITING_DOCTOR:
         # Declining a visit nobody approved yet is a rejection.
         reject(session, booking, reason, decided_by)
@@ -202,7 +202,7 @@ def cancel(session: Session, booking: Booking, reason: str, decided_by: str) -> 
     webhooks.booking_event(session, booking, "booking.cancelled")
 
 
-def complete(session: Session, booking: Booking, decided_by: str) -> None:
+def complete(session: Session, booking: Booking, decided_by: Optional[str]) -> None:
     if booking.status != BookingStatus.CONFIRMED:
         raise BookingError("Only a confirmed visit can be completed.", 409)
     if ensure_aware(booking.scheduled_at) > utcnow():
