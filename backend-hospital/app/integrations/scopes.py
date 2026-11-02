@@ -10,22 +10,40 @@ DIAGNOSES = "records.diagnoses.write"
 VISITS = "records.visits.write"
 DOCUMENTS = "records.documents.write"
 IMAGING = "records.imaging.write"
+PATIENTS_READ = "patients.read"
+PATIENTS_WRITE = "patients.write"
 BOOKINGS_READ = "bookings.read"
+BOOKINGS_WRITE = "bookings.write"
+FOLLOWUPS = "followups.write"
+PRESCRIPTIONS_READ = "prescriptions.read"
+QUEUE = "queue.write"
 WEBHOOKS = "webhooks"
 
 #: scope -> (label in the portal, longer description). In the portal's order.
 SCOPES: Dict[str, Tuple[str, str]] = {
-    LABS: ("Send lab results", "Lab results (FHIR Observation and lab DiagnosticReport)."),
-    PRESCRIPTIONS: ("Send prescriptions", "Prescriptions (FHIR MedicationRequest)."),
-    DIAGNOSES: ("Send diagnoses", "Diagnoses (FHIR Condition)."),
-    VISITS: ("Send visit notes", "Visit notes (FHIR Encounter)."),
-    DOCUMENTS: ("Send documents", "PDF and image documents (FHIR DocumentReference)."),
-    IMAGING: ("Send imaging reports", "Imaging reports (FHIR DiagnosticReport, imaging)."),
+    LABS: ("Send lab results", "Lab results (FHIR Observation and lab DiagnosticReport); read them back."),
+    PRESCRIPTIONS: ("Send prescriptions", "Prescriptions (FHIR MedicationRequest); read them back."),
+    DIAGNOSES: ("Send diagnoses", "Diagnoses (FHIR Condition); read them back."),
+    VISITS: ("Send visit notes", "Visit notes (FHIR Encounter); read them back."),
+    DOCUMENTS: ("Send documents", "PDF and image documents (FHIR DocumentReference); read them back."),
+    IMAGING: ("Send imaging reports", "Imaging reports (FHIR DiagnosticReport, imaging); read them back."),
+    PATIENTS_READ: ("See patients", "Read a registered patient by hospital number, with their Endod link status."),
+    PATIENTS_WRITE: ("Register and link patients", "Register patients (Endod gives the hospital number), link "
+                                                   "them to their Endod account, or unlink them."),
     BOOKINGS_READ: ("See bookings", "Read the bookings patients made through Endod."),
-    WEBHOOKS: ("Get notified of bookings", "Receive events: bookings made, confirmed or cancelled, "
-                                          "patients linked or unlinked."),
+    BOOKINGS_WRITE: ("Decide on bookings", "Approve or decline video visits, cancel bookings and mark visits "
+                                           "completed, as the portal does."),
+    FOLLOWUPS: ("Set follow-ups", "Set, list and cancel follow-up dates (the patient gets an SMS and a reminder)."),
+    PRESCRIPTIONS_READ: ("See what pharmacies gave", "Read a prescription with what pharmacies dispensed from it, "
+                                                     "item by item."),
+    QUEUE: ("Run the queue", "Check patients in to a doctor's queue, call the next one, and mark them done, "
+                             "skipped or cancelled."),
+    WEBHOOKS: ("Get notified of changes", "Receive events: bookings made, confirmed or cancelled; patients "
+                                          "linked, refused or unlinked; prescriptions dispensed."),
 }
 ALL: Tuple[str, ...] = tuple(SCOPES)
+#: The scopes that send FHIR records.
+RECORDS: Tuple[str, ...] = (LABS, PRESCRIPTIONS, DIAGNOSES, VISITS, DOCUMENTS, IMAGING)
 
 
 def parse(value: Optional[str]) -> List[str]:

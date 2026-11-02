@@ -1,8 +1,8 @@
 """Events sent to a hospital system's webhook, signed like Stripe's.
 
 * **Events:** booking.created, booking.confirmed, booking.cancelled,
-  patient.linked, patient.unlinked (and endpoint.test from "Send test
-  event"), to every connection of the hospital with the ``webhooks`` scope
+  patient.linked, patient.link_refused, patient.unlinked,
+  prescription.dispensed (and endpoint.test from "Send test event"), to every connection of the hospital with the ``webhooks`` scope
   and a webhook URL, Live connections only (a Test connection gets only
   ``endpoint.test``: never an event about real bookings or patients). Bodies are thin: ids, statuses and times, never notes
   or clinical data (a connection with ``bookings.read`` fetches the rest).
@@ -52,7 +52,8 @@ from app.models import Booking, DeliveryStatus, IntegrationClient, IntegrationMo
 
 logger = logging.getLogger("hospital.webhooks")
 
-EVENTS = ("booking.created", "booking.confirmed", "booking.cancelled", "patient.linked", "patient.unlinked")
+EVENTS = ("booking.created", "booking.confirmed", "booking.cancelled", "patient.linked", "patient.link_refused",
+          "patient.unlinked", "prescription.dispensed")
 TEST_EVENT = "endpoint.test"
 SIGNATURE_HEADER = "Endod-Signature"
 #: Seconds to wait before attempt n+1 (the last value repeats); given up 24 hours after the event.
@@ -141,9 +142,20 @@ def booking_event(session: Session, booking: Booking, event_type: str) -> int:
     })
 
 
-def patient_event(session: Session, patient: Patient, event_type: str, endod_id: Optional[str]) -> int:
+def patient_event(session: Session, patient: Patient, event_type: str, endod_id: Optional[str],
+                  **extra: Any) -> int:
+    """patient.linked, patient.link_refused (with ``request_id`` and ``reason``) or patient.unlinked."""
     return emit(session, patient.hospital_id, event_type,
-                {"patient_id": patient.id, "mrn": patient.mrn, "endod_id": endod_id})
+                {"patient_id": patient.id, "mrn": patient.mrn, "endod_id": endod_id, **extra})
+
+
+def prescription_event(session: Session, record: Any, patient: Patient, dispense: Any, dispensing_status: str) -> int:
+    """prescription.dispensed: ids and statuses only (never a drug or an amount)."""
+    return emit(session, record.hospital_id, "prescription.dispensed", {
+        "prescription_id": record.id, "dispense_id": dispense.id, "dispense_status": dispense.status,
+        "dispensing_status": dispensing_status, "dispensed_at": _iso(dispense.dispensed_at),
+        "patient": {"patient_id": patient.id, "mrn": patient.mrn, "endod_id": dispense.dedan_id},
+    })
 
 
 def send_test(session: Session, client: IntegrationClient) -> WebhookDelivery:

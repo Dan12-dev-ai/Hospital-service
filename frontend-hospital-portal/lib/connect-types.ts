@@ -75,8 +75,14 @@ export const ABILITIES: { scope: string; label: string; hint: string }[] = [
   { scope: "records.visits.write", label: "Send visit notes", hint: "Why the patient came, what was found" },
   { scope: "records.documents.write", label: "Send documents", hint: "PDFs and images" },
   { scope: "records.imaging.write", label: "Send imaging reports", hint: "X-ray, CT, ultrasound reports" },
+  { scope: "patients.read", label: "See patients", hint: "A patient by hospital number, and their Endod link" },
+  { scope: "patients.write", label: "Register and link patients", hint: "New patients get a hospital number" },
   { scope: "bookings.read", label: "See bookings", hint: "Bookings patients made through Endod" },
-  { scope: NOTIFY_SCOPE, label: "Get notified of bookings", hint: "Your system is told when bookings change" },
+  { scope: "bookings.write", label: "Decide on bookings", hint: "Approve, decline, cancel or complete visits" },
+  { scope: "followups.write", label: "Set follow-ups", hint: "The patient gets an SMS and a reminder" },
+  { scope: "prescriptions.read", label: "See what pharmacies gave", hint: "Dispensing of your prescriptions" },
+  { scope: "queue.write", label: "Run the queue", hint: "Check in, call next, done or skipped" },
+  { scope: NOTIFY_SCOPE, label: "Get notified of changes", hint: "Bookings, patient links and dispensing" },
 ];
 
 /** "a few seconds ago", "5 minutes ago", "3 days ago". */

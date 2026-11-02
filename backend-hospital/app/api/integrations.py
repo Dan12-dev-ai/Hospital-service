@@ -4,11 +4,16 @@ HOSPITAL_INTEGRATIONS_PUBLIC_URL, e.g. https://api.endod-health.com/hospital/v1)
 A FastAPI application of its own, run by its own service (the
 ``integrations`` service, app/integrations_main.py: the only one on the
 shared edge network, and the only one with the token signing key), so it has its own
-OpenAPI document (``/openapi.json``), its own docs page (``/docs``, with the
-guide, docs/integrations.md) and its own errors: OAuth errors from the token
-endpoint, FHIR OperationOutcomes everywhere else. Every call is written to the
-request log (method, path, status, client, time, duration, address; never a
-body), once the client is known.
+OpenAPI document (``/openapi.json``: every endpoint, scope, request and
+answer with examples, and every webhook event), its own docs page
+(``/docs``, with the guide, docs/integrations.md) and its own errors: OAuth
+errors from the token endpoint, FHIR OperationOutcomes everywhere else.
+Every call is written to the request log (method, path, status, client,
+time, duration, address; never a body), once the client is known.
+
+The routes: authentication and FHIR records here; the patient journey
+(patients, bookings, doctors, follow-ups, prescriptions, the queue) in
+app/integrations/journey.py.
 
 Only nginx reaches it: every request must carry ``X-Endod-Edge-Key`` (the
 shared EDGE_SHARED_SECRET, compared in constant time; without one configured,
@@ -18,52 +23,47 @@ production answers 503). The caller's address is taken ONLY from
 
 from __future__ import annotations
 
+import copy
 import hmac
-import ipaddress
+import html
 import logging
 import time
-from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs
 
-from fastapi import Depends, FastAPI, Header, Query, Request
+from fastapi import Depends, FastAPI, Header, Request
+from fastapi import Path as PathParam
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import AwareDatetime
 from sqlalchemy import select
 from starlette.exceptions import HTTPException
 
 from app.config import get_settings
 from app.db import ensure_aware, session_scope
-from app.integrations import fhir, scopes as S, signing, tokens
+from app.integrations import apidoc as D, fhir, fhir_docs as F, journey, scopes as S, schemas as M, signing, tokens
+from app.integrations import webhooks
+from app.integrations.calls import (
+    CLIENT_IP_HEADER, FHIR_JSON, caller, client_address, is_test, outcome_response as _outcome_response, via,
+)
 from app.integrations.tokens import Caller
-from app.models import Booking, BookingStatus, IntegrationMode, IntegrationRequest
+from app.models import ClinicalRecord, Hospital, IntegrationRequest, IntegrationResource, Patient, RecordCategory
+from app import records
+from app.auth import audit
 
 logger = logging.getLogger("hospital.integrations")
 
 PREFIX = "/integrations/v1"
 MAX_TOKEN_REQUEST = 16 * 1024
-FHIR_JSON = "application/fhir+json"
 GUIDE = Path(__file__).resolve().parents[1] / "integrations" / "guide.md"
-RECORD_SCOPES = (S.LABS, S.PRESCRIPTIONS, S.DIAGNOSES, S.VISITS, S.DOCUMENTS, S.IMAGING)
-
-
+RECORD_SCOPES = S.RECORDS
 EDGE_KEY_HEADER = "x-endod-edge-key"
-CLIENT_IP_HEADER = "x-endod-client-ip"
+GUIDE_URL = "https://github.com/Dan12-dev-ai/Hospital-service/blob/main/docs/integrations.md"
 
-
-def client_address(request: Request) -> str:
-    """The caller's address as nginx saw it (X-Endod-Client-IP), else the peer's.
-    Never X-Forwarded-For (a client could choose it)."""
-    value = (request.headers.get(CLIENT_IP_HEADER) or "").strip()
-    try:
-        return str(ipaddress.ip_address(value))
-    except ValueError:
-        return request.client.host if request.client else "unknown"
+__all__ = ["PREFIX", "create_app", "client_address", "edge_refusal", "CLIENT_IP_HEADER"]
 
 
 def edge_refusal(request: Request) -> Optional[JSONResponse]:
@@ -78,12 +78,6 @@ def edge_refusal(request: Request) -> Optional[JSONResponse]:
     if not hmac.compare_digest(given.encode(), key.encode()):
         return _outcome_response(403, "forbidden", "Requests must come through the Endod API gateway.")
     return None
-
-
-def _outcome_response(status_code: int, code: str, message: str, headers: Optional[Dict[str, str]] = None,
-                      body: Optional[Dict[str, Any]] = None) -> JSONResponse:
-    return JSONResponse(status_code=status_code, content=body or fhir.outcome("error", code, message),
-                        headers=headers, media_type=FHIR_JSON)
 
 
 def _no_store(response: JSONResponse) -> JSONResponse:
@@ -106,9 +100,67 @@ def _guide() -> str:
         return "The guide is docs/integrations.md in the Hospital-service repository."
 
 
-def create_app() -> FastAPI:
+# --- reading back what a system sent ------------------------------------------------------------------
+
+#: FHIR type -> the record kinds it becomes.
+READ_BACK = {
+    "Observation": (RecordCategory.LAB_RESULT,), "DiagnosticReport": (RecordCategory.LAB_RESULT, RecordCategory.IMAGING),
+    "MedicationRequest": (RecordCategory.PRESCRIPTION,), "Condition": (RecordCategory.DIAGNOSIS,),
+    "Encounter": (RecordCategory.VISIT_NOTE,), "DocumentReference": (RecordCategory.DOCUMENT,),
+}
+_CATEGORY_SCOPE = {RecordCategory.LAB_RESULT: S.LABS, RecordCategory.IMAGING: S.IMAGING,
+                   RecordCategory.PRESCRIPTION: S.PRESCRIPTIONS, RecordCategory.DIAGNOSIS: S.DIAGNOSES,
+                   RecordCategory.VISIT_NOTE: S.VISITS, RecordCategory.DOCUMENT: S.DOCUMENTS}
+_STATUS = {"Observation": "final", "DiagnosticReport": "final", "MedicationRequest": "active",
+           "Encounter": "finished", "DocumentReference": "current"}
+PUBLISHED_EXTENSION = "https://endod-health.com/fhir/StructureDefinition/published-to-endod"
+
+
+def stored_resource(session, kind: str, record: ClinicalRecord, patient: Patient, hospital: Hospital,
+                    own: Optional[IntegrationResource], client_id: str) -> Dict[str, Any]:
+    """What Endod stored for a resource, as a FHIR resource of the type it was sent as."""
+    when = ensure_aware(record.occurred_at).isoformat()
+    out: Dict[str, Any] = {
+        "resourceType": kind, "id": record.id,
+        "meta": {"versionId": str(record.version), "lastUpdated": ensure_aware(record.updated_at).isoformat()},
+        "subject": {"identifier": {"system": fhir.mrn_system(hospital), "value": patient.mrn}},
+        "text": {"status": "generated",
+                 "div": f"<div xmlns=\"http://www.w3.org/1999/xhtml\">{html.escape(record.title)}</div>"},
+        "extension": [{"url": PUBLISHED_EXTENSION, "valueBoolean": bool(record.published_dedan_id) and
+                       record.published_version == record.version and not record.retracted}],
+    }
+    if own is not None:
+        out["identifier"] = [{"system": f"https://endod-health.com/integrations/{client_id}/{kind}",
+                              "value": own.resource_id}]
+    if kind == "Condition":
+        out["code"] = {"text": record.title}
+        out["recordedDate"] = when
+        out["verificationStatus"] = {"coding": [{"code": "entered-in-error" if record.retracted else "confirmed"}]}
+    else:
+        out["status"] = "entered-in-error" if record.retracted else _STATUS[kind]
+    if kind in ("Observation", "DiagnosticReport"):
+        out["code"] = {"text": record.title}
+        out["effectiveDateTime"] = when
+        if kind == "DiagnosticReport":
+            out["category"] = [{"coding": [{"code": "RAD" if record.category == RecordCategory.IMAGING else "LAB"}]}]
+    elif kind == "MedicationRequest":
+        out["intent"] = "order"
+        out["medicationCodeableConcept"] = {"text": record.title}
+        out["authoredOn"] = when
+    elif kind == "Encounter":
+        out["type"] = [{"text": record.title}]
+        out["period"] = {"start": when}
+    elif kind == "DocumentReference":
+        out["description"] = record.title
+        out["date"] = when
+        out["content"] = [{"attachment": {"contentType": f.content_type, "title": f.filename, "size": f.size,
+                                          "hash": f.sha256}} for f in records.files_of(session, record.id)]
+    return out
+
+
+def create_app() -> FastAPI:  # noqa: C901 -- the app and its handlers in one place
     api = FastAPI(
-        title="Endod Hospital Integration API", version="1.0.0", description=_guide(),
+        title="Endod Hospital Integration API", version="1.1.0", description=_guide(),
         docs_url=None, redoc_url=None, openapi_url="/openapi.json",
     )
 
@@ -118,21 +170,21 @@ def create_app() -> FastAPI:
         if refused is not None:
             return refused
         started = time.perf_counter()
-        caller = Caller()
-        request.state.caller = caller
+        who = Caller()
+        request.state.caller = who
         address = client_address(request)
         response = await call_next(request)
         duration_ms = int((time.perf_counter() - started) * 1000)
         path = request.url.path
         # Never the body, the query string or a header: method, path, status, client, time, address.
         logger.info("integration_request method=%s path=%s status=%s client=%s ms=%s", request.method, path,
-                    response.status_code, caller.client_id or "-", duration_ms)
-        if caller.client_pk and caller.hospital_id:
+                    response.status_code, who.client_id or "-", duration_ms)
+        if who.client_pk and who.hospital_id:
             try:
-                await run_in_threadpool(_log_request, caller, request.method, path, response.status_code,
+                await run_in_threadpool(_log_request, who, request.method, path, response.status_code,
                                         duration_ms, address)
             except Exception:  # noqa: BLE001 -- the answer stands even if the log row cannot be written
-                logger.exception("integration_request_log_failed client=%s", caller.client_id)
+                logger.exception("integration_request_log_failed client=%s", who.client_id)
         return response
 
     @api.exception_handler(tokens.OAuthError)
@@ -153,8 +205,9 @@ def create_app() -> FastAPI:
     @api.exception_handler(HTTPException)
     async def http_error(_request: Request, exc: HTTPException):
         message = exc.detail if isinstance(exc.detail, str) else "Request failed."
-        return _outcome_response(exc.status_code, "not-found" if exc.status_code == 404 else "processing", message,
-                                 getattr(exc, "headers", None))
+        code = {404: "not-found", 409: "conflict", 400: "invalid", 403: "forbidden", 429: "throttled"}.get(
+            exc.status_code, "processing")
+        return _outcome_response(exc.status_code, code, message, getattr(exc, "headers", None))
 
     @api.exception_handler(RequestValidationError)
     async def validation_error(_request: Request, exc: RequestValidationError):
@@ -169,8 +222,14 @@ def create_app() -> FastAPI:
 
     # --- discovery -----------------------------------------------------------------------------
 
-    @api.get("/.well-known/jwks.json", tags=["auth"], summary="The keys that sign access tokens")
+    @api.get("/.well-known/jwks.json", tags=[D.AUTH], summary="The keys that sign access tokens",
+             response_model=None, openapi_extra={"security": []},
+             responses={200: {"model": M.Jwks, "description": "A JSON Web Key Set (ES256). Cache it for 5 "
+                                                             "minutes; a token's `kid` names its key."},
+                        503: {"description": "The integration API is not available.",
+                              "content": {FHIR_JSON: {"schema": D.OUTCOME_REF}}}})
     def jwks() -> JSONResponse:
+        """No access token needed."""
         try:
             keys = signing.jwks()
         except signing.SigningKeyMissing:
@@ -184,18 +243,51 @@ def create_app() -> FastAPI:
 
     # --- the token endpoint ----------------------------------------------------------------------
 
-    @api.post("/oauth/token", tags=["auth"], summary="Get an access token (OAuth 2.0 client credentials)",
+    token_errors = {status: {"model": M.OAuthErrorBody, "description": when} for status, when in (
+        (400, "`unsupported_grant_type`, `invalid_request`, `unauthorized_client` (hospital not approved or "
+              "suspended) or `invalid_scope`."),
+        (401, "`invalid_client`: unknown or disconnected client, wrong secret, bad assertion (signature, aud, exp, "
+              "reused jti), or an address not allowed."),
+        (413, "`invalid_request`: the token request is too large."),
+        (429, "`slow_down`: too many token requests; wait `Retry-After` seconds."))}
+
+    @api.post("/oauth/token", tags=[D.AUTH], summary="Get an access token (OAuth 2.0 client credentials)",
+              response_model=None,
+              responses={200: {"model": M.TokenResponse, "description": "An access token, valid 5 minutes."},
+                         **token_errors},
               openapi_extra={"security": [], "requestBody": {"required": True, "content": {
-                  "application/x-www-form-urlencoded": {"schema": {"type": "object", "properties": {
-                      "grant_type": {"type": "string", "enum": ["client_credentials"]},
-                      "scope": {"type": "string", "description": "Space-separated; default: every granted scope."},
-                      "client_id": {"type": "string"}, "client_secret": {"type": "string"},
-                      "client_assertion_type": {"type": "string", "enum": [tokens.ASSERTION_TYPE]},
-                      "client_assertion": {"type": "string"}}, "required": ["grant_type"]}}}}})
+                  "application/x-www-form-urlencoded": {
+                      "schema": {"type": "object", "properties": {
+                          "grant_type": {"type": "string", "enum": ["client_credentials"]},
+                          "scope": {"type": "string", "description": "Space-separated; default: every granted "
+                                                                     "scope. A scope not granted is refused."},
+                          "client_id": {"type": "string", "description": "client_secret_post, or with an "
+                                                                         "assertion."},
+                          "client_secret": {"type": "string", "description": "client_secret_post (prefer HTTP "
+                                                                             "Basic)."},
+                          "client_assertion_type": {"type": "string", "enum": [tokens.ASSERTION_TYPE]},
+                          "client_assertion": {"type": "string", "description": "private_key_jwt: a JWT signed "
+                                                                                "ES256 or RS256 by your key; iss "
+                                                                                "and sub your client ID, aud the "
+                                                                                "token URL, exp at most 5 minutes "
+                                                                                "ahead, a unique jti."}},
+                          "required": ["grant_type"]},
+                      "examples": {
+                          "basic": {"summary": "Client secret in HTTP Basic (send -u CLIENT_ID:SECRET)",
+                                    "value": {"grant_type": "client_credentials",
+                                              "scope": "records.labs.write bookings.read"}},
+                          "post": {"summary": "client_secret_post",
+                                   "value": {"grant_type": "client_credentials", "client_id": "endod_live_3f9a...",
+                                             "client_secret": "..."}},
+                          "private_key_jwt": {"summary": "private_key_jwt (SMART Backend Services)", "value": {
+                              "grant_type": "client_credentials", "scope": "records.labs.write",
+                              "client_assertion_type": tokens.ASSERTION_TYPE,
+                              "client_assertion": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im15LWtleS0xIn0..."}}}}}}})
     async def token(request: Request) -> JSONResponse:
         """Authenticate with the client secret (HTTP Basic, or client_id and
         client_secret in the form) or a client assertion (private_key_jwt).
-        Answers an access token valid 5 minutes."""
+        Answers an access token valid 5 minutes. Errors are OAuth errors
+        (`error`, `error_description`), not OperationOutcomes."""
         address = client_address(request)
         tokens.check_caller(address)
         if not (request.headers.get("content-type") or "").lower().startswith("application/x-www-form-urlencoded"):
@@ -213,84 +305,7 @@ def create_app() -> FastAPI:
                                          request.state.caller)
         return _no_store(JSONResponse(result))
 
-    # --- calls with an access token --------------------------------------------------------------
-
-    def caller(request: Request, authorization: Optional[str] = Header(default=None, include_in_schema=False)) \
-            -> Caller:
-        return tokens.authenticate(authorization, client_address(request), request.state.caller)
-
-    def booking_payload(b: Booking) -> Dict[str, Any]:
-        return {
-            "id": b.id, "endod_appointment_id": b.external_id, "status": b.status, "visit_mode": b.visit_mode,
-            "service": b.service, "scheduled_at": ensure_aware(b.scheduled_at).isoformat(),
-            "duration_minutes": b.duration_minutes,
-            # "online" (paid to Endod) or "at_hospital" (collect `price`, in birr, at the visit).
-            "payment": b.payment, "price": f"{Decimal(b.price) / 100:.2f}",
-            "patient": {"endod_id": b.patient_dedan_id, "name": b.patient_name, "phone": b.patient_phone},
-            "reason": b.reason, "created_at": ensure_aware(b.created_at).isoformat(),
-            "updated_at": ensure_aware(b.updated_at).isoformat(),
-        }
-
-    def sample_bookings() -> list:
-        """What a Test connection sees: made-up bookings (never a real patient's)."""
-        from datetime import datetime, time as clock, timedelta, timezone
-
-        base = datetime.combine(datetime.now(timezone.utc).date() + timedelta(days=1), clock(6, 0), timezone.utc)
-        rows = []
-        for n, (mode, status) in enumerate((("in_person", "confirmed"), ("video", "awaiting_doctor"),
-                                            ("in_person", "cancelled"))):
-            at = (base + timedelta(hours=n)).isoformat()
-            rows.append({
-                "id": f"sample{n + 1:0>26}", "endod_appointment_id": f"sample-appointment-{n + 1}",
-                "status": status, "visit_mode": mode, "service": "general_medicine", "scheduled_at": at,
-                "duration_minutes": 30, "payment": "at_hospital" if n == 0 else "online", "price": "150.00",
-                "patient": {"endod_id": f"DE00000{n + 1}", "name": f"Sample Patient {n + 1}", "phone": None},
-                "reason": "Cancelled by the patient." if status == "cancelled" else None,
-                "created_at": base.isoformat(), "updated_at": base.isoformat(), "sample": True,
-            })
-        return rows
-
-    @api.get("/bookings", tags=["bookings"], summary="Bookings patients made through Endod (bookings.read)")
-    def list_bookings(status: Optional[str] = Query(default=None, description=f"One of {list(BookingStatus.ALL)}"),
-                      scheduled_from: Optional[AwareDatetime] = Query(default=None, alias="from"),
-                      scheduled_to: Optional[AwareDatetime] = Query(default=None, alias="to"),
-                      updated_since: Optional[AwareDatetime] = None,
-                      limit: int = Query(default=100, ge=1, le=500),
-                      who: Caller = Depends(caller)) -> Dict[str, Any]:
-        """Newest scheduled time last. Notes the patient typed are never included."""
-        tokens.require(who, S.BOOKINGS_READ)
-        if status is not None and status not in BookingStatus.ALL:
-            raise HTTPException(status_code=400, detail=f"status must be one of {list(BookingStatus.ALL)}.")
-        if who.mode == IntegrationMode.TEST:
-            # Test connections never see real patients' bookings.
-            return {"items": [b for b in sample_bookings() if status is None or b["status"] == status][:limit]}
-        with session_scope(who.hospital_id) as session:
-            query = select(Booking).where(Booking.hospital_id == who.hospital_id)
-            if status:
-                query = query.where(Booking.status == status)
-            if scheduled_from:
-                query = query.where(Booking.scheduled_at >= scheduled_from)
-            if scheduled_to:
-                query = query.where(Booking.scheduled_at < scheduled_to)
-            if updated_since:
-                query = query.where(Booking.updated_at >= updated_since)
-            rows = session.scalars(query.order_by(Booking.scheduled_at, Booking.id).limit(limit))
-            return {"items": [booking_payload(b) for b in rows]}
-
-    @api.get("/bookings/{booking_id}", tags=["bookings"], summary="One booking (bookings.read)")
-    def read_booking(booking_id: str, who: Caller = Depends(caller)) -> Dict[str, Any]:
-        tokens.require(who, S.BOOKINGS_READ)
-        if who.mode == IntegrationMode.TEST:
-            found = next((b for b in sample_bookings() if b["id"] == booking_id), None)
-            if found is None:
-                raise HTTPException(status_code=404, detail="Booking not found.")
-            return found
-        with session_scope(who.hospital_id) as session:
-            booking = session.scalar(select(Booking).where(Booking.id == booking_id,
-                                                           Booking.hospital_id == who.hospital_id))
-            if booking is None:
-                raise HTTPException(status_code=404, detail="Booking not found.")
-            return booking_payload(booking)
+    # --- records (FHIR) ---------------------------------------------------------------------------
 
     async def _write(request: Request, who: Caller, resource_type: Optional[str],
                      idempotency_key: Optional[str]) -> JSONResponse:
@@ -311,42 +326,251 @@ def create_app() -> FastAPI:
             fhir.handle, who, bytes(body), resource_type, idempotency_key, request.method, request.url.path)
         return JSONResponse(status_code=status, content=content, headers=headers, media_type=FHIR_JSON)
 
-    write_doc = {"requestBody": {"required": True, "content": {FHIR_JSON: {"schema": {"type": "object"}}}}}
+    idempotency = Header(default=None, alias="Idempotency-Key",
+                         description="Your unique id for this request: the same key and request answer the first "
+                                     "answer again for 24 hours (`Idempotent-Replayed: true`); the same key with "
+                                     "another request is refused (422).")
+    write_errors = D.errors(400, 401, 403, 409, 413, 415, 422, 429, examples={
+        400: "Send a Bundle of type transaction or batch.", 409: "A resource cannot move to another patient or "
+                                                                 "kind of record; send it with a new id.",
+        422: "Unknown patient: SPH-404404. Patients are matched by the hospital number or the Endod ID and must "
+             "already be registered at the hospital."})
+    any_record = [{"endod": [s]} for s in RECORD_SCOPES]
 
-    @api.post("/fhir", tags=["fhir"], summary="Send a Bundle (transaction or batch)", openapi_extra=write_doc)
+    @api.post("/fhir", tags=[D.RECORDS], summary="Send a Bundle (transaction or batch)", response_model=None,
+              description="At most 100 entries and 10 MB. A **transaction** is all or nothing (if any entry fails, "
+                          "nothing is stored and the answer is an OperationOutcome naming each failed entry); a "
+                          "**batch** handles each entry on its own (a failed entry has an error status and an "
+                          "OperationOutcome in `response.outcome`). Each entry needs the scope of its resource "
+                          "(see each resource's endpoint).\n\n**Scope:** any `records.*.write` (per entry).",
+              responses={200: {"description": "A transaction-response or batch-response Bundle, one entry per "
+                                               "entry sent, in order.",
+                               "headers": D.IDEMPOTENT_REPLAY,
+                               "content": {FHIR_JSON: {"schema": {"$ref": "#/components/schemas/FhirBundleResponse"},
+                                                       "examples": F.BUNDLE_RESPONSE_EXAMPLES}}},
+                         **write_errors},
+              openapi_extra={"security": any_record, "requestBody": {"required": True, "content": {FHIR_JSON: {
+                  "schema": {"$ref": "#/components/schemas/FhirBundle"}, "examples": F.BUNDLE_EXAMPLES}}}})
     async def post_bundle(request: Request, who: Caller = Depends(caller),
-                          idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key")) \
-            -> JSONResponse:
-        """At most 100 entries and 10 MB. A transaction is all or nothing; a
-        batch handles each entry on its own. Answers a transaction-response or
-        batch-response Bundle, or an OperationOutcome."""
+                          idempotency_key: Optional[str] = idempotency) -> JSONResponse:
         return await _write(request, who, None, idempotency_key)
 
-    @api.post("/fhir/{resource_type}", tags=["fhir"], summary="Send one resource", openapi_extra=write_doc)
-    async def post_resource(resource_type: str, request: Request, who: Caller = Depends(caller),
-                            idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key")) \
-            -> JSONResponse:
-        """Observation, DiagnosticReport, MedicationRequest, Condition, Encounter
-        or DocumentReference. Answers 201 (or 200 for a correction or a repeat)
-        with Location, or an OperationOutcome."""
-        if resource_type not in fhir.SUPPORTED:
-            raise fhir.FhirError(400, "not-supported", f"{resource_type[:40]} is not accepted; send one of "
+    def _resource_route(kind: str) -> None:
+        scopes = F.SCOPE_OF[kind]
+        location = f"{kind}/5f0c1e2d3c4b5a69788796a5b4c3d2e1/_history/1"
+        responses = {
+            201: {"description": "Stored. `Location`: Type/<record id>/_history/<version> (read it back with "
+                                 "GET /fhir/Type/<id>).",
+                  "headers": {"Location": {"schema": {"type": "string"}, "example": location},
+                              "ETag": {"schema": {"type": "string"}, "example": "W/\"1\""}, **D.IDEMPOTENT_REPLAY},
+                  "content": {FHIR_JSON: {"schema": D.OUTCOME_REF, "examples": {
+                      "stored": {"summary": "Stored", "value": F.outcome_example(
+                          "informational", "Stored.", severity="information")},
+                      "test_mode": {"summary": "Test connection: nothing stored", "value": F.outcome_example(
+                          "informational", "Test mode: nothing was stored. This would store a record for the "
+                                           "patient it names, if that patient is registered at the hospital.",
+                          severity="information")}}}}},
+            200: {"description": "A correction (a new version) or a repeat (nothing changed), with `Location`.",
+                  "headers": {"Location": {"schema": {"type": "string"}}, "ETag": {"schema": {"type": "string"}}},
+                  "content": {FHIR_JSON: {"schema": D.OUTCOME_REF, "example": F.outcome_example(
+                      "informational", "Already stored; nothing changed.", severity="information")}}},
+            **write_errors}
+        needs_text = " or ".join(f"`{s}`" for s in scopes)
+
+        async def post_one(request: Request, who: Caller = Depends(caller),
+                           idempotency_key: Optional[str] = idempotency) -> JSONResponse:
+            return await _write(request, who, kind, idempotency_key)
+
+        post_one.__name__ = f"post_{kind}"
+        api.post(f"/fhir/{kind}", tags=[D.RECORDS], summary=f"Send a {kind}", response_model=None,
+                 description=f"{F.RESOURCES[kind]['description']}\n\nName the patient in `subject` by the "
+                             "hospital number or the Endod ID. Give an `id` (and `meta.versionId`) to correct the "
+                             f"record later by sending it again.\n\n**Scope:** {needs_text}.",
+                 responses=responses,
+                 openapi_extra={"security": [{"endod": [s]} for s in scopes], "requestBody": {
+                     "required": True, "content": {FHIR_JSON: {"schema": {"$ref": f"#/components/schemas/Fhir{kind}"},
+                                                               "examples": F.EXAMPLES[kind]}}}})(post_one)
+
+    for kind in fhir.SUPPORTED:
+        _resource_route(kind)
+
+    @api.post("/fhir/{resource_type}", include_in_schema=False)
+    async def post_other(resource_type: str, request: Request, who: Caller = Depends(caller)) -> JSONResponse:
+        """Every type not accepted (each accepted one has its own route above)."""
+        if resource_type == "Patient":
+            raise fhir.FhirError(400, "not-supported", "Patients are not created through FHIR: register them with "
+                                                       "POST /patients (Endod issues the hospital number).")
+        raise fhir.FhirError(400, "not-supported", f"{resource_type[:40]} is not accepted; send one of "
+                                                   f"{', '.join(fhir.SUPPORTED)}.")
+
+    @api.get("/fhir/{resource_type}/{resource_id}", tags=[D.RECORDS], response_model=None,
+             summary="Read back a resource you sent",
+             description="What Endod stored for a resource this hospital's systems sent: by the record id of its "
+                         "`Location` (Type/<id>/_history/n), or by your own resource id (this connection's). "
+                         "`status` is `entered-in-error` once it was retracted at the hospital; the "
+                         "published-to-endod extension says whether the patient's Endod app has this version. "
+                         "Records entered in the portal are not served here.\n\nTest connections store nothing: "
+                         "always 404.\n\n**Scope:** the write scope of the resource (e.g. `records.labs.write` "
+                         "for an Observation).",
+             responses={200: {"description": "The stored resource.", "content": {FHIR_JSON: {
+                 "schema": {"$ref": "#/components/schemas/FhirStoredResource"}, "example": F.READ_BACK_EXAMPLE}}},
+                 **D.errors(400, 401, 403, 404, 422, 429)},
+             openapi_extra={"security": any_record})
+    def read_resource(resource_type: str = PathParam(description="Observation, DiagnosticReport, "
+                                                                 "MedicationRequest, Condition, Encounter or "
+                                                                 "DocumentReference.",
+                                                     json_schema_extra={"enum": list(fhir.SUPPORTED)}),
+                      resource_id: str = PathParam(max_length=64), who: Caller = Depends(caller)) -> JSONResponse:
+        if resource_type not in READ_BACK:
+            raise fhir.FhirError(400, "not-supported", f"{resource_type[:40]} is not served; read one of "
                                                        f"{', '.join(fhir.SUPPORTED)}.")
-        return await _write(request, who, resource_type, idempotency_key)
+        possible = {_CATEGORY_SCOPE[c] for c in READ_BACK[resource_type]}
+        if not possible & set(who.scopes):
+            wanted = sorted(possible)[0] if len(possible) == 1 else " or ".join(sorted(possible))
+            raise tokens.TokenRejected(403, "insufficient_scope", f"This needs the scope {wanted}.",
+                                       {"WWW-Authenticate": f'Bearer error="insufficient_scope", scope="{wanted}"'})
+        if is_test(who):
+            raise fhir.FhirError(404, "not-found", "Test connections store nothing: there is nothing to read back.")
+        with session_scope(who.hospital_id) as session:
+            own = session.scalar(select(IntegrationResource).where(
+                IntegrationResource.client_pk == who.client_pk, IntegrationResource.resource_type == resource_type,
+                IntegrationResource.resource_id == resource_id))
+            record_id = own.record_id if own is not None else resource_id
+            record = session.scalar(select(ClinicalRecord).where(
+                ClinicalRecord.id == record_id, ClinicalRecord.hospital_id == who.hospital_id,
+                ClinicalRecord.source == "import", ClinicalRecord.category.in_(READ_BACK[resource_type])))
+            if record is None:
+                raise fhir.FhirError(404, "not-found", f"{resource_type}/{resource_id[:64]} not found.")
+            if _CATEGORY_SCOPE[record.category] not in who.scopes:
+                tokens.require(who, _CATEGORY_SCOPE[record.category])
+            if own is None:
+                own = session.scalar(select(IntegrationResource).where(
+                    IntegrationResource.client_pk == who.client_pk, IntegrationResource.record_id == record.id))
+            patient = session.get(Patient, record.patient_id)
+            hospital = session.get(Hospital, who.hospital_id)
+            body = stored_resource(session, resource_type, record, patient, hospital, own, who.client_id)
+            audit(session, who.hospital_id, None, "patient_records_viewed", "patient", patient.id,
+                  {"record_id": record.id, **via(who)})
+            return JSONResponse(body, media_type=FHIR_JSON,
+                                headers={"ETag": f'W/"{record.version}"'})
+
+    # --- the patient journey ------------------------------------------------------------------------
+
+    journey.add_routes(api)
+
+    # --- webhooks (documented only: Endod sends them) -------------------------------------------------
+
+    _webhook_docs(api)
 
     def openapi() -> Dict[str, Any]:
         if api.openapi_schema:
             return api.openapi_schema
-        schema = get_openapi(title=api.title, version=api.version, description=api.description, routes=api.routes,
-                             servers=[{"url": tokens.public_url()}])
-        schema.setdefault("components", {})["securitySchemes"] = {"endod": {
-            "type": "oauth2", "description": "Client credentials: a client secret or a signed client assertion "
-                                             "(private_key_jwt, SMART Backend Services).",
+        schema = get_openapi(title=api.title, version=api.version, openapi_version="3.1.0",
+                             summary="Hospitals keep their own system and use Endod as a layer.",
+                             description=_overview() + "\n\n---\n\n" + api.description, routes=api.routes,
+                             webhooks=api.webhooks.routes, tags=D.TAGS, servers=[{"url": tokens.public_url()}])
+        components = schema.setdefault("components", {})
+        schemas = components.setdefault("schemas", {})
+        schemas.update(F.components())
+        outcome = M.OperationOutcome.model_json_schema(ref_template="#/components/schemas/{model}")
+        schemas.update(outcome.pop("$defs", {}))
+        schemas["OperationOutcome"] = outcome
+        # FastAPI's validation-error schemas are never answered (errors are OperationOutcomes).
+        for name in ("HTTPValidationError", "ValidationError"):
+            schemas.pop(name, None)
+        _replace_validation_errors(schema)
+        components["securitySchemes"] = {"endod": {
+            "type": "oauth2",
+            "description": "OAuth 2.0 client credentials. Authenticate at the token URL with the client secret "
+                           "(HTTP Basic `client_secret_basic`, or `client_secret_post`) or with a signed client "
+                           "assertion (`private_key_jwt`, SMART Backend Services: a JWT signed ES256 or RS256 by "
+                           "your key, whose public JWKS you paste in the portal; iss and sub your client ID, aud "
+                           "the token URL, exp at most 5 minutes ahead, a unique jti). Access tokens are JWTs "
+                           "signed ES256 (keys at /.well-known/jwks.json), valid 5 minutes. Each operation names "
+                           "the scope it needs.",
             "flows": {"clientCredentials": {"tokenUrl": tokens.token_url(), "scopes": {
-                name: label for name, (label, _d) in S.SCOPES.items()}}}}}
+                name: f"{label}: {description}" for name, (label, description) in S.SCOPES.items()}}}}}
         schema["security"] = [{"endod": []}]
+        schema["externalDocs"] = {"description": "The integration guide (the same text as this description)",
+                                  "url": GUIDE_URL}
         api.openapi_schema = schema
         return schema
 
     api.openapi = openapi
     return api
+
+
+def _replace_validation_errors(schema: Dict[str, Any]) -> None:
+    """Every 422 is an OperationOutcome (FastAPI documents its own validation error shape)."""
+    for item in schema.get("paths", {}).values():
+        for operation in item.values():
+            response = operation.get("responses", {}).get("422")
+            if response is None:
+                continue
+            content = response.get("content", {})
+            if "application/json" in content and "HTTPValidationError" in str(content["application/json"]):
+                operation["responses"]["422"] = D.errors(422)[422]
+
+
+def _overview() -> str:
+    lines = [
+        "**Hospitals keep their own EMR and use Endod as a layer.** Everything the Endod hospital portal does in "
+        "the patient journey can be done through this API:",
+        "",
+        "1. **Patients**: register a patient (Endod issues the hospital number, MRN), read them, link them to "
+        "their Endod account (or unlink): `POST /patients`, `GET /patients/{mrn}`, `POST|DELETE "
+        "/patients/{mrn}/link`.",
+        "2. **Bookings** patients make in the Endod app: read, approve or decline video visits, cancel, complete: "
+        "`/bookings`.",
+        "3. **Queue**: check in, call the next patient, done, skip, cancel: `/queue`.",
+        "4. **Records**: send lab results, imaging reports, prescriptions, diagnoses, visit notes and documents as "
+        "FHIR R4 (`POST /fhir/{Type}` or a Bundle at `POST /fhir`), and read them back.",
+        "5. **Follow-ups**: set and cancel follow-up dates (the patient gets an SMS and a reminder).",
+        "6. **Prescriptions**: see what pharmacies gave (`GET /prescriptions/{id}`).",
+        "7. **Webhooks**: Endod tells your system when bookings, patient links and dispensing change (see "
+        "`webhooks` below), signed with `Endod-Signature`.",
+        "",
+        "Get an access token at `/oauth/token` (client credentials) with the scopes of the operations you call; "
+        "each operation lists its scope. Errors are FHIR OperationOutcomes. Test connections (`endod_test_...`) "
+        "check everything and answer made-up data, storing nothing.",
+        "",
+        f"The full guide follows; it is also at {GUIDE_URL}.",
+    ]
+    return "\n".join(lines)
+
+
+SIGNATURE_DOC = (
+    "Every event is POSTed as JSON with the header `Endod-Signature: t=<unix time>,v1=<hex>`, where `<hex>` is "
+    "the HMAC-SHA256 of `\"<t>.<raw body>\"` under your webhook secret (`whsec_...`, shown once in the portal). "
+    "Compare in constant time, against the raw body, and refuse events older than 5 minutes. Also sent: "
+    "`Endod-Event-Id`, `Endod-Event-Type`, `User-Agent: Endod-Webhooks/1`.\n\n"
+    "Answer any **2xx** within 10 seconds. Anything else, a timeout or a redirect (never followed) is retried "
+    "after 1 min, 5 min, 15 min, 30 min, 1 h, 2 h, 4 h, then every 6 h, for up to **24 hours**; then the event "
+    "is dropped. Events can arrive more than once and out of order: skip repeats by `id`. Live connections with "
+    "the `webhooks` scope and a webhook URL get every event; Test connections get only `endpoint.test`.")
+
+
+def _webhook_docs(api: FastAPI) -> None:
+    """Every event, as an OpenAPI 3.1 webhook: its payload, an example, the signature."""
+    for event, (model, when, example) in M.WEBHOOK_EVENTS.items():
+        if event != webhooks.TEST_EVENT:
+            assert event in webhooks.EVENTS, event
+
+        def receiver(body: model, endod_signature: str = Header(  # type: ignore[valid-type]
+                alias="Endod-Signature", description="t=<unix time>,v1=<hex HMAC-SHA256 of \"<t>.<raw body>\">",
+                examples=["t=1759298400,v1=5257a869e7ecebeda32affa62cdca3fa51cad7e77a0e56ff536d0ce8e108d8bd"]),
+                endod_event_id: str = Header(alias="Endod-Event-Id"),
+                endod_event_type: str = Header(alias="Endod-Event-Type")) -> None:
+            """Documented only."""
+
+        # Set here: the annotation names the loop's model (annotations are strings in this module).
+        receiver.__annotations__["body"] = model
+        receiver.__name__ = f"webhook_{event.replace('.', '_')}"
+        api.webhooks.post(
+            event, tags=[D.WEBHOOKS], summary=f"{event}: {when}", description=f"{when}\n\n{SIGNATURE_DOC}",
+            response_model=None, status_code=204,
+            responses={204: {"description": "Any 2xx: received."},
+                       400: {"description": "Anything else (or a timeout) is retried with backoff."}},
+            openapi_extra={"requestBody": {"required": True, "content": {"application/json": {
+                "schema": {"$ref": f"#/components/schemas/{model.__name__}"},
+                "example": copy.deepcopy(example)}}}})(receiver)

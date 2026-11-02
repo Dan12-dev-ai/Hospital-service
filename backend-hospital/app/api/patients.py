@@ -308,44 +308,58 @@ def patient_stats(staff: Staff = Depends(current_staff)) -> Dict[str, Any]:
         }
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
-def register_patient(body: PatientCreate, staff: Staff = Depends(require_roles(*REGISTRARS))) -> Dict[str, Any]:
+def register(session, hospital_id: str, body: PatientCreate, created_by: Optional[str]) -> Patient:
+    """Register a patient (with a new hospital number), flushed; the caller audits.
+    Shared by the portal and the integration API (POST /patients)."""
     _one_of("sex", body.sex, Sex.ALL)
     _one_of("payer", body.payer, Payer.ALL)
+    hospital = session.get(Hospital, hospital_id)
+    today = _today(hospital)
+    _check_birth(body.date_of_birth, today)
+    # Taking the number locks the hospital row first, so two desks
+    # registering the same person cannot both pass the duplicate check.
+    mrn = _next_mrn(session, hospital_id)
+    if body.phone and not body.confirm_duplicate:
+        existing = session.scalar(select(Patient).where(
+            Patient.hospital_id == hospital_id, Patient.phone == body.phone,
+            func.lower(Patient.full_name) == body.full_name.lower()))
+        if existing is not None:
+            raise HTTPException(status_code=409, detail=(
+                f"{existing.full_name} with this phone number is already registered as {existing.mrn}. "
+                "Open that record, or register again with confirm_duplicate set."))
+    born, estimated = body.date_of_birth, False
+    if born is None and body.age_years is not None:
+        born, estimated = _estimated_birth(body.age_years, today), True
+    patient = Patient(
+        hospital_id=hospital_id, mrn=mrn,
+        full_name=body.full_name, full_name_am=body.full_name_am, sex=body.sex, date_of_birth=born,
+        dob_estimated=estimated, phone=body.phone, address=body.address,
+        emergency_contact_name=body.emergency_contact_name,
+        emergency_contact_phone=body.emergency_contact_phone, payer=body.payer,
+        payer_number=body.payer_number, claimed_dedan_id=body.claimed_dedan_id,
+        status=PatientStatus.OPD, status_changed_at=utcnow(),
+        created_by=created_by,
+    )
+    session.add(patient)
+    session.flush()
+    return patient
+
+
+def check_registration(hospital: Hospital, body: PatientCreate) -> None:
+    """What :func:`register` checks without touching the database (the integration API's test mode)."""
+    _one_of("sex", body.sex, Sex.ALL)
+    _one_of("payer", body.payer, Payer.ALL)
+    _check_birth(body.date_of_birth, _today(hospital))
+
+
+@router.post("", status_code=status.HTTP_201_CREATED)
+def register_patient(body: PatientCreate, staff: Staff = Depends(require_roles(*REGISTRARS))) -> Dict[str, Any]:
     try:
         with session_scope(staff.hospital_id) as session:
-            hospital = session.get(Hospital, staff.hospital_id)
-            today = _today(hospital)
-            _check_birth(body.date_of_birth, today)
-            # Taking the number locks the hospital row first, so two desks
-            # registering the same person cannot both pass the duplicate check.
-            mrn = _next_mrn(session, staff.hospital_id)
-            if body.phone and not body.confirm_duplicate:
-                existing = session.scalar(select(Patient).where(
-                    Patient.hospital_id == staff.hospital_id, Patient.phone == body.phone,
-                    func.lower(Patient.full_name) == body.full_name.lower()))
-                if existing is not None:
-                    raise HTTPException(status_code=409, detail=(
-                        f"{existing.full_name} with this phone number is already registered as {existing.mrn}. "
-                        "Open that record, or register again with confirm_duplicate set."))
-            born, estimated = body.date_of_birth, False
-            if born is None and body.age_years is not None:
-                born, estimated = _estimated_birth(body.age_years, today), True
-            patient = Patient(
-                hospital_id=staff.hospital_id, mrn=mrn,
-                full_name=body.full_name, full_name_am=body.full_name_am, sex=body.sex, date_of_birth=born,
-                dob_estimated=estimated, phone=body.phone, address=body.address,
-                emergency_contact_name=body.emergency_contact_name,
-                emergency_contact_phone=body.emergency_contact_phone, payer=body.payer,
-                payer_number=body.payer_number, claimed_dedan_id=body.claimed_dedan_id,
-                status=PatientStatus.OPD, status_changed_at=utcnow(),
-                created_by=staff.id,
-            )
-            session.add(patient)
-            session.flush()
+            patient = register(session, staff.hospital_id, body, staff.id)
             audit(session, staff.hospital_id, staff.id, "patient_registered", "patient", patient.id,
                   {"mrn": patient.mrn})
-            return _payloads(session, [patient], today, staff.role)[0]
+            return _payloads(session, [patient], _today(session.get(Hospital, staff.hospital_id)), staff.role)[0]
     except IntegrityError as exc:
         raise _conflict(exc) from exc
 

@@ -70,21 +70,42 @@ def _names(session, bookings: List[Booking]) -> Dict[str, str]:
     return {u.id: u.full_name for u in session.scalars(select(StaffUser).where(StaffUser.id.in_(ids)))}
 
 
-def _booking_for_update(session, staff: Staff, booking_id: str) -> Booking:
-    booking = session.scalar(select(Booking).where(Booking.id == booking_id, Booking.hospital_id == staff.hospital_id)
+def booking_for_update(session, hospital_id: str, booking_id: str) -> Booking:
+    booking = session.scalar(select(Booking).where(Booking.id == booking_id, Booking.hospital_id == hospital_id)
                              .with_for_update())
     if booking is None:
         raise HTTPException(status_code=404, detail="Booking not found.")
     return booking
 
 
+def decide(session, hospital_id: str, booking_id: str, action, actor_id: Optional[str],
+           audit_extra: Optional[Dict[str, Any]] = None) -> Booking:
+    """Lock the booking, apply ``action(session, booking)`` (app/bookings.py:
+    the platform events and refunds) and audit it. Shared by the portal and
+    the integration API. Raises BookingError."""
+    booking = booking_for_update(session, hospital_id, booking_id)
+    action(session, booking)
+    audit(session, hospital_id, actor_id, f"booking_{booking.status}", "booking", booking.id, audit_extra)
+    session.flush()
+    return booking
+
+
+def approve_action(hospital_id: str, doctor_id: str, decided_by: Optional[str]):
+    """The approval of a video visit by ``doctor_id`` (an active doctor of the hospital)."""
+    def action(session, booking):
+        doctor = session.scalar(select(StaffUser).where(
+            StaffUser.id == doctor_id, StaffUser.hospital_id == hospital_id,
+            StaffUser.role == Role.DOCTOR, StaffUser.active.is_(True)))
+        if doctor is None:
+            raise BookingError("Unknown doctor.")
+        approve_video(session, booking, doctor, decided_by)
+    return action
+
+
 def _decide(staff: Staff, booking_id: str, action, *args) -> Dict[str, Any]:
     try:
         with session_scope(staff.hospital_id) as session:
-            booking = _booking_for_update(session, staff, booking_id)
-            action(session, booking, *args)
-            audit(session, staff.hospital_id, staff.id, f"booking_{booking.status}", "booking", booking.id)
-            session.flush()
+            booking = decide(session, staff.hospital_id, booking_id, lambda s, b: action(s, b, *args), staff.id)
             return _payload(booking, _names(session, [booking]))
     except BookingError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
@@ -141,15 +162,7 @@ def approve(booking_id: str, body: Approval,
     if not doctor_id:
         raise HTTPException(status_code=400, detail="Choose the doctor for this visit.")
 
-    def action(session, booking):
-        doctor = session.scalar(select(StaffUser).where(
-            StaffUser.id == doctor_id, StaffUser.hospital_id == staff.hospital_id,
-            StaffUser.role == Role.DOCTOR, StaffUser.active.is_(True)))
-        if doctor is None:
-            raise BookingError("Unknown doctor.")
-        approve_video(session, booking, doctor, staff.id)
-
-    return _decide(staff, booking_id, action)
+    return _decide(staff, booking_id, approve_action(staff.hospital_id, doctor_id, staff.id))
 
 
 @router.post("/{booking_id}/reject")

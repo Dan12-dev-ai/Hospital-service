@@ -898,7 +898,7 @@ class TestDocs:
     def test_openapi_jwks_and_guide(self, client):
         schema = client.get(f"{API}/openapi.json").json()
         assert schema["info"]["title"] == "Endod Hospital Integration API"
-        assert {"/oauth/token", "/fhir", "/fhir/{resource_type}", "/bookings"} <= set(schema["paths"])
+        assert {"/oauth/token", "/fhir", "/fhir/Observation", "/bookings"} <= set(schema["paths"])
         flows = schema["components"]["securitySchemes"]["endod"]["flows"]["clientCredentials"]
         assert flows["tokenUrl"] == tokens.token_url() and "records.labs.write" in flows["scopes"]
         assert "openapi.json" in client.get(f"{API}/docs").text

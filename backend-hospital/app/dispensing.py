@@ -2,7 +2,9 @@
 
 When a pharmacy gives medicine from one of this hospital's prescriptions,
 Endod sends ``prescription.dispensed``. It is stored once per
-``dispense_id`` and shown on the prescription record in the portal.
+``dispense_id``, shown on the prescription record in the portal, readable
+through the integration API (``GET /prescriptions/{id}``) and announced to
+the hospital's systems (webhook ``prescription.dispensed``: ids and statuses).
 """
 
 from __future__ import annotations
@@ -17,8 +19,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import ensure_aware
+from app.integrations import webhooks
 from app.eventbus import PermanentEventError, RetryLater
-from app.models import ClinicalRecord, Hospital, PrescriptionDispense, RecordCategory
+from app.models import ClinicalRecord, Hospital, Patient, PrescriptionDispense, RecordCategory
 from app.records import iso
 from app.validation import normalize_dedan_id
 
@@ -105,12 +108,17 @@ def on_dispensed(session: Session, payload: Dict[str, Any]) -> None:
     # unlinked): a dispense made there just before the retraction still counts.
     if dedan_id not in {record.published_dedan_id, record.previous_dedan_id} - {None}:
         raise PermanentEventError("the record was not sent to this Endod account")
-    session.add(PrescriptionDispense(
+    dispense = PrescriptionDispense(
         id=event.dispense_id, hospital_id=event.hospital_id, record_id=record.id, dedan_id=dedan_id,
         pharmacy_name=event.pharmacy_name, dispensed_at=event.at.astimezone(timezone.utc), status=event.status,
         items=json.dumps([{"item_index": i.item_index, "amount": _whole(i.amount), "complete": i.complete,
                            "given_total": _whole(i.given_total), "status": i.status} for i in event.items]),
-    ))
+    )
+    session.add(dispense)
+    session.flush()
+    patient = session.get(Patient, record.patient_id)
+    status = dispensing_payload(record, dispenses_of(session, [record.id]).get(record.id, []))["status"]
+    webhooks.prescription_event(session, record, patient, dispense, status)
 
 
 HANDLERS = {
