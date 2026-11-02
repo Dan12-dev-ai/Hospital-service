@@ -359,6 +359,14 @@ class TestFollowUps:
         make_patient(other, mrn="BET-000001")
         assert client.post(f"{API}/patients/BET-000001/follow-ups", headers=auth,
                            json={"date": soon}).status_code == 404
+        someone_elses = book(hospital)  # DE123456's booking
+        resp = client.post(f"{API}/patients/SPH-000001/follow-ups", headers=auth,
+                           json={"date": soon, "booking_id": someone_elses})
+        assert resp.status_code == 409 and count(Visit) == 0
+        with platform_session() as session:
+            session.scalar(select(Patient).where(Patient.mrn == "SPH-000001")).claimed_dedan_id = "DE123456"
+        assert client.post(f"{API}/patients/SPH-000001/follow-ups", headers=auth,
+                           json={"date": soon, "booking_id": someone_elses}).json()["booking_id"] == someone_elses
         with platform_session() as session:
             theirs = Visit(hospital_id=other, patient_id=session.scalar(select(Patient.id).where(
                 Patient.hospital_id == other)), follow_up_on=date.today() + timedelta(days=3))
@@ -435,6 +443,14 @@ class TestPrescriptions:
                                  "patient": {"patient_id": event["data"]["patient"]["patient_id"],
                                              "mrn": "SPH-000001", "endod_id": "DE482731"}}
         assert "Amoxicillin" not in json.dumps(event) and "Kenema" not in json.dumps(event)
+        with platform_session() as session:  # later, another pharmacy gives nothing more
+            dispensing.on_dispensed(session, {
+                "record_id": record_id, "hospital_id": hospital, "dedan_id": "DE482731", "dispense_id": "dsp-2",
+                "at": "2026-10-24T09:00:00+03:00", "pharmacy_name": "Other Pharmacy", "status": "open",
+                "items": [{"item_index": 0, "amount": 0, "complete": False, "status": "not_given"}]})
+        item = client.get(f"{API}/prescriptions/{record_id}", headers=auth).json()["items"][0]
+        assert (item["status"], item["given_total"], item["remaining"], item["last_pharmacy"]) == (
+            "partly_given", 14, 7, "Kenema Pharmacy")
 
     def test_scopes_other_hospitals_and_test_mode(self, client, admin, auth, hospital, test_auth):
         make_patient(hospital, mrn="SPH-000001", dedan_id="DE482731")
@@ -458,6 +474,8 @@ class TestReadBack:
         assert body["subject"]["identifier"] == {"system": MRN_SYSTEM, "value": "SPH-000001"}
         assert body["identifier"][0]["value"] == "hb-1" and body["meta"]["versionId"] == "1"
         assert client.get(f"{API}/fhir/Observation/hb-1", headers=auth).json()["id"] == record_id
+        # Served only as the type it was sent as (a lab Observation is no DiagnosticReport).
+        assert client.get(f"{API}/fhir/DiagnosticReport/{record_id}", headers=auth).status_code == 404
         assert client.get(f"{API}/fhir/Condition/{record_id}", headers=auth).status_code == 403  # no such scope
         assert client.get(f"{API}/fhir/MedicationRequest/{record_id}", headers=auth).status_code == 404
         assert client.get(f"{API}/fhir/Patient/{record_id}", headers=auth).status_code == 400
@@ -506,11 +524,21 @@ class TestQueue:
 
     def test_by_booking_links_the_patient(self, client, auth, hospital, doctor, monkeypatch):
         sent = sent_events(monkeypatch)
-        make_patient(hospital, mrn="SPH-000001")
-        booking = book(hospital)
-        resp = client.post(f"{API}/queue/check-in", headers=auth, json={
+        someone_else = make_patient(hospital, mrn="SPH-000001", name="Someone Else")
+        booking = book(hospital)  # Almaz Tefera, DE123456, +251911234567
+        wrong = client.post(f"{API}/queue/check-in", headers=auth, json={
             "booking_id": booking, "patient_mrn": "SPH-000001", "doctor_id": doctor})
+        assert wrong.status_code == 409 and "does not match the booking" in wrong.json()["issue"][0]["diagnostics"]
+        with platform_session() as session:
+            assert session.get(Patient, someone_else).dedan_id is None and session.scalar(
+                select(QueueEntry.id)) is None
+        almaz = make_patient(hospital, mrn="SPH-000002")
+        with platform_session() as session:
+            session.get(Patient, almaz).phone = "+251911234567"  # the booking's phone number
+        resp = client.post(f"{API}/queue/check-in", headers=auth, json={
+            "booking_id": booking, "patient_mrn": "SPH-000002", "doctor_id": doctor})
         assert resp.status_code == 201 and resp.json()["entries"][0]["endod_id"] == "DE123456"
+        assert resp.json()["entries"][0]["mrn"] == "SPH-000002"
         again = client.post(f"{API}/queue/check-in", headers=auth, json={"booking_id": booking, "doctor_id": doctor})
         assert again.status_code == 409
         webhooks.deliver_due()
@@ -535,8 +563,19 @@ class TestQueue:
                                                                               "patient_mrn": "SPH-404404"})
         assert resp.status_code == 201 and resp.json()["sample"]
         assert client.post(f"{API}/queue/{doctor}/call-next", headers=test_auth).json()["sample"]
-        assert client.post(f"{API}/queue/entries/sample-entry-1/done", headers=test_auth).status_code == 200
+        done = client.post(f"{API}/queue/entries/{resp.json()['entry_id']}/done", headers=test_auth)
+        assert done.status_code == 200 and done.json()["doctor"]["id"] == doctor  # the same doctor's queue
+        assert done.json()["entries"][0]["status"] == "done"
         assert client.post(f"{API}/queue/entries/nope/done", headers=test_auth).status_code == 404
+        assert client.post(f"{API}/queue/entries/sample-entry-{their_doctor}/done",
+                           headers=test_auth).status_code == 404
+        sample = next(b for b in client.get(f"{API}/bookings", headers=test_auth).json()["items"]
+                      if b["status"] == "confirmed" and b["visit_mode"] == "in_person")
+        by_booking = client.post(f"{API}/queue/check-in", headers=test_auth, json={"booking_id": sample["id"]})
+        assert by_booking.status_code == 400  # no doctor named, and the booking has none: as in live mode
+        named = client.post(f"{API}/queue/check-in", headers=test_auth,
+                            json={"booking_id": sample["id"], "doctor_id": doctor})
+        assert named.status_code == 201
         assert client.get(f"{API}/queue", headers=test_auth).json()["queues"][0]["sample"]
         assert writes() == before
 

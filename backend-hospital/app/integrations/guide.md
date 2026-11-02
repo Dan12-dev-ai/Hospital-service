@@ -290,8 +290,9 @@ by the record id, or by your own resource id (`GET /fhir/Observation/hb-000123`)
 The answer is the record Endod made from your resource (not your resource itself):
 its id and version (`meta.versionId`), the patient, the title and date, `status`
 `entered-in-error` once it was retracted at the hospital, and the extension
-`published-to-endod` (whether the patient's Endod app has this version). Records
-entered in the portal are not served here.
+`published-to-endod` (whether the patient's Endod app has this version). A record is
+served only as the type it was sent as; records entered in the portal or imported
+from a file are not served here.
 
 ### Corrections and retries
 
@@ -324,7 +325,7 @@ patients' data:
   `POST /patients` answers the hospital number `TEST-000001`, `GET /patients/{mrn}`
   the same made-up patient whatever the number, `GET /prescriptions/sample-prescription-1`
   a made-up prescription, and the queue the hospital's doctors each with a made-up
-  patient (`sample-entry-1`);
+  patient (`sample-entry-<doctor id>`);
 - `GET /fhir/{Type}/{id}` is always "not found" (nothing was stored);
 - its webhook receives only `endpoint.test` ("Send test event"), never a real event.
 
@@ -431,7 +432,9 @@ curl -s https://api.endod-health.com/hospital/v1/queue/check-in \
 Check in by a confirmed in-person booking (`booking_id`: this links the hospital
 patient to Endod without asking again), a registered patient (`patient_mrn`), or
 a walk-in (`"walk_in": {"name": "...", "phone": "+2519..."}`); `doctor_id` defaults
-to the booking's doctor. The answer is the doctor's queue with the new `ticket`.
+to the booking's doctor. A patient named together with a booking must already be
+the booking's patient (the same confirmed or claimed Endod ID, or the same phone
+number); otherwise `409`: check in by the booking alone, or link the patient first. The answer is the doctor's queue with the new `ticket`.
 `POST /queue/{doctor_id}/call-next` calls the next patient (yesterday's leftovers
 first; `409` while someone is still called), `POST /queue/entries/{id}/done`,
 `/skip` and `/cancel` close an entry, and `GET /queue?day=&doctor_id=` reads the

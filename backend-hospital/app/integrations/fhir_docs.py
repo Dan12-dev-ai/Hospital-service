@@ -362,7 +362,12 @@ READ_BACK_SCHEMA = {
                                                   "lastUpdated": {"type": "string", "format": "date-time"}}},
         "identifier": {"type": "array", "items": _ref("FhirIdentifier"),
                        "description": "Your id for it, when you sent one."},
-        "status": {"type": "string"}, "subject": _ref("FhirSubject"),
+        "status": {"type": "string", "description": "`entered-in-error` once retracted at the hospital; else "
+                                                   "final, active, finished or current (not on a Condition)."},
+        "verificationStatus": {**_ref("FhirCodeableConcept"),
+                               "description": "Condition only (it has no `status`): `confirmed`, or "
+                                              "`entered-in-error` once retracted at the hospital."},
+        "subject": _ref("FhirSubject"),
         "text": {"type": "object", "properties": {"status": {"type": "string"}, "div": {"type": "string"}}},
         "extension": {"type": "array", "items": {"type": "object"},
                       "description": "published-to-endod (valueBoolean): the patient's Endod app has this version."},

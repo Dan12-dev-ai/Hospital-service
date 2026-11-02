@@ -22,7 +22,7 @@ from app.db import session_scope
 from app.models import (
     Booking, BookingStatus, Hospital, Patient, QueueDay, QueueEntry, QueueStatus, Role, StaffUser, VisitMode,
 )
-from app.validation import Name, OptionalPhone, OptionalText, normalize_dedan_id
+from app.validation import Name, OptionalPhone, OptionalText, normalize_dedan_id, phone_digits
 
 router = APIRouter(prefix="/queue", tags=["queue"])
 
@@ -122,11 +122,25 @@ def list_queues(day: Optional[date] = Query(default=None), doctor_id: Optional[s
         return board(session, staff.hospital_id, day, doctor_id)
 
 
+def same_person(patient: Patient, booking: Booking, dedan_id: Optional[str]) -> bool:
+    """The patient record is the booking's patient by something Endod or the
+    hospital already knows: the confirmed or claimed Endod ID, or the phone number."""
+    if dedan_id and dedan_id in (patient.dedan_id, patient.claimed_dedan_id):
+        return True
+    ours, theirs = phone_digits(patient.phone or ""), phone_digits(booking.patient_phone or "")
+    return bool(ours and theirs and ours[-9:] == theirs[-9:])
+
+
 def check_in_patient(session, hospital_id: str, body: CheckIn, actor_id: Optional[str],
-                     audit_extra: Optional[Dict[str, Any]] = None) -> Tuple[StaffUser, QueueDay, QueueEntry]:
+                     audit_extra: Optional[Dict[str, Any]] = None,
+                     verify_patient: bool = False) -> Tuple[StaffUser, QueueDay, QueueEntry]:
     """Check a patient in to a doctor's queue for today (by booking, patient or
     walk-in), announce it and audit it. Shared by the portal and the
-    integration API. IntegrityError: the booking is already checked in."""
+    integration API. IntegrityError: the booking is already checked in.
+
+    ``verify_patient`` (the integration API, where no one at the desk sees the
+    person): a patient named together with a booking must already be the
+    booking's patient (:func:`same_person`); otherwise 409, never a link."""
     today = records.hospital_today(session, hospital_id)
     booking: Optional[Booking] = None
     patient: Optional[Patient] = None
@@ -144,6 +158,10 @@ def check_in_patient(session, hospital_id: str, body: CheckIn, actor_id: Optiona
             raise HTTPException(status_code=404, detail="Patient not found.")
     if booking is not None:
         dedan_id = _booking_dedan(booking)
+        if verify_patient and body.patient_id and not same_person(patient, booking, dedan_id):
+            raise HTTPException(status_code=409, detail=(
+                "This patient does not match the booking (Endod ID or phone number): check in by the booking "
+                "alone, or link the patient first."))
         if patient is None and dedan_id:
             patient = linking.holder_of(session, hospital_id, dedan_id)
         if patient is not None and dedan_id:

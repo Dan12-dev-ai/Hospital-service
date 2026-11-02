@@ -53,7 +53,6 @@ IDEMPOTENCY = Header(default=None, alias="Idempotency-Key", max_length=255,
                                  "answered again for 24 hours (`Idempotent-Replayed: true`); the same key with "
                                  "another request is refused (422).")
 MRN = Path(max_length=40, description="The hospital number Endod issued, e.g. SPH-000124.")
-SAMPLE_DOCTOR = {"id": "sample-doctor", "full_name": "Dr. Sample Doctor"}
 
 
 def _iso(value: Optional[datetime]) -> Optional[str]:
@@ -250,18 +249,21 @@ def prescription_out(record: ClinicalRecord, patient: Patient, dispenses) -> Dic
     for index, item in enumerate(written):
         item = item if isinstance(item, dict) else {}
         total = dispensing.quantity_total(item.get("quantity"))
-        status, given, last_at, pharmacy = "not_given", 0, None, None
+        given, done, last_at, pharmacy = 0, False, None, None
         for d in shown["dispenses"]:
             for line in d["items"]:
                 if line["item_index"] != index:
                     continue
-                status = line["status"]
+                # given_total is what pharmacies gave so far; it never goes down.
                 if _number(line.get("given_total")) is not None:
-                    given = line["given_total"]
+                    given = max(given, line["given_total"])
                 elif _number(line.get("amount")) is not None:
                     given = given + line["amount"]
+                done = done or line["status"] == "given" or bool(line.get("complete"))
                 if line.get("amount"):
                     last_at, pharmacy = d["at"], d["pharmacy_name"]
+        # From everything given, never from the last line alone (a later "nothing given" keeps what was).
+        status = "given" if done else ("partly_given" if given > 0 else "not_given")
         remaining = None
         if status == "given":
             remaining = 0
@@ -302,13 +304,15 @@ def queue_out(session, payload: Dict[str, Any]) -> Dict[str, Any]:
             "called": entry(payload["called"])}
 
 
-SAMPLE_ENTRY_ID = "sample-entry-1"
+SAMPLE_ENTRY = "sample-entry-"
 
 
 def _sample_queue(doctor: Dict[str, str], status: str = "waiting", name: str = "Sample Patient",
                   phone: Optional[str] = None) -> Dict[str, Any]:
+    """A made-up queue of one patient; the entry's id names the doctor
+    (``sample-entry-<doctor id>``), so finishing it answers the same queue."""
     now = datetime.now(timezone.utc).isoformat()
-    item = {"id": SAMPLE_ENTRY_ID, "ticket": 1, "status": status, "ahead": 0, "patient_name": name, "phone": phone,
+    item = {"id": f"{SAMPLE_ENTRY}{doctor['id']}", "ticket": 1, "status": status, "ahead": 0, "patient_name": name, "phone": phone,
             "endod_id": None, "mrn": None, "booking_id": None, "checked_in_at": now,
             "called_at": now if status != "waiting" else None,
             "finished_at": now if status in ("done", "skipped", "cancelled") else None}
@@ -542,8 +546,10 @@ def add_routes(api: FastAPI) -> None:  # noqa: C901 -- one place lists every jou
         [S.FOLLOWUPS], "Set a follow-up",
         "A follow-up date for the patient, as a doctor sets one in the portal (after today, within two years). A "
         "linked patient gets an SMS now and a reminder before the day (`visit.follow_up` to Endod); a patient "
-        "linked later gets it then.\n\nTest connections: checked, a made-up answer; nothing is stored or sent.",
-        D.ok(201, M.FollowUpOut, "Set.", M.FOLLOW_UP_EXAMPLE, D.IDEMPOTENT_REPLAY), [400, 404],
+        "linked later gets it then. A `booking_id` must be the patient's booking (the same confirmed or "
+        "claimed Endod ID, or phone number), else 409.\n\nTest connections: checked, a made-up answer; nothing "
+        "is stored or sent.",
+        D.ok(201, M.FollowUpOut, "Set.", M.FOLLOW_UP_EXAMPLE, D.IDEMPOTENT_REPLAY), [400, 404, 409],
         {400: "The follow-up must be after today and within two years."}, [D.FOLLOW_UPS]))
     async def create_follow_up(request: Request, mrn: str = MRN,
                                body: M.FollowUpCreate = Body(openapi_examples=_example(
@@ -559,6 +565,14 @@ def add_routes(api: FastAPI) -> None:  # noqa: C901 -- one place lists every jou
                 doctor = _doctor(session, who.hospital_id, body.doctor_id)
                 return 201, _sample_follow_up(mrn.strip().upper(), body.date, body.note, doctor=doctor)
             patient = patient_by_mrn(session, who.hospital_id, mrn, lock=True)
+            if body.booking_id:
+                booking = session.scalar(select(Booking).where(Booking.id == body.booking_id,
+                                                               Booking.hospital_id == who.hospital_id))
+                if booking is None:
+                    raise HTTPException(status_code=400, detail="Unknown booking.")
+                if not queue_api.same_person(patient, booking, queue_api._booking_dedan(booking)):
+                    raise HTTPException(status_code=409, detail="This booking is not this patient's (Endod ID or "
+                                                                "phone number).")
             visit = history.open_visit(session, who.hospital_id, patient, doctor_id=body.doctor_id,
                                        booking_id=body.booking_id, started_at=None, follow_up_on=body.date,
                                        follow_up_note=body.note, actor_id=None, audit_extra=via(who))
@@ -665,7 +679,9 @@ def add_routes(api: FastAPI) -> None:  # noqa: C901 -- one place lists every jou
         [S.QUEUE], "Check a patient in",
         "Check a patient in to a doctor's queue for today, with a ticket: by a confirmed in-person booking (which "
         "links the hospital patient to Endod without asking again), a registered patient (`patient_mrn`), or a "
-        "walk-in (name and phone). Linked patients follow their place in the Endod app; anyone with a phone gets "
+        "walk-in (name and phone). A patient named with a booking must be the booking's patient (the same "
+        "confirmed or claimed Endod ID, or phone number), else 409: check in by the booking alone, or link the "
+        "patient first. Linked patients follow their place in the Endod app; anyone with a phone gets "
         "an SMS when their turn is near and when they are called.\n\nTest connections: checked, a made-up ticket "
         "(bookings: only the made-up ones; patients are never looked up).",
         D.ok(201, M.CheckInOut, "Checked in.", None, D.IDEMPOTENT_REPLAY), [400, 404, 409],
@@ -688,17 +704,19 @@ def add_routes(api: FastAPI) -> None:  # noqa: C901 -- one place lists every jou
                     if booking.status != BookingStatus.CONFIRMED or booking.visit_mode != "in_person":
                         raise HTTPException(status_code=409, detail="Only a confirmed in-person booking is "
                                                                     "checked in.")
+                    doctor_id = doctor_id or booking.doctor_id  # as in live mode
                 doctor = queue_api.queue_doctor(session, who.hospital_id, doctor_id)
                 name = body.walk_in.name if body.walk_in else "Sample Patient"
                 phone = body.walk_in.phone if body.walk_in else None
                 return 201, {**_sample_queue({"id": doctor.id, "full_name": doctor.full_name}, name=name,
-                                             phone=phone), "entry_id": SAMPLE_ENTRY_ID, "ticket": 1}
+                                             phone=phone), "entry_id": f"{SAMPLE_ENTRY}{doctor.id}", "ticket": 1}
             patient_id = None
             if body.patient_mrn:
                 patient_id = patient_by_mrn(session, who.hospital_id, body.patient_mrn).id
             portal_body = queue_api.CheckIn(doctor_id=body.doctor_id, booking_id=body.booking_id,
                                             patient_id=patient_id, walk_in=body.walk_in)
-            doctor, queue, entry = queue_api.check_in_patient(session, who.hospital_id, portal_body, None, via(who))
+            doctor, queue, entry = queue_api.check_in_patient(session, who.hospital_id, portal_body, None, via(who),
+                                                              verify_patient=True)
             return 201, {**queue_out(session, queue_api.queue_payload(session, doctor, queue)),
                          "entry_id": entry.id, "ticket": entry.ticket}
         return await run(request, who, idempotency_key, work, "This booking is already checked in.")
@@ -730,18 +748,21 @@ def _queue_action(api: FastAPI, action: str, verb: str, says: str) -> None:
     @api.post(f"/queue/entries/{{entry_id}}/{action}", name=f"queue_{action}", **D.operation(
         [S.QUEUE], f"{verb} a queue entry",
         f"{says} The others' places are updated (and told). No body.\n\nTest connections: only the made-up "
-        f"entry {SAMPLE_ENTRY_ID}; nothing changes.",
+        f"entries ({SAMPLE_ENTRY}<doctor id>, from check-in or GET /queue); nothing changes.",
         D.ok(200, M.QueueOut, "The doctor's queue.", None, D.IDEMPOTENT_REPLAY), [404, 409],
         {409: "Call this patient before marking them done." if action == "done" else
          "This ticket is already done."}, [D.QUEUE]))
-    async def finish(request: Request, entry_id: str = Path(max_length=32), who: Caller = Depends(needs(S.QUEUE)),
+    async def finish(request: Request, entry_id: str = Path(max_length=64), who: Caller = Depends(needs(S.QUEUE)),
                      idempotency_key: Optional[str] = IDEMPOTENCY):
         def work(session):
             if is_test(who):
-                if entry_id != SAMPLE_ENTRY_ID:
+                doctor = session.scalar(select(StaffUser).where(
+                    StaffUser.id == entry_id[len(SAMPLE_ENTRY):], StaffUser.hospital_id == who.hospital_id,
+                    StaffUser.role == Role.DOCTOR)) if entry_id.startswith(SAMPLE_ENTRY) else None
+                if doctor is None:
                     raise HTTPException(status_code=404, detail="Queue entry not found.")
                 status = {"done": "done", "skip": "skipped", "cancel": "cancelled"}[action]
-                return 200, _sample_queue(SAMPLE_DOCTOR, status=status)
+                return 200, _sample_queue({"id": doctor.id, "full_name": doctor.full_name}, status=status)
             queue = queue_api.finish_entry(session, who.hospital_id, entry_id, action, None, via(who))
             return 200, queue_out(session, queue_api.queue_payload(session, session.get(StaffUser, queue.doctor_id),
                                                                    queue))

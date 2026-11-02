@@ -26,6 +26,7 @@ from __future__ import annotations
 import copy
 import hmac
 import html
+import json
 import logging
 import time
 from pathlib import Path
@@ -50,7 +51,9 @@ from app.integrations.calls import (
     CLIENT_IP_HEADER, FHIR_JSON, caller, client_address, is_test, outcome_response as _outcome_response, via,
 )
 from app.integrations.tokens import Caller
-from app.models import ClinicalRecord, Hospital, IntegrationRequest, IntegrationResource, Patient, RecordCategory
+from app.models import (
+    AuditEvent, ClinicalRecord, Hospital, IntegrationRequest, IntegrationResource, Patient, RecordCategory,
+)
 from app import records
 from app.auth import audit
 
@@ -114,6 +117,20 @@ _CATEGORY_SCOPE = {RecordCategory.LAB_RESULT: S.LABS, RecordCategory.IMAGING: S.
 _STATUS = {"Observation": "final", "DiagnosticReport": "final", "MedicationRequest": "active",
            "Encounter": "finished", "DocumentReference": "current"}
 PUBLISHED_EXTENSION = "https://endod-health.com/fhir/StructureDefinition/published-to-endod"
+
+
+def sent_as(session, record: ClinicalRecord) -> Optional[str]:
+    """The FHIR type a record was sent as through this API (the audit row of
+    its creation names it); None for a record that came another way (the
+    portal, a CSV import)."""
+    detail = session.scalar(select(AuditEvent.detail).where(
+        AuditEvent.hospital_id == record.hospital_id, AuditEvent.action == "integration_record_created",
+        AuditEvent.target_id == record.patient_id,
+        AuditEvent.detail.like(f'%"record_id": "{record.id}"%')).limit(1))
+    try:
+        return json.loads(detail).get("resource_type") if detail else None
+    except ValueError:
+        return None
 
 
 def stored_resource(session, kind: str, record: ClinicalRecord, patient: Patient, hospital: Hospital,
@@ -409,7 +426,8 @@ def create_app() -> FastAPI:  # noqa: C901 -- the app and its handlers in one pl
                          "`Location` (Type/<id>/_history/n), or by your own resource id (this connection's). "
                          "`status` is `entered-in-error` once it was retracted at the hospital; the "
                          "published-to-endod extension says whether the patient's Endod app has this version. "
-                         "Records entered in the portal are not served here.\n\nTest connections store nothing: "
+                         "A record is served only as the type it was sent as; records entered in the portal "
+                         "or imported from a file are not served here.\n\nTest connections store nothing: "
                          "always 404.\n\n**Scope:** the write scope of the resource (e.g. `records.labs.write` "
                          "for an Observation).",
              responses={200: {"description": "The stored resource.", "content": {FHIR_JSON: {
@@ -439,7 +457,8 @@ def create_app() -> FastAPI:  # noqa: C901 -- the app and its handlers in one pl
             record = session.scalar(select(ClinicalRecord).where(
                 ClinicalRecord.id == record_id, ClinicalRecord.hospital_id == who.hospital_id,
                 ClinicalRecord.source == "import", ClinicalRecord.category.in_(READ_BACK[resource_type])))
-            if record is None:
+            if record is None or sent_as(session, record) != resource_type:
+                # Never served as another type than it was sent as (a lab Observation is no DiagnosticReport).
                 raise fhir.FhirError(404, "not-found", f"{resource_type}/{resource_id[:64]} not found.")
             if _CATEGORY_SCOPE[record.category] not in who.scopes:
                 tokens.require(who, _CATEGORY_SCOPE[record.category])
