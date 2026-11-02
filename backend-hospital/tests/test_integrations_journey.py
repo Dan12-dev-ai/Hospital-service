@@ -391,6 +391,19 @@ PRESCRIPTION = {
 }
 
 
+def their_record(category, title="Theirs"):
+    """A record of another hospital's patient (sent through their own connection)."""
+    other = make_hospital(code="BET", name="Bethel Hospital")
+    patient_id = make_patient(other, mrn="BET-000001")
+    with platform_session() as session:
+        record = ClinicalRecord(hospital_id=other, patient_id=patient_id, category=category, title=title,
+                                details=json.dumps({"items": [{"drug": "X", "quantity": "1"}]}),
+                                occurred_at=datetime.now(timezone.utc), source="import", version=1)
+        session.add(record)
+        session.flush()
+        return record.id
+
+
 def send_prescription(client, auth):
     resp = client.post(f"{API}/fhir/MedicationRequest", headers={**auth, "Content-Type": "application/fhir+json"},
                        content=json.dumps(PRESCRIPTION))
@@ -428,10 +441,7 @@ class TestPrescriptions:
         record_id = send_prescription(client, auth)
         labs = get_token(client, connected(client, admin, scopes=["records.labs.write"], name="Lab"))
         assert client.get(f"{API}/prescriptions/{record_id}", headers=labs).status_code == 403
-        other = make_hospital(code="BET", name="Bethel Hospital")
-        with platform_session() as session:
-            session.get(ClinicalRecord, record_id).hospital_id = other  # as if it were theirs
-        assert client.get(f"{API}/prescriptions/{record_id}", headers=auth).status_code == 404
+        assert client.get(f"{API}/prescriptions/{their_record('prescription')}", headers=auth).status_code == 404
         assert client.get(f"{API}/prescriptions/{record_id}", headers=test_auth).status_code == 404
         assert client.get(f"{API}/prescriptions/sample-prescription-1", headers=test_auth).json()["sample"]
 
@@ -452,16 +462,13 @@ class TestReadBack:
         assert client.get(f"{API}/fhir/MedicationRequest/{record_id}", headers=auth).status_code == 404
         assert client.get(f"{API}/fhir/Patient/{record_id}", headers=auth).status_code == 400
 
-    def test_other_hospitals_and_test_mode(self, client, admin, auth, hospital, test_auth):
+    def test_other_hospitals_and_test_mode(self, client, auth, hospital, test_auth):
         make_patient(hospital, mrn="SPH-000001")
         resp = post_bundle(client, auth, [entry(observation())])
         record_id = resp.json()["entry"][0]["response"]["location"].split("/")[1]
         assert client.get(f"{API}/fhir/Observation/{record_id}", headers=test_auth).status_code == 404
-        other = make_hospital(code="BET", name="Bethel Hospital")
-        theirs = get_token(client, connected(client, admin, scopes=["records.labs.write"], name="Lab"))
-        with platform_session() as session:
-            session.get(ClinicalRecord, record_id).hospital_id = other
-        assert client.get(f"{API}/fhir/Observation/{record_id}", headers=theirs).status_code == 404
+        theirs = their_record("lab_result")
+        assert client.get(f"{API}/fhir/Observation/{theirs}", headers=auth).status_code == 404
 
     def test_posting_a_patient_points_to_patients(self, client, auth):
         resp = client.post(f"{API}/fhir/Patient", headers={**auth, "Content-Type": "application/fhir+json"},
