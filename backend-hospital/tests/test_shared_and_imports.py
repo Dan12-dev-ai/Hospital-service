@@ -421,7 +421,8 @@ class TestSharedDetailsAreCleaned:
         assert dead_letters(bus) == []
         details = {r["category"]: r["details"] for r in shared(client, doctor)[0]["records"]}
         assert details["lab_result"] == {
-            "items": [{"test": "Hemoglobin", "value": "9.1", "unit": None, "reference_range": None, "flag": None}],
+            "items": [{"test": "Hemoglobin", "code": None, "value": "9.1", "unit": None, "reference_range": None,
+                       "flag": None}],
             "specimen": None, "notes": "x" * 2000}
         assert details["diagnosis"] == {"condition": None, "code": None, "status": None, "notes": None}
         assert details["visit_note"]["vitals"] == {k: None for k in ("bp", "pulse", "temp", "weight", "height",

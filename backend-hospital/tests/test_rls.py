@@ -658,8 +658,8 @@ def test_a_session_level_role_or_setting_never_reaches_the_next_checkout(db):
 # --- migration safety -------------------------------------------------------------------------------
 
 def test_the_migration_checks_the_same_rows_as_app_rls():
-    # 0009's tables are new (empty) when their composite keys are added: nothing to check there.
-    new = {child for name in ("0009_integration_api.py", "0010_two_step_verification.py")
+    # 0009's, 0010's and 0013's tables are new (empty) when their composite keys are added: nothing to check.
+    new = {child for name in ("0009_integration_api.py", "0010_two_step_verification.py", "0013_sms_enrolments.py")
            for child, *_rest in _migration(name).SAME_HOSPITAL_REFERENCES}
     assert _migration().cross_hospital_queries() == [q for q in rls.cross_hospital_queries() if q[0] not in new]
 

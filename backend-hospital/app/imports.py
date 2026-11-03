@@ -327,8 +327,13 @@ def _lab_item(r: Dict[str, Any]) -> Dict[str, Any]:
         high = (reference.get("high") or {}).get("value")
         reference_range = f"{'' if low is None else low}-{'' if high is None else high}"
     flag_code = str((_first(_codes(_first(r.get("interpretation")))) or {}).get("code", "")).upper()
-    return {"test": test, "value": value, "unit": unit, "reference_range": reference_range,
+    loinc = next((str(c.get("code")) for c in _codes(r.get("code"))
+                  if c.get("system") == "http://loinc.org" and c.get("code")), None)
+    item = {"test": test, "value": value, "unit": unit, "reference_range": reference_range,
             "flag": _FLAGS.get(flag_code)}
+    if loinc:
+        item["code"] = loinc[:20]
+    return item
 
 
 def _observation(r: Dict[str, Any]) -> Tuple[str, str, Dict[str, Any], Any, Optional[str]]:
