@@ -16,7 +16,9 @@ through this API.
 - see what pharmacies gave from your prescriptions;
 - keep your price list in step: the consultation price patients see, lab tests,
   imaging and procedures;
-- get notified (webhooks) when bookings, patient links or dispensing change.
+- charge patients for lab tests, imaging, procedures and other services, with
+  Endod's service fee added (the patient sees the bill in the Endod app);
+- get notified (webhooks) when bookings, patient links, dispensing or charges change.
 
 <!-- Video visits (HOSPITAL_VIDEO_VISITS_ENABLED): when they return, the bookings line reads:
 - read the bookings patients make through Endod, approve or decline video
@@ -447,7 +449,7 @@ Filters: `status` (`awaiting_doctor`, `confirmed`, `rejected`, `cancelled`,
 `completed`), `from` and `to` (scheduled time), `updated_since`, `limit` (at most
 500). `GET /bookings/{id}` reads one. A booking carries its id, Endod's appointment
 id, status, visit mode (`in_person`), service, time and duration, how the patient
-pays and the price, the patient's Endod ID, name and phone, the reason it was
+pays, the price and Endod's service fee (section 10), the patient's Endod ID, name and phone, the reason it was
 cancelled, and when it was decided; never the note the patient typed. Patients book
 in-person visits at the consultation price you set (section 9); a booking arrives
 `confirmed`.
@@ -455,13 +457,16 @@ in-person visits at the consultation price you set (section 9); a booking arrive
 ```json
 {"id": "9f0c...", "endod_appointment_id": "...", "status": "confirmed", "visit_mode": "in_person",
  "service": "general_medicine", "scheduled_at": "2026-10-02T06:30:00+00:00", "duration_minutes": 30,
- "payment": "at_hospital", "price": "150.00",
+ "payment": "at_hospital", "price": "150.00", "service_fee": "25.00", "total": "175.00",
+ "collect_at_hospital": "175.00", "fee_owed_to_endod": "25.00", "paid_at": null, "paid_method": null,
  "patient": {"endod_id": "DE482731", "name": "...", "phone": "+251911234567"},
  "doctor": null, "reason": null, "decided_at": null, "created_at": "...", "updated_at": "..."}
 ```
 
-`payment` is `online` (the patient paid Endod when booking; Endod pays the hospital)
-or `at_hospital` (collect `price`, in birr, from the patient at the visit).
+`payment` is `online` (the patient paid Endod when booking, Endod's fee included;
+Endod pays the hospital its price) or `at_hospital` (collect `collect_at_hospital`,
+in birr, from the patient at the visit: the price plus Endod's service fee, which
+the hospital owes Endod; then `POST /bookings/{id}/paid`, section 10).
 
 ### Decide (`bookings.write`)
 
@@ -612,7 +617,107 @@ A category answers the list now and what changed:
 list, or a price with more than two decimals, is refused (`422`). Changes are
 audited with the key.
 
-## 10. Webhooks (`webhooks`)
+## 10. Charges (`charges.write`, `charges.read`)
+
+Endod covers the cost of SMS and earns a **service fee, paid by the patient**
+(never by the hospital), on every payment the patient makes for a hospital service:
+a booking, a lab test, imaging, a procedure, anything else. Charge patients through
+Endod and Endod adds its fee: a 200 birr bill becomes 225 birr (with the fee at 25
+birr); a second test, the same again.
+
+**The rule.** One fee per charge (however many items it has) and per paid booking:
+`fee = flat + percent of the subtotal`, rounded half up to the santim; no fee on
+0. Endod sets the fee (it may change); `GET /service-fee` answers the fee in force
+(`charges.read`, `charges.write` or `bookings.read`). Every charge keeps the fee it
+was made with (`fee.version`).
+
+```json
+{"currency": "ETB", "enabled": true, "flat": "25.00", "percent": "0.00",
+ "rule": "one fee per charge or booking: flat + percent of the subtotal, rounded to the santim; none on 0",
+ "example": {"subtotal": "200.00", "service_fee": "25.00", "total": "225.00"},
+ "updated_at": "2026-11-03T08:00:00+00:00"}
+```
+
+| Call | Body | Does |
+|---|---|---|
+| `POST /charges` | `{"mrn", "items": [...], "booking_id"?}` | a charge: Endod answers the subtotal, its fee and the total |
+| `POST /charges/{id}/paid` | `{"method", "reference"?, "paid_at"?}` | the patient paid the hospital the total |
+| `POST /charges/{id}/void` | `{"reason"}` | an open charge is cancelled |
+| `GET /charges` | `status`, `mrn`, `from`, `to`, `limit` | charges, newest first (`charges.read` or `charges.write`) |
+| `GET /charges/{id}` | none | one charge with its items |
+| `POST /bookings/{id}/paid` | `{"method", "reference"?, "paid_at"?}` | a visit booked through Endod and paid at the hospital was paid (`bookings.write`) |
+
+Each item is `{"category", "code"?, "name", "amount", "quantity"}`: `category` is
+`lab_test`, `imaging`, `procedure`, `consultation` or `other`; `code` is yours (e.g.
+from your price list, section 9; not checked against it); `name` is what the patient
+reads on the bill in the Endod app; `amount` is the price of one in birr (at most two
+decimals, more than 0); `quantity` 1 to 1000 (default 1). 1 to 100 items. A
+`booking_id` must be this patient's booking (else `409`).
+
+```bash
+curl -s -X POST https://api.endod-health.com/hospital/v1/charges \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -H "Idempotency-Key: lab-order-77812" \
+  -d '{"mrn": "SPH-000124", "items": [
+        {"category": "lab_test", "code": "CBC", "name": "Complete blood count", "amount": "350.00", "quantity": 1},
+        {"category": "imaging", "code": "XR-CHEST", "name": "Chest X-ray", "amount": "450.00", "quantity": 1}]}'
+```
+
+`201`:
+
+```json
+{"id": "3c2b...", "mrn": "SPH-000124", "patient_id": "5f0c...", "endod_id": "DE482731", "booking_id": null,
+ "items": [{"category": "lab_test", "code": "CBC", "name": "Complete blood count", "amount": "350.00",
+            "quantity": 1, "line_total": "350.00"},
+           {"category": "imaging", "code": "XR-CHEST", "name": "Chest X-ray", "amount": "450.00",
+            "quantity": 1, "line_total": "450.00"}],
+ "currency": "ETB", "subtotal": "800.00", "service_fee": "25.00", "total": "825.00",
+ "fee": {"version": 3, "flat": "25.00", "percent": "0.00"}, "status": "open", "method": null,
+ "reference": null, "paid_at": null, "void_reason": null, "voided_at": null, "fee_owed_to_endod": null,
+ "created_at": "...", "updated_at": "..."}
+```
+
+Collect `total` from the patient. A patient linked to Endod sees the bill in the
+Endod app and gets an SMS with the amounts only ("your bill at the hospital is ETB
+825.00 (incl. Endod service fee ETB 25.00)"): never what it is for. When the patient
+has paid:
+
+```bash
+curl -s -X POST https://api.endod-health.com/hospital/v1/charges/3c2b.../paid \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"method": "mobile_money", "reference": "TB7781234"}'
+```
+
+`method` is `cash`, `card`, `mobile_money` or `other`; `paid_at` (with its offset)
+defaults to now and cannot be in the future. The answer has `"status": "paid"` and
+`fee_owed_to_endod`: the hospital collected Endod's fee with the total and owes it to
+Endod (Endod settles fees with the hospital). Sending it again the same way changes
+nothing; a voided charge cannot be paid and a paid one cannot be voided (`409`).
+Online payment of charges is not offered yet: patients pay at the hospital.
+
+**Bookings.** A booking paid at the hospital (`payment: at_hospital`, section 5)
+carries Endod's fee too: collect `collect_at_hospital` (the price plus
+`service_fee`); `fee_owed_to_endod` is Endod's. Say when it was paid with `POST
+/bookings/{id}/paid` (a confirmed or completed visit); a visit completed without it
+counts as paid when completed. A booking paid online (`payment: online`) was paid
+to Endod already. A free visit has no fee.
+
+Python:
+
+```python
+created = requests.post(f"{BASE}/charges", headers={"Authorization": f"Bearer {token}",
+                                                    "Idempotency-Key": order_id},
+                        json={"mrn": mrn, "items": [{"category": "procedure", "name": "Wound dressing",
+                                                     "amount": "120", "quantity": 2}]}).json()
+print("Collect", created["total"], "birr (Endod fee", created["service_fee"], ")")
+requests.post(f"{BASE}/charges/{created['id']}/paid", headers={"Authorization": f"Bearer {token}"},
+              json={"method": "cash", "reference": receipt_number})
+```
+
+Charges are audited with the key; their items are encrypted at rest, and never in a
+webhook or an SMS.
+
+## 11. Webhooks (`webhooks`)
 
 Endod POSTs JSON events to your webhook URL (https only, a public address):
 
@@ -626,6 +731,9 @@ Endod POSTs JSON events to your webhook URL (https only, a public address):
 | `patient.unlinked` | a patient was unlinked |
 | `patient.sms_enrolment` | an enrolment by SMS moved on (`data.status`: `code_sent`, `enrolled`, `failed`; `data.reason`, `data.attempts_left`) |
 | `prescription.dispensed` | a pharmacy gave medicine from one of your prescriptions |
+| `charge.created` | a charge was made (the subtotal, Endod's fee, the total) |
+| `charge.paid` | a charge was paid at the hospital (the hospital owes Endod the fee) |
+| `charge.voided` | an open charge was voided |
 | `endpoint.test` | "Send test event" in the dashboard |
 
 <!-- Video visits (HOSPITAL_VIDEO_VISITS_ENABLED): when they return, `booking.confirmed` is also sent when
@@ -645,7 +753,9 @@ link request answered; null when a booking's check-in linked the patient) for
 `prescription.dispensed` carries `{"prescription_id", "dispense_id",
 "dispense_status": "open"|"completed", "dispensing_status": "partly"|"fully",
 "dispensed_at", "patient": {"patient_id", "mrn", "endod_id"}}`, never a drug or an
-amount. The OpenAPI document (`webhooks`) has every event's payload and an example.
+amount. Charge events carry `{"charge_id", "patient_id", "mrn", "endod_id", "booking_id",
+"status", "currency", "subtotal", "service_fee", "total", "method", "paid_at"}`, never
+the items. The OpenAPI document (`webhooks`) has every event's payload and an example.
 
 Events are thin (ids, statuses, times): fetch the booking with `bookings.read`, the
 patient with `patients.read`, the prescription with `prescriptions.read` for the rest. Answer any **2xx** within 10 seconds. Anything else, a timeout or a redirect
@@ -715,7 +825,7 @@ static bool Verify(string secret, string header, byte[] rawBody, int tolerance =
 }
 ```
 
-## 11. Errors
+## 12. Errors
 
 Everything but the token endpoint answers errors as a FHIR OperationOutcome:
 
@@ -738,7 +848,7 @@ Everything but the token endpoint answers errors as a FHIR OperationOutcome:
 | 429 | too many requests: wait `Retry-After` seconds |
 | 503 | the API is not available |
 
-## 12. Limits
+## 13. Limits
 
 - A bundle: at most **100 entries** and **10 MB**.
 - **60 requests per minute** per connection (token requests not counted).
@@ -749,7 +859,7 @@ Everything but the token endpoint answers errors as a FHIR OperationOutcome:
 - Dates in the future are refused; a date without a time is midnight at the hospital,
   a time without an offset is the hospital's time.
 
-## 13. Test mode
+## 14. Test mode
 
 A **Test** connection (client ID `endod_test_...`) checks and maps everything as Live
 does (structure, scopes, dates, documents, how the patient is named) and answers what
@@ -772,13 +882,17 @@ patients' data:
   `verify`: `verifying`, or with the code `000000` a wrong code): no SMS is sent;
 - prices are checked as in Live and answered back; nothing is written or announced,
   and `GET /prices` answers a made-up price list (`"sample": true`);
+- charges are checked as in Live and answered with the real fee, as the made-up
+  charge `sample-charge-1` (`"sample": true`), which can be marked paid or voided;
+  nothing is stored, sent or texted; `POST /bookings/{id}/paid` is tried on the
+  sample bookings;
 - `GET /fhir/{Type}/{id}` is always "not found" (nothing was stored);
 - its webhook receives only `endpoint.test` ("Send test event"), never a real event.
 
 Use it while you build (the dashboard's Playground always does); create a Live
 key when you are ready.
 
-## 14. What Endod keeps
+## 15. What Endod keeps
 
 - Records are encrypted at rest, kept apart per hospital by the database, and
   published to the patient's Endod app only when the patient is linked.

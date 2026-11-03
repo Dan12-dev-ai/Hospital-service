@@ -84,7 +84,9 @@ export const ABILITIES: { scope: string; label: string; hint: string }[] = [
   { scope: "queue.write", label: "Run the queue", hint: "Check in, call next, done or skipped" },
   { scope: "prices.read", label: "See the price list", hint: "Consultation, lab tests, imaging, procedures" },
   { scope: "prices.write", label: "Sync the price list", hint: "Your prices, as patients see them" },
-  { scope: NOTIFY_SCOPE, label: "Get notified of changes", hint: "Bookings, patient links and dispensing" },
+  { scope: "charges.read", label: "See charges", hint: "Charges with Endod's service fee" },
+  { scope: "charges.write", label: "Charge patients", hint: "Lab tests, imaging, procedures; Endod adds its fee" },
+  { scope: NOTIFY_SCOPE, label: "Get notified of changes", hint: "Bookings, patient links, dispensing and charges" },
 ];
 
 /** "a few seconds ago", "5 minutes ago", "3 days ago". */

@@ -77,6 +77,35 @@ paid online (nothing to refund for `"payment": "at_hospital"`).
 
 ### `appointment.completed`
 The visit took place. The platform records it and the hospital's payout is due.
+For a visit paid at the hospital not marked paid before, the platform records
+Endod's service fee as owed by the hospital from now.
+
+### `appointment.paid`
+A visit paid at the hospital (`"payment": "at_hospital"`) was paid: the patient
+paid the price plus Endod's service fee, and the hospital owes Endod the fee
+(the platform's fee ledger). From `POST /bookings/{id}/paid` (integration API).
+
+```json
+{"appointment_id": "…", "hospital_id": "…", "method": "cash|card|mobile_money|other",
+ "reference": "RCPT-9", "paid_at": "2026-11-03T09:00:00+00:00"}
+```
+
+### `charge.created`, `charge.paid`, `charge.voided`
+Charges for hospital services made through the integration API (`/charges`,
+app/charges.py), with Endod's service fee (santim). `charge.created` is sent
+only for a patient linked to Endod (the bill in the app and an SMS with the
+amounts only); `charge.paid` for every charge (Endod's fee ledger: the
+hospital owes the fee); `charge.voided` for a linked patient.
+
+```json
+{"charge_id": "…", "hospital_id": "…", "dedan_id": "DE482731", "appointment_id": null,
+ "items": [{"category": "lab_test", "code": "CBC", "name": "Complete blood count", "amount": 35000,
+            "quantity": 1}],
+ "subtotal": 35000, "service_fee": 2500, "total": 37500, "currency": "ETB"}
+```
+
+`items` on `charge.created` only; `charge.paid` adds `method`, `reference`
+and `paid_at`; `charge.voided` is `{"charge_id", "hospital_id", "dedan_id"}`.
 
 ### `onboarding.demo_booked`
 A hospital applying to join Endod booked its 30-minute demo with Endod, or
@@ -105,9 +134,11 @@ until the hospital is approved.
 
 ### `appointment.requested`
 A patient booked. `price` is the visit's price in santim (Endod's service fee
-is not included). `payment` says how the patient pays it: `"online"` (paid to
-Endod when booking; Endod pays the hospital) or `"at_hospital"` (the patient
-pays the hospital at the visit). A request without `payment` is `"online"`
+is not included); `service_fee` is Endod's fee and `total` the sum (santim;
+missing on requests sent before the fee: 0). `payment` says how the patient
+pays: `"online"` (paid to Endod when booking, fee included; Endod pays the
+hospital its price) or `"at_hospital"` (the patient pays the hospital `total`
+at the visit; the hospital owes Endod `service_fee`). A request without `payment` is `"online"`
 (requests sent before the field existed). Any other value is refused (the
 booking is answered with `appointment.rejected`).
 
@@ -116,8 +147,16 @@ booking is answered with `appointment.rejected`).
  "patient": {"dedan_id": "DE123456", "name": "…", "phone": "+2519…"},
  "visit_mode": "in_person|video", "service": "general_medicine",
  "scheduled_at": "2026-10-21T09:30:00+00:00", "duration_minutes": 30,
- "notes": "…", "price": 15000, "payment": "online|at_hospital"}
+ "notes": "…", "price": 15000, "service_fee": 2500, "total": 17500, "payment": "online|at_hospital"}
 ```
+
+### `fees.updated`
+Endod's service fee, as the super admin set it on the platform (the single
+source of truth), sent on every change and every 6 hours:
+`{"version", "enabled", "flat_santim", "percent_bp", "currency": "ETB", "updated_at"}`.
+The hospital service keeps the newest version (`endod_fee_settings`, app/fees.py)
+and adds that fee to every charge; until the first one arrives it uses
+`HOSPITAL_DEFAULT_SERVICE_FEE_SANTIM` (2500).
 
 ### `appointment.cancelled`
 `{"appointment_id", "hospital_id", "by": "patient" | "endod"}`: the patient
