@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import eventbus, jitsi
+from app.config import get_settings
 from app.integrations import webhooks
 from app.db import ensure_aware, platform_session, utcnow
 from app.eventbus import PermanentEventError, RetryLater
@@ -98,7 +99,9 @@ def on_requested(session: Session, payload: Dict[str, Any]) -> None:
         _reject_unknown(session, payload, "This hospital is not taking bookings through Endod right now.")
         return
     mode = request.visit_mode
-    if mode not in VisitMode.ALL or (mode == VisitMode.VIDEO and not hospital.video_enabled):
+    # Video visits only while Endod offers them at all (HOSPITAL_VIDEO_VISITS_ENABLED) and the hospital does.
+    if mode not in VisitMode.ALL or (mode == VisitMode.VIDEO and not (
+            hospital.video_enabled and get_settings().VIDEO_VISITS_ENABLED)):
         _reject_unknown(session, payload, "This hospital does not offer this kind of visit right now.")
         return
     booking = Booking(
@@ -163,7 +166,13 @@ class BookingError(RuntimeError):
         self.status_code = status_code
 
 
+VIDEO_OFF = "Video visits are not offered through Endod; cancel this booking instead."
+
+
 def approve_video(session: Session, booking: Booking, doctor: StaffUser, decided_by: Optional[str]) -> None:
+    # Video visits switched off (HOSPITAL_VIDEO_VISITS_ENABLED): a video booking made before cannot be approved.
+    if not get_settings().VIDEO_VISITS_ENABLED:
+        raise BookingError(VIDEO_OFF, 409)
     if booking.visit_mode != VisitMode.VIDEO:
         raise BookingError("Only video visits need a doctor's approval.")
     if booking.status != BookingStatus.AWAITING_DOCTOR:

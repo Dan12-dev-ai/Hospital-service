@@ -10,6 +10,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 PASSWORD = "StaffPass123"
 
 
+def pytest_configure(config):
+    config.addinivalue_line("markers", "clinical_staff: the old portal's clinical roles may sign in "
+                                       "(HOSPITAL_CLINICAL_SIGN_IN_ENABLED), for the tests of the clinical staff API")
+    config.addinivalue_line("markers", "video_visits: video visits are on (HOSPITAL_VIDEO_VISITS_ENABLED)")
+
+
+@pytest.fixture(autouse=True)
+def feature_flags(request, monkeypatch):
+    """The settings a test's markers ask for (both off by default, as in production)."""
+    monkeypatch.setenv("HOSPITAL_CLINICAL_SIGN_IN_ENABLED",
+                       "true" if request.node.get_closest_marker("clinical_staff") else "false")
+    monkeypatch.setenv("HOSPITAL_VIDEO_VISITS_ENABLED",
+                       "true" if request.node.get_closest_marker("video_visits") else "false")
+
+
 #: The role the app connects as in the PostgreSQL run (not the owner): every
 #: test then goes through the row-level security policies (app/rls.py).
 APP_ROLE = "hospital_app"

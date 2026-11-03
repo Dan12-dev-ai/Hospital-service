@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from app import jitsi
 from app.auth import Staff, audit, require_roles
 from app.bookings import BookingError, approve_video, cancel, complete, reject
+from app.config import get_settings
 from app.db import ensure_aware, session_scope, utcnow
 from app.models import Booking, BookingStatus, Hospital, Role, StaffUser, VisitMode
 from app.validation import Name
@@ -204,6 +205,8 @@ def join_video(booking_id: str, staff: Staff = Depends(require_roles(Role.DOCTOR
                                                        Booking.hospital_id == staff.hospital_id))
         if booking is None or booking.doctor_id != staff.id:
             raise HTTPException(status_code=404, detail="Booking not found.")
+        if not get_settings().VIDEO_VISITS_ENABLED:
+            raise HTTPException(status_code=409, detail="Video visits are not offered through Endod.")
         if booking.status != BookingStatus.CONFIRMED or not booking.meeting_room:
             raise HTTPException(status_code=409, detail="This visit has no video room.")
         opens, closes = jitsi.join_window(ensure_aware(booking.scheduled_at), booking.duration_minutes)

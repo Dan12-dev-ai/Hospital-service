@@ -14,6 +14,10 @@ from history_support import (  # noqa: F401  (fixtures)
     PDF, PLATFORM_KEY, PNG, bus, consume, dead_letters, events, link_directly, platform_key, register, send, staff,
 )
 
+#: The old portal's clinical staff API: kept (the integration API shares its logic) but no longer
+#: signed in to; its tests sign clinical roles in (HOSPITAL_CLINICAL_SIGN_IN_ENABLED).
+pytestmark = pytest.mark.clinical_staff
+
 
 @pytest.fixture
 def desk(client, hospital):
@@ -390,8 +394,6 @@ class TestCsvImport:
             pytest.skip("docs/ is not here (only backend-hospital/ was copied)")
         doc = (root / "docs" / "imports.md").read_text(encoding="utf-8")
         assert imports.template().strip() in doc
-        public = root / "frontend-hospital-portal" / "public" / "import-template.csv"
-        assert public.read_text(encoding="utf-8").splitlines()[0] == imports.template().strip()
 
 
 def test_a_shared_file_name_cannot_break_the_header():

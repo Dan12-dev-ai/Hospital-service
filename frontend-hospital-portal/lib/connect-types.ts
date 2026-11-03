@@ -1,4 +1,4 @@
-/** "Connect your system": the hospital's own systems connected to the integration API (backend app/api/connections.py). */
+/** API keys: the hospital's own systems connected to the integration API (backend app/api/connections.py). */
 
 export type ConnectionMode = "live" | "test";
 
@@ -78,10 +78,12 @@ export const ABILITIES: { scope: string; label: string; hint: string }[] = [
   { scope: "patients.read", label: "See patients", hint: "A patient by hospital number, and their Endod link" },
   { scope: "patients.write", label: "Register and link patients", hint: "New patients get a hospital number" },
   { scope: "bookings.read", label: "See bookings", hint: "Bookings patients made through Endod" },
-  { scope: "bookings.write", label: "Decide on bookings", hint: "Approve, decline, cancel or complete visits" },
+  { scope: "bookings.write", label: "Decide on bookings", hint: "Cancel or complete visits" },
   { scope: "followups.write", label: "Set follow-ups", hint: "The patient gets an SMS and a reminder" },
   { scope: "prescriptions.read", label: "See what pharmacies gave", hint: "Dispensing of your prescriptions" },
   { scope: "queue.write", label: "Run the queue", hint: "Check in, call next, done or skipped" },
+  { scope: "prices.read", label: "See the price list", hint: "Consultation, lab tests, imaging, procedures" },
+  { scope: "prices.write", label: "Sync the price list", hint: "Your prices, as patients see them" },
   { scope: NOTIFY_SCOPE, label: "Get notified of changes", hint: "Bookings, patient links and dispensing" },
 ];
 
@@ -107,3 +109,8 @@ export function timeAgo(iso: string | null, now: number = Date.now()): string {
   const count = Math.max(1, Math.round(seconds / size));
   return `${count} ${label}${count === 1 ? "" : "s"} ago`;
 }
+
+/** Where the integration API is published (its Swagger page and OpenAPI document). */
+export const PUBLIC_API_URL = (process.env.NEXT_PUBLIC_INTEGRATIONS_PUBLIC_URL || "https://api.endod-health.com/hospital/v1").replace(/\/+$/, "");
+export const SWAGGER_URL = `${PUBLIC_API_URL}/docs`;
+export const OPENAPI_URL = `${PUBLIC_API_URL}/openapi.json`;

@@ -17,10 +17,6 @@ import {
  */
 const MB = 1024 * 1024;
 const ROUTES: { pattern: RegExp; maxBytes: number; keepType: boolean }[] = [
-  // A record's file (PDF or image): at most 20 MB.
-  { pattern: /^patients\/[0-9a-f]{32}\/uploads$/, maxBytes: 20 * MB, keepType: false },
-  // An import (FHIR JSON or CSV): at most 10 MB. Its type tells JSON from CSV.
-  { pattern: /^imports\/preview$/, maxBytes: 10 * MB, keepType: true },
   // An onboarding document (PDF or image): at most 10 MB.
   {
     pattern: /^onboarding\/documents\/(moh_license|trade_license|tin_certificate|owner_id)$/,

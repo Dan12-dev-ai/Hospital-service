@@ -20,6 +20,7 @@ DOCTORS = "Doctors"
 FOLLOW_UPS = "Follow-ups"
 PRESCRIPTIONS = "Prescriptions"
 QUEUE = "Queue"
+PRICING = "Pricing"
 WEBHOOKS = "Webhooks"
 
 TAGS = [
@@ -29,14 +30,17 @@ TAGS = [
                                      "what Endod stored. Records are filed for patients registered at the hospital."},
     {"name": PATIENTS, "description": "Register patients (Endod issues the hospital number), read them, and link "
                                       "them to their Endod account (or unlink)."},
-    {"name": BOOKINGS, "description": "Bookings patients make through Endod: read them, approve or decline video "
-                                      "visits, cancel, complete."},
+    {"name": BOOKINGS, "description": "Bookings patients make through Endod (in-person visits): read them, cancel, "
+                                      "complete."},
     {"name": DOCTORS, "description": "The hospital's doctors, to name one when approving a visit, checking a "
                                      "patient in or setting a follow-up."},
     {"name": FOLLOW_UPS, "description": "Follow-up dates: the patient gets an SMS and a reminder."},
     {"name": PRESCRIPTIONS, "description": "What pharmacies gave from the hospital's prescriptions."},
     {"name": QUEUE, "description": "Doctors' queues for the day: check in, call the next patient, done, skip, "
                                    "cancel."},
+    {"name": PRICING, "description": "The hospital's price list, synced from its own system: the in-person "
+                                     "consultation price patients see in the Endod app, lab tests, imaging and "
+                                     "procedures. Each category is replaced as a whole."},
     {"name": WEBHOOKS, "description": "Events Endod POSTs to your webhook URL (see `webhooks` in this document), "
                                       "signed with `Endod-Signature`."},
 ]
@@ -61,6 +65,16 @@ ERRORS: Dict[int, tuple] = {
 }
 #: What every call with an access token can answer.
 AUTHENTICATED = (401, 403, 429)
+
+
+#: The Bookings tag while video visits are on (HOSPITAL_VIDEO_VISITS_ENABLED).
+BOOKINGS_WITH_VIDEO = ("Bookings patients make through Endod: read them, approve or decline video visits, cancel, "
+                       "complete.")
+
+
+def tags(video: bool) -> List[Dict[str, str]]:
+    """The tags, in Swagger's order (the Bookings text names video visits only while they are on)."""
+    return [{**t, "description": BOOKINGS_WITH_VIDEO} if video and t["name"] == BOOKINGS else dict(t) for t in TAGS]
 
 
 def errors(*codes: int, examples: Optional[Dict[int, str]] = None) -> Dict[int, Dict[str, Any]]:

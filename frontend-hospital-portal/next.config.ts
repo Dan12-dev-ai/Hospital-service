@@ -16,27 +16,13 @@ const nextConfig: NextConfig = {
     },
   },
   async headers() {
-    // The service worker must not be long-cached, or a fixed worker would
-    // take a day (or longer, behind a CDN) to reach the browsers.
+    // The old portal's service worker is replaced by one that removes itself
+    // (public/sw.js): never long-cached, so browsers fetch the replacement.
     const worker = [
       { key: "Cache-Control", value: "no-cache" },
       { key: "Content-Type", value: "application/javascript; charset=utf-8" },
     ];
-    return [
-      { source: "/sw.js", headers: worker },
-      { source: "/service-worker.js", headers: worker },
-      { source: "/manifest.json", headers: [{ key: "Cache-Control", value: "no-cache" }] },
-    ];
-  },
-  images: {
-    // Allow the template's Google-hosted avatar imagery (avatars, staff photos)
-    remotePatterns: [
-      {
-        protocol: "https",
-        hostname: "lh3.googleusercontent.com",
-        pathname: "/aida-public/**",
-      },
-    ],
+    return [{ source: "/sw.js", headers: worker }];
   },
 };
 

@@ -13,7 +13,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from sqlalchemy import func, select
 
-from conftest import make_hospital, make_staff, reauth, sign_in
+from conftest import PASSWORD, make_hospital, make_staff, reauth, sign_in
 
 from app import bookings, twofactor
 from app.db import platform_session
@@ -203,11 +203,14 @@ class TestConnections:
         assert resp.status_code == 403 and resp.json()["error"] == twofactor.REAUTH_REQUIRED
         assert count(IntegrationClient) == 1
 
-    def test_only_admins_of_approved_hospitals(self, client, admin, hospital):
+    def test_only_admins_and_developers_of_approved_hospitals(self, client, admin, hospital):
         make_staff(hospital, "nurse@sph.example", role="nurse")
-        nurse = sign_in(client, "nurse@sph.example")
-        assert client.get("/connections", headers=nurse).status_code == 403
-        assert connect(client, nurse).status_code == 403
+        refused = client.post("/auth/login", json={"email": "nurse@sph.example", "password": PASSWORD})
+        assert refused.status_code == 403 and "developers" in refused.json()["error"]
+        make_staff(hospital, "dev@sph.example", role="developer")
+        developer = sign_in(client, "dev@sph.example", fresh=True)
+        assert client.get("/connections", headers=developer).status_code == 200
+        assert connect(client, developer).status_code == 201
         set_status(hospital, status="suspended")
         resp = client.get("/connections", headers=admin)
         assert resp.status_code == 403 and "approved" in resp.json()["error"]
@@ -528,6 +531,7 @@ class TestFhir:
                             content=json.dumps(observation()))
         assert wrong.status_code == 400
 
+    @pytest.mark.clinical_staff  # read back through the old portal's clinical API
     def test_records_are_encrypted_and_readable_in_the_portal(self, client, admin, hospital, auth, patient):
         post_bundle(client, auth, [entry(observation(test=f"Glucose {MARK}"))])
         from sqlalchemy import text

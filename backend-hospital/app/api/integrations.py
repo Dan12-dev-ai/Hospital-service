@@ -28,6 +28,7 @@ import hmac
 import html
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -45,7 +46,9 @@ from starlette.exceptions import HTTPException
 
 from app.config import get_settings
 from app.db import ensure_aware, session_scope
-from app.integrations import apidoc as D, fhir, fhir_docs as F, journey, scopes as S, schemas as M, signing, tokens
+from app.integrations import (
+    apidoc as D, fhir, fhir_docs as F, journey, pricing, scopes as S, schemas as M, signing, tokens,
+)
 from app.integrations import webhooks
 from app.integrations.calls import (
     CLIENT_IP_HEADER, FHIR_JSON, caller, client_address, is_test, outcome_response as _outcome_response, via,
@@ -97,8 +100,9 @@ def _log_request(caller: Caller, method: str, path: str, status: int, duration_m
 
 
 def _guide() -> str:
+    """The guide, without its hidden blocks (``<!-- ... -->``: e.g. video visits while they are off)."""
     try:
-        return GUIDE.read_text(encoding="utf-8")
+        return re.sub(r"<!--.*?-->\n?", "", GUIDE.read_text(encoding="utf-8"), flags=re.S)
     except OSError:
         return "The guide is docs/integrations.md in the Hospital-service repository."
 
@@ -477,6 +481,10 @@ def create_app() -> FastAPI:  # noqa: C901 -- the app and its handlers in one pl
 
     journey.add_routes(api)
 
+    # --- the price list ----------------------------------------------------------------------------------
+
+    pricing.add_routes(api)
+
     # --- webhooks (documented only: Endod sends them) -------------------------------------------------
 
     _webhook_docs(api)
@@ -487,7 +495,8 @@ def create_app() -> FastAPI:  # noqa: C901 -- the app and its handlers in one pl
         schema = get_openapi(title=api.title, version=api.version, openapi_version="3.1.0",
                              summary="Hospitals keep their own system and use Endod as a layer.",
                              description=_overview() + "\n\n---\n\n" + api.description, routes=api.routes,
-                             webhooks=api.webhooks.routes, tags=D.TAGS, servers=[{"url": tokens.public_url()}])
+                             webhooks=api.webhooks.routes, tags=D.tags(journey.video_visits()),
+                             servers=[{"url": tokens.public_url()}])
         components = schema.setdefault("components", {})
         schemas = components.setdefault("schemas", {})
         schemas.update(F.components())
@@ -539,14 +548,17 @@ def _overview() -> str:
         "1. **Patients**: register a patient (Endod issues the hospital number, MRN), read them, link them to "
         "their Endod account (or unlink): `POST /patients`, `GET /patients/{mrn}`, `POST|DELETE "
         "/patients/{mrn}/link`.",
-        "2. **Bookings** patients make in the Endod app: read, approve or decline video visits, cancel, complete: "
-        "`/bookings`.",
+        ("2. **Bookings** patients make in the Endod app: read, approve or decline video visits, cancel, complete: "
+         "`/bookings`." if journey.video_visits() else
+         "2. **Bookings** patients make in the Endod app (in-person visits): read, cancel, complete: `/bookings`."),
         "3. **Queue**: check in, call the next patient, done, skip, cancel: `/queue`.",
         "4. **Records**: send lab results, imaging reports, prescriptions, diagnoses, visit notes and documents as "
         "FHIR R4 (`POST /fhir/{Type}` or a Bundle at `POST /fhir`), and read them back.",
         "5. **Follow-ups**: set and cancel follow-up dates (the patient gets an SMS and a reminder).",
         "6. **Prescriptions**: see what pharmacies gave (`GET /prescriptions/{id}`).",
-        "7. **Webhooks**: Endod tells your system when bookings, patient links and dispensing change (see "
+        "7. **Prices**: keep the hospital's price list in step with your system: the in-person consultation price "
+        "patients see, lab tests, imaging and procedures (`PUT /prices/...`, `GET /prices`).",
+        "8. **Webhooks**: Endod tells your system when bookings, patient links and dispensing change (see "
         "`webhooks` below), signed with `Endod-Signature`.",
         "",
         "Get an access token at `/oauth/token` (client credentials) with the scopes of the operations you call; "

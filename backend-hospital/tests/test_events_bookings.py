@@ -13,6 +13,10 @@ import pytest
 
 from conftest import PASSWORD, make_hospital, make_staff, sign_in
 
+#: The old portal's clinical staff API: kept (the integration API shares its logic) but no longer
+#: signed in to; its tests sign clinical roles in (HOSPITAL_CLINICAL_SIGN_IN_ENABLED).
+pytestmark = [pytest.mark.clinical_staff, pytest.mark.video_visits]
+
 PLATFORM_KEY = "platform-test-key"
 JITSI_SECRET = "jitsi-test-secret"
 

@@ -249,7 +249,7 @@ class TestWizard:
 
     def test_only_the_admin_fills_in_the_application(self, client):
         _headers, hospital_id = apply(client)
-        make_staff(hospital_id, "nurse@bethel.example", role="nurse")
+        make_staff(hospital_id, "nurse@bethel.example", role="developer")
         nurse = sign_in(client, "nurse@bethel.example")
         assert client.get("/onboarding/application", headers=nurse).status_code == 403
         assert upload(client, nurse, "owner_id").status_code == 403
@@ -748,7 +748,7 @@ class TestReviewFixes:
         headers, hospital_id = apply(client)
         complete(client, headers)
         client.post("/onboarding/submit", headers=headers)
-        make_staff(hospital_id, "nurse@bethel.example", role="nurse")
+        make_staff(hospital_id, "nurse@bethel.example", role="developer")
         make_staff(hospital_id, "second-admin@bethel.example", role="admin")
         for email in ("nurse@bethel.example", "second-admin@bethel.example"):
             other = sign_in(client, email)
@@ -764,7 +764,7 @@ class TestReviewFixes:
 
     def test_a_temporary_password_can_be_changed_while_applying(self, client):
         _headers, hospital_id = apply(client)
-        make_staff(hospital_id, "temp@bethel.example", role="nurse", must_change=True)
+        make_staff(hospital_id, "temp@bethel.example", role="developer", must_change=True)
         temp = sign_in(client, "temp@bethel.example")
         assert client.get("/onboarding/status", headers=temp).json()["must_change_password"] is True
         assert client.post("/auth/password", headers=temp, json={

@@ -164,7 +164,7 @@ test("a clinic applies step by step, resumes after a reload, and waits for Endod
   await expect(page.getByText("What happens next")).toBeVisible();
 
   // Nothing else of the portal opens, through pages or the API.
-  await page.goto("/patients");
+  await page.goto("/keys");
   await expect(page).toHaveURL(/\/under-review$/);
   expect((await page.request.get("/api/hospital")).status()).toBe(403);
 
@@ -303,12 +303,12 @@ test("a hospital that is not approved sees only its application", async ({ page 
   test.setTimeout(120_000);
   const draft = seedApplicant("lk");
   await signIn(page, draft.email, draft.password);
-  for (const path of ["/", "/patients", "/settings", "/doctors", "/queue"]) {
+  for (const path of ["/", "/keys", "/settings", "/docs", "/playground"]) {
     await page.goto(path);
     await expect(page).toHaveURL(/\/onboarding$/);
     await expect(page.getByTestId("step-facility")).toBeVisible();
   }
-  for (const path of ["/api/hospital", "/api/patients", "/api/staff", "/api/bookings"]) {
+  for (const path of ["/api/hospital", "/api/connections", "/api/staff", "/api/prices", "/api/developer/guide"]) {
     const response = await page.request.get(path);
     expect(response.status(), path).toBe(403);
   }
@@ -321,7 +321,7 @@ test("a hospital that is not approved sees only its application", async ({ page 
   // Once submitted, every page leads to Under review.
   const submitted = seedApplicant("lu", "submitted");
   await signIn(page, submitted.email, submitted.password);
-  for (const path of ["/", "/billing", "/onboarding"]) {
+  for (const path of ["/", "/webhooks", "/onboarding"]) {
     await page.goto(path);
     await expect(page).toHaveURL(/\/under-review$/);
   }
@@ -338,7 +338,7 @@ test("other staff of an applying hospital change a temporary password and see it
   test.setTimeout(90_000);
   const applying = seedApplicant("st", "submitted");
   const tag = uniqueTag("stf");
-  for (const role of ["nurse", "admin"] as const) {
+  for (const role of ["developer", "admin"] as const) {
     const staff = seedApplicantStaff(applying.hospital_id, `${role}@${tag}.example`, role);
     await page.context().clearCookies();
     await signInThroughForm(page, staff.email, staff.temporary_password);

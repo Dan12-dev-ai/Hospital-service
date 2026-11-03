@@ -40,11 +40,23 @@ class Settings(BaseSettings):
     REDIS_MIN_REPLICAS: int = 0
 
     # --- Video visits (self-hosted Jitsi with token sign-in) ---
+    #: Video visits are switched off (Endod is an integration layer; hospitals
+    #: book in-person visits only). Off: the integration API hides and answers
+    #: 404 to approving and declining video visits, and the listing never offers
+    #: video. Turn on to bring them back; the code is kept.
+    VIDEO_VISITS_ENABLED: bool = False
     JITSI_DOMAIN: str = "meet.endod-health.com"
     JITSI_APP_ID: str = "endod"
     JITSI_APP_SECRET: Optional[str] = None
     #: The ``sub`` claim the Jitsi server expects (its XMPP domain).
     JITSI_JWT_SUB: str = "meet.jitsi"
+
+    # --- Who signs in to the developer dashboard ---
+    #: Off (the default): only administrators and developers sign in; the old
+    #: portal's clinical roles (doctor, nurse, reception, pharmacist, billing,
+    #: records) are refused, their work being done in the hospital's own system.
+    #: On: they may sign in again (the clinical staff API is kept, unused).
+    CLINICAL_SIGN_IN_ENABLED: bool = False
 
     # --- Hospital sign-up ---
     #: Hospitals may sign themselves up through the portal; Endod approves them.

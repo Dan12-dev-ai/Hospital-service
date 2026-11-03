@@ -10,9 +10,9 @@ export type SeededHospital = {
   name: string;
   password: string;
   temporary_password: string;
-  accounts: Record<"admin" | "doctor" | "doctor2" | "nurse" | "reception" | "billing" | "records" | "newdoc", Account>;
+  /** An administrator, a developer, a nurse (refused at sign-in) and "newdev" (a temporary password). */
+  accounts: Record<"admin" | "developer" | "nurse" | "newdev", Account>;
 };
-export type SeededBooking = { id: string; status: string; dedan_id: string };
 
 function seed<T>(...args: string[]): T {
   const out = execFileSync(python, [path.join(__dirname, "seed.py"), ...args], {
@@ -30,9 +30,14 @@ export function uniqueTag(prefix: string): string {
   return `${prefix}${Date.now().toString(36).slice(-4)}${counter}`.toLowerCase();
 }
 
-/** An approved hospital with one staff account per role. */
+/** An approved hospital with an administrator, a developer and a nurse. */
 export function seedHospital(prefix: string, options: { unlisted?: boolean } = {}): SeededHospital {
   return seed<SeededHospital>("hospital", uniqueTag(prefix), ...(options.unlisted ? ["--unlisted"] : []));
+}
+
+/** A price list, as the hospital's system would sync it. */
+export function seedPrices(hospitalId: string) {
+  return seed<{ items: number }>("prices", hospitalId);
 }
 
 export type SeededApplicant = { hospital_id: string; name: string; email: string; password: string; demo_at: string | null };
@@ -53,72 +58,8 @@ export function seedApplicant(
 }
 
 /** Another staff member of an applying hospital, who must change a temporary password. */
-export function seedApplicantStaff(hospitalId: string, email: string, role: "admin" | "nurse") {
+export function seedApplicantStaff(hospitalId: string, email: string, role: "admin" | "developer") {
   return seed<{ id: string; email: string; temporary_password: string }>("applicant-staff", hospitalId, email, role);
-}
-
-/** A booking arriving from the Endod app, as the event worker would store it. */
-export function seedBooking(
-  hospitalId: string,
-  mode: "video" | "in_person",
-  minutesFromNow: number,
-  patientName: string,
-  payment?: "online" | "at_hospital"
-): SeededBooking {
-  return seed<SeededBooking>("booking", hospitalId, mode, String(minutesFromNow), patientName, ...(payment ? [payment] : []));
-}
-
-/** Endod answering the patient's pending link request (patient.linked / patient.link_refused). */
-export function seedLinkReply(patientId: string, answer: "linked" | "refused", reason?: string) {
-  return seed<{ request_id: string; dedan_id: string }>("link-reply", patientId, answer, ...(reason ? [reason] : []));
-}
-
-/** The patient already linked to Endod. */
-export function seedLink(patientId: string, dedanId: string) {
-  return seed<{ patient_id: string; dedan_id: string }>("link", patientId, dedanId);
-}
-
-/** A walk-in checked in to the doctor's queue yesterday (hospital time), still waiting. */
-export function seedQueueYesterday(hospitalId: string, doctorEmail: string, patientName: string) {
-  return seed<{ entry_id: string; ticket: number; day: string }>("queue-yesterday", hospitalId, doctorEmail, patientName);
-}
-
-/** A patient sharing one record (with a PDF) with the hospital through Endod. */
-export function seedShare(hospitalId: string, dedanId: string, patientName: string, title: string) {
-  return seed<{ share_id: string; record_id: string; file_id: string }>("share", hospitalId, dedanId, patientName, title);
-}
-
-export type SeededDispenseItem = {
-  item_index: number;
-  amount: number | null;
-  complete: boolean;
-  given_total: number | null;
-  status: "not_given" | "partly_given" | "given";
-};
-
-/** A pharmacy giving medicine from a prescription record through Endod (prescription.dispensed). */
-export function seedDispense(
-  recordId: string,
-  pharmacy: string,
-  at: string,
-  status: "open" | "completed",
-  items: SeededDispenseItem[]
-) {
-  return seed<{ dispense_id: string }>("dispense", recordId, pharmacy, at, status, JSON.stringify(items));
-}
-
-/** Registers a patient through the portal (the page must be signed in as a registrar). */
-export async function registerPatient(page: Page, name: string, phone = "0911 234 567") {
-  const response = await page.request.post("/api/patients", {
-    data: { full_name: name, sex: "female", age_years: 34, phone, confirm_duplicate: true },
-  });
-  expect(response.status(), await response.text()).toBe(201);
-  return (await response.json()) as { id: string; mrn: string; full_name: string };
-}
-
-/** A fresh Endod ID (DE + 6 digits). */
-export function newDedanId(): string {
-  return `DE${String(Math.floor(Math.random() * 1_000_000)).padStart(6, "0")}`;
 }
 
 /** A code from the account's authenticator app (never one used before). */
@@ -141,7 +82,7 @@ export function totpFromSecret(secret: string, at: number = Date.now()): string 
 }
 
 /**
- * Signs in through the portal's own API, so the page gets the session
+ * Signs in through the dashboard's own API, so the page gets the session
  * cookie: the password, then the code from the authenticator (or, the
  * first time, setting the authenticator up).
  */
@@ -174,7 +115,15 @@ export async function signInThroughForm(page: Page, email: string, password: str
   await page.getByRole("button", { name: "Sign in" }).click();
 }
 
-/** Endod's platform API (not reachable through the portal). */
+/** A fresh code from the authenticator in the "Confirm it's you" dialog, then the action's button. */
+export async function confirmWithCode(page: Page, email: string, button: string) {
+  const confirm = page.getByTestId("confirm-code");
+  await expect(confirm).toBeVisible();
+  await confirm.getByLabel("Confirm it's you: enter the code from your authenticator app").fill(totpCode(email));
+  await confirm.getByRole("button", { name: button }).click();
+}
+
+/** Endod's platform API (not reachable through the dashboard). */
 export async function platform(request: APIRequestContext, method: "GET" | "POST", pathname: string, data?: unknown) {
   const response = await request.fetch(`${BACKEND_URL}${pathname}`, {
     method,
@@ -185,12 +134,8 @@ export async function platform(request: APIRequestContext, method: "GET" | "POST
   return response.json();
 }
 
-export function bookingRow(page: Page, patientName: string) {
-  return page.getByTestId("booking-row").filter({ hasText: patientName });
-}
-
 /**
- * Picks an option in one of the portal's selects (Base UI comboboxes, not
+ * Picks an option in one of the dashboard's selects (Base UI comboboxes, not
  * native <select>s): opens the combobox by its role, then clicks the option
  * by its accessible name. A string matches the whole name.
  */

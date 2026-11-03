@@ -13,6 +13,7 @@ from typing import Any, Dict, List
 from sqlalchemy.orm import Session
 
 from app import eventbus
+from app.config import get_settings
 from app.models import Hospital, HospitalStatus, Service
 
 
@@ -20,8 +21,16 @@ def services_of(hospital: Hospital) -> List[str]:
     return [s for s in (hospital.services or "").split(",") if s in Service.ALL]
 
 
+def video_offered(hospital: Hospital) -> bool:
+    """Patients may book video visits: video visits are on for Endod
+    (HOSPITAL_VIDEO_VISITS_ENABLED, off by default) and for the hospital, with a price."""
+    return bool(get_settings().VIDEO_VISITS_ENABLED and hospital.video_enabled and hospital.price_video is not None)
+
+
 def snapshot(hospital: Hospital) -> Dict[str, Any]:
-    """Everything the patient app shows about the hospital (no staff or patient data)."""
+    """Everything the patient app shows about the hospital (no staff or patient data).
+    While video visits are off, never a video visit or its price."""
+    video = video_offered(hospital)
     return {
         "hospital_id": hospital.id,
         "code": hospital.code,
@@ -38,9 +47,9 @@ def snapshot(hospital: Hospital) -> Dict[str, Any]:
         "services": services_of(hospital),
         "open_hours": hospital.open_hours,
         "timezone": hospital.timezone,
-        "video_enabled": bool(hospital.video_enabled and hospital.price_video is not None),
+        "video_enabled": video,
         "price_in_person": hospital.price_in_person,
-        "price_video": hospital.price_video,
+        "price_video": hospital.price_video if video else None,
     }
 
 

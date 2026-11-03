@@ -51,7 +51,8 @@ parameterised queries are what keep that out.
 
 Migration 0007 installs these objects, 0008 the policies of
 ``hospital_keys`` (each hospital's wrapped data keys, app/crypto.py), and
-0009 those of the integration API's tables and its client lookup; the
+0009 those of the integration API's tables and its client lookup, 0010 those
+of the recovery codes, and 0012 those of the price list; the
 tests (which create the tables directly) call :func:`install`.
 tests/test_rls.py checks they agree.
 """
@@ -104,6 +105,8 @@ TENANT_TABLES: List[Tuple[str, str]] = [
     ("webhook_deliveries", "hospital_id"),
     # Migration 0010: two-step verification.
     ("staff_recovery_codes", "hospital_id"),
+    # Migration 0012: the hospital's price list.
+    ("price_items", "hospital_id"),
 ]
 
 #: Child tables without a hospital column: table -> (parent, foreign key column).

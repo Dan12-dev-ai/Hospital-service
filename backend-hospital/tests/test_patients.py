@@ -2,6 +2,10 @@ import pytest
 
 from conftest import make_hospital, make_staff, sign_in
 
+#: The old portal's clinical staff API: kept (the integration API shares its logic) but no longer
+#: signed in to; its tests sign clinical roles in (HOSPITAL_CLINICAL_SIGN_IN_ENABLED).
+pytestmark = pytest.mark.clinical_staff
+
 ALMAZ = {"full_name": "Almaz Tefera Kebede", "full_name_am": "አልማዝ ተፈራ", "sex": "female",
          "age_years": 48, "phone": "0911 234 567", "payer": "cbhi", "payer_number": "CBHI-AA-0042"}
 

@@ -50,7 +50,8 @@ export default defineConfig({
       url: `http://localhost:${PORTAL_PORT}/login`,
       reuseExistingServer: false,
       timeout: 180_000,
-      env: { HOSPITAL_API_URL: BACKEND_URL },
+      // The playground calls the integration API (mounted beside the API by e2e/backend.py).
+      env: { HOSPITAL_API_URL: BACKEND_URL, INTEGRATIONS_API_URL: `${BACKEND_URL}/integrations/v1` },
     },
   ],
 });

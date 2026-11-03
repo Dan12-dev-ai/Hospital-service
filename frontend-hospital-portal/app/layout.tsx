@@ -1,11 +1,9 @@
 import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
-import { ServiceWorkerRegistrar } from "@/components/pwa/service-worker-registrar";
 
 // Self-hosted at build time by next/font: the browser never asks Google for
-// fonts (no third-party request from a portal that shows patient data). The
-// icons are lucide SVGs (components/ui/icon.tsx), so no icon font is loaded.
+// fonts. The icons are lucide SVGs, so no icon font is loaded.
 const inter = Inter({
   subsets: ["latin"],
   weight: ["300", "400", "500", "600", "700"],
@@ -14,15 +12,9 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Dedan Health OS • Hospital Portal",
+  title: "Endod Developers",
   description:
-    "The Endod hospital portal: Endod bookings and video visits, patients, doctors and hospital settings.",
-  manifest: "/manifest.json",
-  appleWebApp: {
-    capable: true,
-    statusBarStyle: "default",
-    title: "Hospital Portal",
-  },
+    "The Endod developer dashboard: connect your hospital's own system to Endod. API keys, webhooks, logs, a playground and the docs.",
   icons: {
     icon: [
       { url: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
@@ -33,16 +25,13 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#0f172a",
+  themeColor: "#ffffff",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="en" className={`${inter.variable} h-full antialiased`}>
-      <body className="min-h-screen bg-app-bg font-sans text-body-text antialiased">
-        <ServiceWorkerRegistrar />
-        {children}
-      </body>
+      <body className="min-h-screen bg-white font-sans text-neutral-900 antialiased">{children}</body>
     </html>
   );
 }

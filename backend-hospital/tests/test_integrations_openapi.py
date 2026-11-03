@@ -55,9 +55,42 @@ def test_every_route_is_documented(app, spec):
                     assert content["schema"] == {"$ref": "#/components/schemas/OperationOutcome"}, (where, code)
 
 
-def test_hidden_routes_are_only_the_docs_and_the_fallback(app):
+VIDEO_ONLY = {"/bookings/{booking_id}/approve", "/bookings/{booking_id}/decline"}
+
+
+def test_hidden_routes_are_only_the_docs_the_fallback_and_video_visits(app, spec):
+    """Video visits are off by default (HOSPITAL_VIDEO_VISITS_ENABLED): approving
+    and declining them are left out of the document (and answer 404)."""
+    hidden = {r.path for r in app.routes if isinstance(r, APIRoute) and not r.include_in_schema}
+    assert hidden == {"/docs", "/fhir/{resource_type}"} | VIDEO_ONLY
+    assert not VIDEO_ONLY & set(spec["paths"])
+    assert "video" not in spec["info"]["description"].split("---")[0]
+
+
+def test_video_visits_on_are_documented(monkeypatch):
+    monkeypatch.setenv("HOSPITAL_VIDEO_VISITS_ENABLED", "true")
+    app = integrations.create_app()
     hidden = {r.path for r in app.routes if isinstance(r, APIRoute) and not r.include_in_schema}
     assert hidden == {"/docs", "/fhir/{resource_type}"}
+    spec = app.openapi()
+    assert VIDEO_ONLY <= set(spec["paths"])
+    assert "approve or decline video visits" in spec["info"]["description"]
+
+
+def test_pricing_is_documented(spec):
+    assert "Pricing" in {t["name"] for t in spec["tags"]}
+    for path, method, scope in (("/prices", "get", "prices.read"), ("/prices/consultation", "put", "prices.write"),
+                                ("/prices/lab-tests", "put", "prices.write"), ("/prices/imaging", "put", "prices.write"),
+                                ("/prices/procedures", "put", "prices.write")):
+        operation = spec["paths"][path][method]
+        assert operation["tags"] == ["Pricing"], path
+        assert {"endod": [scope]} in operation["security"], path
+        assert operation["responses"]["200"]["content"]["application/json"]["example"], path
+        if method == "put":
+            examples = operation["requestBody"]["content"]["application/json"]["examples"]
+            assert examples, path
+    flow = spec["components"]["securitySchemes"]["endod"]["flows"]["clientCredentials"]
+    assert {"prices.read", "prices.write"} <= set(flow["scopes"])
 
 
 def test_each_fhir_resource_has_its_own_operation(spec):

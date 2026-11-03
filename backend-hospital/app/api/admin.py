@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app import auth, listing
 from app.auth import Staff, audit, current_staff, require_roles, staff_payload
+from app.config import get_settings
 from app.db import session_scope, utcnow
 from app.models import (
     Department, DepartmentKind, DoctorProfile, DutyStatus, Hospital, HospitalKind, HospitalStatus, Patient,
@@ -42,6 +43,8 @@ def hospital_payload(h: Hospital) -> Dict[str, Any]:
         "latitude": h.latitude, "longitude": h.longitude,
         "services": listing.services_of(h), "open_hours": h.open_hours,
         "video_enabled": h.video_enabled,
+        # Whether Endod offers video visits at all (HOSPITAL_VIDEO_VISITS_ENABLED; off by default).
+        "video_visits_offered": get_settings().VIDEO_VISITS_ENABLED,
         # Birr, as text with two decimals (exact; never a float).
         "price_in_person": birr(h.price_in_person),
         "price_video": birr(h.price_video),
@@ -108,6 +111,8 @@ def update_hospital(body: HospitalUpdate, staff: Staff = Depends(admin_only)) ->
         raise HTTPException(status_code=400, detail="Give latitude and longitude together.")
     if "services" in changes:
         changes["services"] = ",".join(changes["services"] or []) or None
+    if not get_settings().VIDEO_VISITS_ENABLED and (changes.get("video_enabled") or "price_video" in changes):
+        raise HTTPException(status_code=400, detail="Video visits are not offered through Endod.")
     for field in ("price_in_person", "price_video"):
         if field in changes and changes[field] is not None:
             changes[field] = santim(changes[field])

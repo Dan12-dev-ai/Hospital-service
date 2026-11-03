@@ -1,5 +1,5 @@
 # The Endod hospital service: its own Postgres, the API, the event worker
-# and the staff portal (hospital.endod-health.com).
+# and the developer dashboard (hospital.endod-health.com).
 #
 # It shares nothing with the patient platform except the event bus: the
 # worker and API join the "endod-bus" network that Endod's Compose project
@@ -49,6 +49,9 @@ x-api-env: &api-env
   # Where nginx publishes the integration API (the `integrations` service
   # below): the portal's "Connect your system" pages show it.
   HOSPITAL_INTEGRATIONS_PUBLIC_URL: ${INTEGRATIONS_PUBLIC_URL:-https://api.endod-health.com/hospital/v1}
+  # Video visits are off (Endod is an integration layer; in-person bookings
+  # only). "true" brings them back (backend-hospital/README.md).
+  HOSPITAL_VIDEO_VISITS_ENABLED: ${VIDEO_VISITS_ENABLED:-false}
 
 services:
   postgres:
@@ -168,11 +171,14 @@ services:
       api:
         condition: service_healthy
 
+  # The developer dashboard (hospital.endod-health.com). Its playground calls
+  # the integration API at its public URL (through nginx, like any system).
   portal:
     build: ../frontend-hospital-portal
     restart: unless-stopped
     environment:
       HOSPITAL_API_URL: http://api:8000
+      INTEGRATIONS_API_URL: ${INTEGRATIONS_PUBLIC_URL:-https://api.endod-health.com/hospital/v1}
     networks:
       default: {}
       shared_edge:

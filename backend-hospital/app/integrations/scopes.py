@@ -1,4 +1,4 @@
-"""What a connection may do: technical scope names (the API) and plain words (the portal)."""
+"""What a connection may do: technical scope names (the API) and plain words (the dashboard)."""
 
 from __future__ import annotations
 
@@ -17,6 +17,8 @@ BOOKINGS_WRITE = "bookings.write"
 FOLLOWUPS = "followups.write"
 PRESCRIPTIONS_READ = "prescriptions.read"
 QUEUE = "queue.write"
+PRICES_READ = "prices.read"
+PRICES_WRITE = "prices.write"
 WEBHOOKS = "webhooks"
 
 #: scope -> (label in the portal, longer description). In the portal's order.
@@ -31,13 +33,18 @@ SCOPES: Dict[str, Tuple[str, str]] = {
     PATIENTS_WRITE: ("Register and link patients", "Register patients (Endod gives the hospital number), link "
                                                    "them to their Endod account, or unlink them."),
     BOOKINGS_READ: ("See bookings", "Read the bookings patients made through Endod."),
-    BOOKINGS_WRITE: ("Decide on bookings", "Approve or decline video visits, cancel bookings and mark visits "
-                                           "completed, as the portal does."),
+    BOOKINGS_WRITE: ("Decide on bookings", "Cancel bookings and mark visits completed (and approve or decline "
+                                           "video visits, when Endod offers them)."),
     FOLLOWUPS: ("Set follow-ups", "Set, list and cancel follow-up dates (the patient gets an SMS and a reminder)."),
     PRESCRIPTIONS_READ: ("See what pharmacies gave", "Read a prescription with what pharmacies dispensed from it, "
                                                      "item by item."),
     QUEUE: ("Run the queue", "Check patients in to a doctor's queue, call the next one, and mark them done, "
                              "skipped or cancelled."),
+    PRICES_READ: ("See the price list", "Read the hospital's price list: consultation, lab tests, imaging and "
+                                        "procedures."),
+    PRICES_WRITE: ("Sync the price list", "Replace the hospital's price list from your system (the consultation "
+                                          "price patients see in the Endod app, lab tests, imaging, procedures); "
+                                          "read it back."),
     WEBHOOKS: ("Get notified of changes", "Receive events: bookings made, confirmed or cancelled; patients "
                                           "linked, refused or unlinked; prescriptions dispensed."),
 }
