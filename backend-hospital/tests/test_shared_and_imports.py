@@ -290,7 +290,7 @@ class TestFhirImport:
             "drug": "Metformin 500 mg", "dose": "1 tablet", "route": "oral", "frequency": "twice daily",
             "duration": None, "quantity": "60 tablets", "notes": None}
         lab = published["lab_result"]["details"]["items"][0]
-        assert lab == {"test": "HbA1c", "value": "8.2", "unit": "%", "reference_range": "4-5.6", "flag": "high"}
+        assert lab == {"test": "HbA1c", "code": None, "value": "8.2", "unit": "%", "reference_range": "4-5.6", "flag": "high"}
         assert published["imaging"]["details"]["modality"] == "CT"
         assert published["imaging"]["details"]["findings"] == "No acute findings."
         [document_file] = published["document"]["files"]
