@@ -584,6 +584,51 @@ class PatientLinkRequest(Base):
         return checked_dedan_id(value)
 
 
+class SmsEnrolmentStatus:
+    #: Asked Endod to text the code (patient.sms_enrol_requested).
+    SENDING = "sending"
+    #: Endod texted it; reception may type the code (again, after a wrong one).
+    CODE_SENT = "code_sent"
+    #: The code was sent to Endod to check (patient.sms_enrol_verify).
+    VERIFYING = "verifying"
+    #: Endod linked the patient to an Endod account (patient.sms_enrolled).
+    ENROLLED = "enrolled"
+    #: Refused for good (see reason).
+    FAILED = "failed"
+    #: Replaced by a newer request, or the patient was linked another way.
+    SUPERSEDED = "superseded"
+    OPEN = (SENDING, CODE_SENT, VERIFYING)
+    ALL = (SENDING, CODE_SENT, VERIFYING, ENROLLED, FAILED, SUPERSEDED)
+
+
+class SmsEnrolment(Base):
+    """A request to enrol a patient with Endod by SMS (app.linking, docs/history-events.md section 8):
+    for a patient without an Endod account (often without a smartphone), Endod
+    texts a code to ``phone``; once reception types it, Endod creates (or finds)
+    the account and the patient is linked."""
+
+    __tablename__ = "sms_enrolments"
+    __table_args__ = (Index("ix_sms_enrolments_patient", "patient_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False)
+    patient_id: Mapped[str] = mapped_column(ForeignKey("patients.id", ondelete="CASCADE"), nullable=False)
+    #: +251XXXXXXXXX, where the code was texted.
+    phone: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default=SmsEnrolmentStatus.SENDING)
+    #: Endod's last refusal (``wrong_code``, ``expired``, ...), or ours.
+    reason: Mapped[Optional[str]] = mapped_column(String(40))
+    #: Guesses left after a wrong code.
+    attempts_left: Mapped[Optional[int]] = mapped_column(Integer)
+    #: The Endod ID, once enrolled.
+    dedan_id: Mapped[Optional[str]] = mapped_column(String(16))
+    #: Whether Endod created the account (false: the phone's existing one).
+    created_account: Mapped[Optional[bool]] = mapped_column(Boolean)
+    code_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
 class RecordCategory:
     DIAGNOSIS = "diagnosis"
     PRESCRIPTION = "prescription"

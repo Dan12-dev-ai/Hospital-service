@@ -113,6 +113,9 @@ def build(table, h, n):
         "price_items": lambda: m.PriceItem(
             id=_id(h, "price", n), hospital_id=h, category="lab_tests", code=f"CBC-{n}", name="Complete blood count",
             price=35000, active=True),
+        # SMS enrolments (migration 0013).
+        "sms_enrolments": lambda: m.SmsEnrolment(
+            id=_id(h, "sms", n), hospital_id=h, patient_id=patient, phone="+251911000000", status="code_sent"),
         "webhook_deliveries": lambda: m.WebhookDelivery(
             id=_id(h, "delivery", n), hospital_id=h, client_pk=client, event_id=f"evt-{n}",
             event_type="booking.created", body="{}", status="pending", attempts=0),
@@ -126,7 +129,7 @@ SEED_ORDER = ["hospitals", "hospital_keys", "departments", "staff_users", "staff
               "record_files", "queue_days", "queue_entries", "record_shares", "shared_records", "import_batches",
               "onboarding_applications", "onboarding_documents", "demo_bookings", "prescription_dispenses",
               "integration_clients", "integration_assertions", "integration_requests", "integration_resources",
-              "integration_idempotency", "webhook_deliveries", "staff_recovery_codes", "price_items"]
+              "integration_idempotency", "webhook_deliveries", "staff_recovery_codes", "price_items", "sms_enrolments"]
 
 
 #: A second row for the same hospital is not possible (or not a new hospital's).
@@ -189,17 +192,18 @@ def test_migration_installs_what_app_rls_describes():
     integrations = _migration("0009_integration_api.py")
     two_step = _migration("0010_two_step_verification.py")
     prices = _migration("0012_price_list_and_playground.py")
-    assert migration.TENANT_TABLES + keys.TENANT_TABLES + integrations.TENANT_TABLES + two_step.TENANT_TABLES         + prices.TENANT_TABLES == rls.TENANT_TABLES
+    sms = _migration("0013_sms_enrolments.py")
+    assert migration.TENANT_TABLES + keys.TENANT_TABLES + integrations.TENANT_TABLES + two_step.TENANT_TABLES         + prices.TENANT_TABLES + sms.TENANT_TABLES == rls.TENANT_TABLES
     assert migration.CHILD_TABLES == rls.CHILD_TABLES
-    assert migration.SAME_HOSPITAL_REFERENCES + integrations.SAME_HOSPITAL_REFERENCES         + two_step.SAME_HOSPITAL_REFERENCES == rls.SAME_HOSPITAL_REFERENCES
+    assert migration.SAME_HOSPITAL_REFERENCES + integrations.SAME_HOSPITAL_REFERENCES         + two_step.SAME_HOSPITAL_REFERENCES + sms.SAME_HOSPITAL_REFERENCES == rls.SAME_HOSPITAL_REFERENCES
     assert migration.FUNCTIONS + integrations.FUNCTIONS == rls.FUNCTIONS
-    for later in (keys, integrations, two_step, prices):
+    for later in (keys, integrations, two_step, prices, sms):
         assert later.PLATFORM_ROLE == rls.PLATFORM_ROLE and later.TENANT == rls.TENANT
     assert set(migration._parents()) | set(integrations.NEW_PARENTS) == set(rls.parents())
     assert sorted(migration.install_statements() + keys.policy_statements() + integrations.install_statements()
-                  + two_step.install_statements() + prices.install_statements()) == sorted(rls.install_statements())
+                  + two_step.install_statements() + prices.install_statements() + sms.install_statements())         == sorted(rls.install_statements())
     assert sorted(migration.drop_statements() + keys.drop_statements() + integrations.drop_statements()
-                  + two_step.drop_statements() + prices.drop_statements()) == sorted(rls.drop_statements())
+                  + two_step.drop_statements() + prices.drop_statements() + sms.drop_statements())         == sorted(rls.drop_statements())
 
 
 def test_every_reference_between_two_rows_of_a_hospital_is_a_composite_key():
