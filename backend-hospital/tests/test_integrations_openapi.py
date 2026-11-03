@@ -150,3 +150,24 @@ def test_served_at_openapi_json(db):
 
     served = TestClient(integrations_main.create_app()).get("/integrations/v1/openapi.json").json()
     assert "/patients" in served["paths"] and "prescription.dispensed" in served["webhooks"]
+
+
+def test_charges_are_documented(spec):
+    assert "Charges" in {t["name"] for t in spec["tags"]}
+    for path, method, scopes_needed in (
+            ("/charges", "post", ["charges.write"]), ("/charges", "get", ["charges.read", "charges.write"]),
+            ("/charges/{charge_id}", "get", ["charges.read", "charges.write"]),
+            ("/charges/{charge_id}/paid", "post", ["charges.write"]),
+            ("/charges/{charge_id}/void", "post", ["charges.write"]),
+            ("/service-fee", "get", ["charges.read", "charges.write", "bookings.read"]),
+            ("/bookings/{booking_id}/paid", "post", ["bookings.write"])):
+        operation = spec["paths"][path][method]
+        assert [{"endod": [s]} for s in scopes_needed] == operation["security"], path
+        [success] = [c for c in operation["responses"] if c.startswith("2")]
+        assert operation["responses"][success]["content"]["application/json"]["example"], path
+        if method == "post":
+            assert operation["requestBody"]["content"]["application/json"]["examples"], path
+    assert "once per charge" in spec["paths"]["/charges"]["post"]["description"]
+    flow = spec["components"]["securitySchemes"]["endod"]["flows"]["clientCredentials"]
+    assert {"charges.read", "charges.write"} <= set(flow["scopes"])
+    assert {"charge.created", "charge.paid", "charge.voided"} <= set(spec["webhooks"])

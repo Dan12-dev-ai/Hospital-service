@@ -2,7 +2,7 @@
 
 * **Events:** booking.created, booking.confirmed, booking.cancelled,
   patient.linked, patient.link_refused, patient.unlinked, patient.sms_enrolment,
-  prescription.dispensed (and endpoint.test from "Send test event"), to every connection of the hospital with the ``webhooks`` scope
+  prescription.dispensed, charge.created, charge.paid, charge.voided (and endpoint.test from "Send test event"), to every connection of the hospital with the ``webhooks`` scope
   and a webhook URL, Live connections only (a Test connection gets only
   ``endpoint.test``: never an event about real bookings or patients). Bodies are thin: ids, statuses and times, never notes
   or clinical data (a connection with ``bookings.read`` fetches the rest).
@@ -53,7 +53,8 @@ from app.models import Booking, DeliveryStatus, IntegrationClient, IntegrationMo
 logger = logging.getLogger("hospital.webhooks")
 
 EVENTS = ("booking.created", "booking.confirmed", "booking.cancelled", "patient.linked", "patient.link_refused",
-          "patient.unlinked", "patient.sms_enrolment", "prescription.dispensed")
+          "patient.unlinked", "patient.sms_enrolment", "prescription.dispensed", "charge.created", "charge.paid",
+          "charge.voided")
 TEST_EVENT = "endpoint.test"
 SIGNATURE_HEADER = "Endod-Signature"
 #: Seconds to wait before attempt n+1 (the last value repeats); given up 24 hours after the event.

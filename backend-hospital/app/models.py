@@ -502,6 +502,14 @@ class Booking(Base):
     #: BookingPayment: paid online to Endod, or paid at the hospital.
     payment: Mapped[str] = mapped_column(String(12), nullable=False, default=BookingPayment.ONLINE,
                                          server_default=text("'online'"))
+    #: Endod's service fee on this visit (santim; migration 0014). Paid at the
+    #: hospital, the hospital collects ``price`` + ``service_fee`` and owes
+    #: Endod the fee; paid online, Endod already has it.
+    service_fee: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    #: Paid at the hospital: when, how (PaymentMethod) and the hospital's reference.
+    paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    paid_method: Mapped[Optional[str]] = mapped_column(String(16))
+    paid_reference: Mapped[Optional[str]] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     #: The doctor who approved (video) or was assigned.
     doctor_id: Mapped[Optional[str]] = mapped_column(ForeignKey("staff_users.id", ondelete="SET NULL"))
@@ -1193,6 +1201,87 @@ class PriceItem(Base):
     #: Santim (1/100 birr).
     price: Mapped[int] = mapped_column(Integer, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class EndodFeeSettings(Base):
+    """Endod's service fee as the patient platform last announced it
+    (``fees.updated``, app/fees.py; migration 0014). One row (``id`` 1),
+    belonging to no hospital: kept so fees are quoted while the platform is
+    unreachable. Only the newest ``version`` is kept."""
+
+    __tablename__ = "endod_fee_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    flat_santim: Mapped[int] = mapped_column(Integer, nullable=False)
+    percent_bp: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: When the super admin saved them (the platform's time).
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChargeStatus:
+    OPEN = "open"
+    PAID = "paid"
+    VOIDED = "voided"
+    ALL = (OPEN, PAID, VOIDED)
+
+
+class ChargeCategory:
+    LAB_TEST = "lab_test"
+    IMAGING = "imaging"
+    PROCEDURE = "procedure"
+    CONSULTATION = "consultation"
+    OTHER = "other"
+    ALL = (LAB_TEST, IMAGING, PROCEDURE, CONSULTATION, OTHER)
+
+
+class PaymentMethod:
+    """How a patient paid at the hospital."""
+
+    CASH = "cash"
+    CARD = "card"
+    MOBILE_MONEY = "mobile_money"
+    OTHER = "other"
+    ALL = (CASH, CARD, MOBILE_MONEY, OTHER)
+
+
+class Charge(Base):
+    """A bill for a hospital service (lab tests, imaging, procedures...), made
+    by the hospital's system through the integration API (app/charges.py;
+    migration 0014). Endod's service fee is added once per charge, with the
+    settings in force when it was made (kept here). The items (what was done)
+    are encrypted at rest. Money in santim."""
+
+    __tablename__ = "charges"
+    __table_args__ = (Index("ix_charges_hospital_created", "hospital_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False)
+    patient_id: Mapped[str] = mapped_column(ForeignKey("patients.id", ondelete="CASCADE"), nullable=False,
+                                            index=True)
+    booking_id: Mapped[Optional[str]] = mapped_column(ForeignKey("bookings.id", ondelete="SET NULL"))
+    #: JSON list of {category, code, name, amount (santim), quantity}.
+    items: Mapped[str] = mapped_column(SealedText(60000), nullable=False)
+    subtotal: Mapped[int] = mapped_column(Integer, nullable=False)
+    service_fee: Mapped[int] = mapped_column(Integer, nullable=False)
+    total: Mapped[int] = mapped_column(Integer, nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="ETB")
+    #: The fee settings applied (EndodFeeSettings at the time; version 0: the default).
+    fee_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fee_flat_santim: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fee_percent_bp: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(8), nullable=False, default=ChargeStatus.OPEN)
+    method: Mapped[Optional[str]] = mapped_column(String(16))
+    reference: Mapped[Optional[str]] = mapped_column(String(100))
+    paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    void_reason: Mapped[Optional[str]] = mapped_column(SealedText(300))
+    voided_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    #: The integration connection that made it.
+    client_id: Mapped[Optional[str]] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 

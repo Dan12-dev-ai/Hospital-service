@@ -109,6 +109,8 @@ TENANT_TABLES: List[Tuple[str, str]] = [
     ("price_items", "hospital_id"),
     # Migration 0013: SMS enrolments.
     ("sms_enrolments", "hospital_id"),
+    # Migration 0014: charges.
+    ("charges", "hospital_id"),
 ]
 
 #: Child tables without a hospital column: table -> (parent, foreign key column).
@@ -118,7 +120,7 @@ CHILD_TABLES: Dict[str, Tuple[str, str]] = {
 }
 
 #: Tables that belong to no hospital.
-SHARED_TABLES = ("outbox_events", "processed_events", "encryption_state")
+SHARED_TABLES = ("outbox_events", "processed_events", "encryption_state", "endod_fee_settings")
 
 #: Table rights other than full read and write, per role. The audit log is
 #: append-only for both; the event outbox (patient names, phones, clinical
@@ -132,7 +134,7 @@ SHARED_TABLES = ("outbox_events", "processed_events", "encryption_state")
 #: encryption_state: whether encryption is enforced is set only by Endod; the
 #: app may record which master key the database belongs to (first start, or
 #: first data key), and the code only ever fills those columns while empty.
-APP_RIGHTS = {"audit_events": "SELECT, INSERT", "outbox_events": "INSERT",
+APP_RIGHTS = {"audit_events": "SELECT, INSERT", "outbox_events": "INSERT", "endod_fee_settings": "SELECT",
               "hospital_keys": "SELECT, INSERT",
               "encryption_state": "SELECT, INSERT, UPDATE (kek_check, kek_fingerprint, kek_recorded_at)"}
 PLATFORM_RIGHTS = {"audit_events": "SELECT, INSERT", "hospital_keys": "SELECT, INSERT, UPDATE (active)",
@@ -184,6 +186,9 @@ SAME_HOSPITAL_REFERENCES: List[Tuple[str, str, str, str]] = [
     ("staff_recovery_codes", "user_id", "staff_users", "CASCADE"),
     # Migration 0013: SMS enrolments.
     ("sms_enrolments", "patient_id", "patients", "CASCADE"),
+    # Migration 0014: charges.
+    ("charges", "patient_id", "patients", "CASCADE"),
+    ("charges", "booking_id", "bookings", "SET NULL"),
 ]
 
 TENANT_POLICY = "tenant_isolation"

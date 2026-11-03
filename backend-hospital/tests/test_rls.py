@@ -116,6 +116,10 @@ def build(table, h, n):
         # SMS enrolments (migration 0013).
         "sms_enrolments": lambda: m.SmsEnrolment(
             id=_id(h, "sms", n), hospital_id=h, patient_id=patient, phone="+251911000000", status="code_sent"),
+        # Charges (migration 0014).
+        "charges": lambda: m.Charge(
+            id=_id(h, "charge", n), hospital_id=h, patient_id=patient, booking_id=_id(h, "booking", 1),
+            items="[]", subtotal=35000, service_fee=2500, total=37500, status="open"),
         "webhook_deliveries": lambda: m.WebhookDelivery(
             id=_id(h, "delivery", n), hospital_id=h, client_pk=client, event_id=f"evt-{n}",
             event_type="booking.created", body="{}", status="pending", attempts=0),
@@ -129,7 +133,7 @@ SEED_ORDER = ["hospitals", "hospital_keys", "departments", "staff_users", "staff
               "record_files", "queue_days", "queue_entries", "record_shares", "shared_records", "import_batches",
               "onboarding_applications", "onboarding_documents", "demo_bookings", "prescription_dispenses",
               "integration_clients", "integration_assertions", "integration_requests", "integration_resources",
-              "integration_idempotency", "webhook_deliveries", "staff_recovery_codes", "price_items", "sms_enrolments"]
+              "integration_idempotency", "webhook_deliveries", "staff_recovery_codes", "price_items", "sms_enrolments", "charges"]
 
 
 #: A second row for the same hospital is not possible (or not a new hospital's).
@@ -193,17 +197,20 @@ def test_migration_installs_what_app_rls_describes():
     two_step = _migration("0010_two_step_verification.py")
     prices = _migration("0012_price_list_and_playground.py")
     sms = _migration("0013_sms_enrolments.py")
-    assert migration.TENANT_TABLES + keys.TENANT_TABLES + integrations.TENANT_TABLES + two_step.TENANT_TABLES         + prices.TENANT_TABLES + sms.TENANT_TABLES == rls.TENANT_TABLES
+    fee = _migration("0014_service_fee_and_charges.py")
+    assert migration.TENANT_TABLES + keys.TENANT_TABLES + integrations.TENANT_TABLES + two_step.TENANT_TABLES         + prices.TENANT_TABLES + sms.TENANT_TABLES + fee.TENANT_TABLES == rls.TENANT_TABLES
     assert migration.CHILD_TABLES == rls.CHILD_TABLES
-    assert migration.SAME_HOSPITAL_REFERENCES + integrations.SAME_HOSPITAL_REFERENCES         + two_step.SAME_HOSPITAL_REFERENCES + sms.SAME_HOSPITAL_REFERENCES == rls.SAME_HOSPITAL_REFERENCES
+    assert migration.SAME_HOSPITAL_REFERENCES + integrations.SAME_HOSPITAL_REFERENCES         + two_step.SAME_HOSPITAL_REFERENCES + sms.SAME_HOSPITAL_REFERENCES + fee.SAME_HOSPITAL_REFERENCES         == rls.SAME_HOSPITAL_REFERENCES
     assert migration.FUNCTIONS + integrations.FUNCTIONS == rls.FUNCTIONS
-    for later in (keys, integrations, two_step, prices, sms):
+    for later in (keys, integrations, two_step, prices, sms, fee):
         assert later.PLATFORM_ROLE == rls.PLATFORM_ROLE and later.TENANT == rls.TENANT
     assert set(migration._parents()) | set(integrations.NEW_PARENTS) == set(rls.parents())
     assert sorted(migration.install_statements() + keys.policy_statements() + integrations.install_statements()
-                  + two_step.install_statements() + prices.install_statements() + sms.install_statements())         == sorted(rls.install_statements())
+                  + two_step.install_statements() + prices.install_statements() + sms.install_statements()
+                  + fee.install_statements()) == sorted(rls.install_statements())
     assert sorted(migration.drop_statements() + keys.drop_statements() + integrations.drop_statements()
-                  + two_step.drop_statements() + prices.drop_statements() + sms.drop_statements())         == sorted(rls.drop_statements())
+                  + two_step.drop_statements() + prices.drop_statements() + sms.drop_statements()
+                  + fee.drop_statements()) == sorted(rls.drop_statements())
 
 
 def test_every_reference_between_two_rows_of_a_hospital_is_a_composite_key():
@@ -658,8 +665,9 @@ def test_a_session_level_role_or_setting_never_reaches_the_next_checkout(db):
 # --- migration safety -------------------------------------------------------------------------------
 
 def test_the_migration_checks_the_same_rows_as_app_rls():
-    # 0009's, 0010's and 0013's tables are new (empty) when their composite keys are added: nothing to check.
-    new = {child for name in ("0009_integration_api.py", "0010_two_step_verification.py", "0013_sms_enrolments.py")
+    # 0009's, 0010's, 0013's and 0014's tables are new (empty) when their composite keys are added: nothing to check.
+    new = {child for name in ("0009_integration_api.py", "0010_two_step_verification.py", "0013_sms_enrolments.py",
+                              "0014_service_fee_and_charges.py")
            for child, *_rest in _migration(name).SAME_HOSPITAL_REFERENCES}
     assert _migration().cross_hospital_queries() == [q for q in rls.cross_hospital_queries() if q[0] not in new]
 

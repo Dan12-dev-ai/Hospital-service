@@ -19,6 +19,8 @@ PRESCRIPTIONS_READ = "prescriptions.read"
 QUEUE = "queue.write"
 PRICES_READ = "prices.read"
 PRICES_WRITE = "prices.write"
+CHARGES_READ = "charges.read"
+CHARGES_WRITE = "charges.write"
 WEBHOOKS = "webhooks"
 
 #: scope -> (label in the portal, longer description). In the portal's order.
@@ -45,8 +47,15 @@ SCOPES: Dict[str, Tuple[str, str]] = {
     PRICES_WRITE: ("Sync the price list", "Replace the hospital's price list from your system (the consultation "
                                           "price patients see in the Endod app, lab tests, imaging, procedures); "
                                           "read it back."),
+    CHARGES_READ: ("See charges", "Read the charges made for patients (with Endod's service fee) and the fee in "
+                                  "force."),
+    CHARGES_WRITE: ("Charge patients", "Charge patients for lab tests, imaging, procedures and other services "
+                                       "(Endod adds its service fee, and the patient sees the bill and gets an SMS), "
+                                       "mark charges and visits paid at the hospital, void open charges; read them "
+                                       "back."),
     WEBHOOKS: ("Get notified of changes", "Receive events: bookings made, confirmed or cancelled; patients "
-                                          "linked, refused or unlinked; prescriptions dispensed."),
+                                          "linked, refused or unlinked; prescriptions dispensed; charges made, "
+                                          "paid or voided."),
 }
 ALL: Tuple[str, ...] = tuple(SCOPES)
 #: The scopes that send FHIR records.

@@ -29,7 +29,7 @@ const GROUPS: { name: string; slugs: string[] }[] = [
     ],
   },
   { name: "Patient journey", slugs: ["patients", "bookings", "the-queue", "follow-ups", "prescriptions-dispensed"] },
-  { name: "Prices", slugs: ["pricing"] },
+  { name: "Prices and charges", slugs: ["pricing", "charges"] },
   { name: "Reference", slugs: ["webhooks", "errors", "limits", "test-mode", "what-endod-keeps"] },
 ];
 

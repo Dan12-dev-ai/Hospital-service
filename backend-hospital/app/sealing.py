@@ -57,6 +57,8 @@ SEALED: Dict[str, Tuple[str, ...]] = {
     # Migration 0010: authenticator secrets.
     "staff_users": ("totp_secret",),
     "staff_sessions": ("totp_pending_secret",),
+    # Migration 0014: charges (what was done is clinical).
+    "charges": ("items", "void_reason"),
 }
 
 #: Tables whose hospital is their parent row's: table -> (parent table, foreign key column).
