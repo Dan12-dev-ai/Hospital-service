@@ -158,10 +158,14 @@ class TestPlayground:
         assert client.get(f"{API}/bookings", headers=token).json()["items"][0]["sample"] is True
         second = client.post("/playground/credentials", headers=admin, json={}).json()
         assert second["client_id"] == first["client_id"] and second["client_secret"] != first["client_secret"]
-        # The old secret, and the token issued with it, stop working.
+        # The old secret stops working; a token issued with it stays valid until it expires, so
+        # dashboard servers renewing at the same time never revoke each other's tokens.
         old = token_request(client, headers=basic(first["client_id"], first["client_secret"]))
         assert old.status_code == 401
-        assert client.get(f"{API}/bookings", headers=token).status_code == 401
+        assert client.get(f"{API}/bookings", headers=token).status_code == 200
+        newer = get_token(client, {"connection": {"client_id": second["client_id"]},
+                                   "client_secret": second["client_secret"]})
+        assert client.get(f"{API}/bookings", headers=newer).status_code == 200
         assert audits("integration_playground_credentials")[-1] == {"client_id": first["client_id"]}
 
     def test_test_mode_only_never_real_data(self, client, admin, hospital):
@@ -345,6 +349,27 @@ class TestVideoVisitsOff:
             monkeypatch.setenv("HOSPITAL_VIDEO_VISITS_ENABLED", "true")
             on = listing.snapshot(h)
             assert on["video_enabled"] is True and on["price_video"] == 20000
+
+    def test_a_video_booking_made_before_cannot_be_approved_or_joined(self, client, hospital, monkeypatch):
+        from app import bookings as booking_rules
+        from conftest import make_staff as staff
+
+        doctor = staff(hospital, "doc@sph.example", role="doctor")
+        with platform_session() as session:
+            booking = Booking(hospital_id=hospital, external_id="video-1", patient_dedan_id="DE123456",
+                              patient_name="Video Patient", visit_mode="video", status="awaiting_doctor",
+                              scheduled_at=datetime.now(timezone.utc) + timedelta(days=1))
+            session.add(booking)
+            session.flush()
+            with pytest.raises(booking_rules.BookingError) as refused:
+                booking_rules.approve_video(session, booking, session.get(StaffUser, doctor), None)
+            assert refused.value.status_code == 409 and "not offered" in str(refused.value)
+            booking.status, booking.doctor_id, booking.meeting_room = "confirmed", doctor, "room-1"
+            booking_id = booking.id
+        monkeypatch.setenv("HOSPITAL_CLINICAL_SIGN_IN_ENABLED", "true")
+        headers = sign_in(client, "doc@sph.example")
+        joined = client.post(f"/bookings/{booking_id}/video", headers=headers)
+        assert joined.status_code == 409 and "not offered" in joined.json()["error"]
 
     def test_settings_refuse_video(self, client, admin):
         assert client.get("/hospital", headers=admin).json()["video_visits_offered"] is False

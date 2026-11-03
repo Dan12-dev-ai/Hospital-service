@@ -119,6 +119,7 @@ test("a developer manages a key: allowed addresses, a webhook with a test event,
   await expect(page.getByTestId("toast")).toHaveText("Allowed addresses saved");
 
   await page.getByRole("navigation", { name: "Dashboard" }).getByRole("link", { name: "Webhooks" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "Webhooks" })).toBeVisible();
   await page.getByLabel("API key").filter({ visible: true }).selectOption({ label: "Pharmacy system (Test)" });
   await page.getByLabel("Webhook URL").filter({ visible: true }).fill("https://hooks.example.com/endod");
   await page.getByRole("button", { name: "Save webhook" }).click();
@@ -128,6 +129,9 @@ test("a developer manages a key: allowed addresses, a webhook with a test event,
   await expect(page.getByTestId("delivery-log")).toContainText("endpoint.test");
 
   await page.getByRole("navigation", { name: "Dashboard" }).getByRole("link", { name: "Logs" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "Logs" })).toBeVisible();
+  // The page left behind is kept, hidden, by the router: only the visible picker counts.
+  await expect(page.getByLabel("API key").filter({ visible: true })).toHaveCount(1);
   await page.getByLabel("API key").filter({ visible: true }).selectOption({ label: "Pharmacy system (Test)" });
   await expect(page.getByTestId("request-log").filter({ visible: true })).toContainText(/POST\s*\/integrations\/v1\/oauth\/token/);
 });

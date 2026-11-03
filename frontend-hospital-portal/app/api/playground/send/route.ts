@@ -15,6 +15,27 @@ import {
 
 const MAX_BODY = 256 * 1024;
 
+/** The body as text, read no further than `limit` bytes (null: larger, or a declared length over it). */
+async function readLimited(request: NextRequest, limit: number): Promise<string | null> {
+  const declared = Number(request.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declared) && declared > limit) return null;
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > limit) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf-8");
+}
+
 /**
  * Sends one playground request to the integration API, in Test mode, with
  * the hospital's playground connection (lib/server/playground.ts). The page
@@ -27,8 +48,8 @@ export async function POST(request: NextRequest) {
   const session = request.cookies.get(SESSION_COOKIE)?.value;
   if (!session) return errorResponse(401, "Authentication required.");
 
-  const raw = await request.text();
-  if (raw.length > MAX_BODY) return errorResponse(413, "The request is too large for the playground (256 KB at most).");
+  const raw = await readLimited(request, MAX_BODY);
+  if (raw === null) return errorResponse(413, "The request is too large for the playground (256 KB at most).");
   let input: unknown;
   try {
     input = JSON.parse(raw || "{}");
@@ -72,7 +93,7 @@ export async function POST(request: NextRequest) {
   try {
     let result = await send(await accessToken(request, session, user.hospitalId));
     if (result.response.status === 401) {
-      // The token expired or its credentials changed: once more with a new one.
+      // The token expired (or the key was replaced): once more with a new one.
       forgetToken(user.hospitalId);
       result = await send(await accessToken(request, session, user.hospitalId, true));
     }

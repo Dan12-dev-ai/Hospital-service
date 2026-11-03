@@ -108,6 +108,7 @@ async function newToken(request: NextRequest, sessionToken: string): Promise<Cac
     throw new PlaygroundError(502, "The integration API is not reachable. Try again shortly.");
   }
   const body: unknown = await response.json().catch(() => null);
+  if (response.status === 401) throw new RefusedSecret(502, "The playground could not get an access token. Try again shortly.");
   if (response.status !== 200 || !isRecord(body) || typeof body.access_token !== "string") {
     throw new PlaygroundError(502, "The playground could not get an access token. Try again shortly.");
   }
@@ -116,13 +117,27 @@ async function newToken(request: NextRequest, sessionToken: string): Promise<Cac
   return { token: body.access_token, expiresAt: Date.now() + Math.max(30, lifetime - 60) * 1000 };
 }
 
+/**
+ * New credentials exchanged for a token; once more if the exchange is refused
+ * (another dashboard server asked for newer credentials in between: that
+ * replaces the secret, but never revokes tokens already issued).
+ */
+async function newTokenWithRetry(request: NextRequest, sessionToken: string): Promise<CachedToken> {
+  try {
+    return await newToken(request, sessionToken);
+  } catch (error) {
+    if (!(error instanceof RefusedSecret)) throw error;
+    return newToken(request, sessionToken);
+  }
+}
+
 /** The hospital's playground access token (cached; one renewal at a time per hospital). */
 export async function accessToken(request: NextRequest, sessionToken: string, hospitalId: string, renew = false): Promise<string> {
   const cached = tokens.get(hospitalId);
   if (!renew && cached && cached.expiresAt > Date.now()) return cached.token;
   let inFlight = pending.get(hospitalId);
   if (!inFlight) {
-    inFlight = newToken(request, sessionToken).finally(() => pending.delete(hospitalId));
+    inFlight = newTokenWithRetry(request, sessionToken).finally(() => pending.delete(hospitalId));
     pending.set(hospitalId, inFlight);
   }
   const fresh = await inFlight;
@@ -143,16 +158,23 @@ export class PlaygroundError extends Error {
   }
 }
 
+/** The token endpoint refused a secret that was replaced in the meantime. */
+class RefusedSecret extends PlaygroundError {}
+
 // --- which requests ---------------------------------------------------------------------------------
 
 export const METHODS = new Set(["GET", "POST", "PUT", "DELETE"]);
 
-/** Only API operations: never the token endpoint, the keys, or anything outside the API. */
+/**
+ * Only API operations: never the token endpoint, the keys, or anything
+ * outside the API. API paths are plain ids, numbers and names: no percent
+ * encoding at all, so nothing decodes into a refused path at the API.
+ */
 export function allowedPath(path: string): boolean {
   if (!path.startsWith("/") || path.startsWith("//") || path.length > 300) return false;
-  if (/[\s\\#?]/.test(path) || path.includes("..") || path.includes("%2e") || path.includes("%2E")) return false;
-  if (path.startsWith("/oauth") || path.startsWith("/.well-known") || path === "/docs" || path === "/openapi.json") return false;
-  return /^\/[A-Za-z0-9._~\-/:@!$&'()*+,;=%]*$/.test(path);
+  if (!/^\/[A-Za-z0-9._~\-/]*$/.test(path) || path.includes("..")) return false;
+  const lower = path.toLowerCase();
+  return !(lower.startsWith("/oauth") || lower.startsWith("/.well-known") || lower === "/docs" || lower === "/openapi.json");
 }
 
 /** The answer's headers worth showing (never a cookie or anything about the edge). */

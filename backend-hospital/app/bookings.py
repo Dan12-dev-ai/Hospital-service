@@ -166,7 +166,13 @@ class BookingError(RuntimeError):
         self.status_code = status_code
 
 
+VIDEO_OFF = "Video visits are not offered through Endod; cancel this booking instead."
+
+
 def approve_video(session: Session, booking: Booking, doctor: StaffUser, decided_by: Optional[str]) -> None:
+    # Video visits switched off (HOSPITAL_VIDEO_VISITS_ENABLED): a video booking made before cannot be approved.
+    if not get_settings().VIDEO_VISITS_ENABLED:
+        raise BookingError(VIDEO_OFF, 409)
     if booking.visit_mode != VisitMode.VIDEO:
         raise BookingError("Only video visits need a doctor's approval.")
     if booking.status != BookingStatus.AWAITING_DOCTOR:

@@ -9,10 +9,12 @@ connection the dashboard manages for the hospital:
 * Test mode only (``endod_test_...``): everything is checked, nothing is
   stored, no real patient is ever looked up (docs/integrations.md, Test mode);
 * every scope but webhooks (it receives no events);
-* its secret is never kept readable: each call here makes a new one (and the
-  old one, and the tokens issued with it, stop working), answered to the
-  BFF, which exchanges it for an access token at once and keeps only that
-  token, in its memory, never sending either to the browser.
+* its secret is never kept readable: each call here makes a new one (the
+  old secret stops working), answered to the BFF, which exchanges it for an
+  access token at once and keeps only that token, in its memory, never
+  sending either to the browser. Tokens already issued stay valid until they
+  expire (5 minutes): the credentials version is not changed, so dashboard
+  servers renewing at the same time never revoke each other's tokens.
 
 Administrators and developers of approved hospitals only; a few calls a
 minute per hospital (the BFF reuses its access token for its 5 minutes).
@@ -27,7 +29,7 @@ from sqlalchemy import select
 
 from app.api.connections import approved_admin
 from app.auth import Staff, audit
-from app.db import session_scope, utcnow
+from app.db import session_scope
 from app.integrations import clients, scopes as S, tokens
 from app.integrations.ratelimit import Limiter
 from app.models import Hospital, IntegrationAuth, IntegrationClient, IntegrationMode
@@ -73,7 +75,6 @@ def credentials(staff: Staff = Depends(approved_admin)) -> Dict[str, Any]:
     with session_scope(staff.hospital_id) as session:
         client = playground_client(session, staff.hospital_id)
         client.secret_hash = clients.hash_secret(secret)
-        client.credentials_changed_at = utcnow()
         audit(session, staff.hospital_id, staff.id, "integration_playground_credentials", "integration", client.id,
               {"client_id": client.client_id})
         return {"client_id": client.client_id, "client_secret": secret, "mode": client.mode,

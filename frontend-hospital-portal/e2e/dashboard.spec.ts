@@ -124,6 +124,8 @@ test("the playground sends requests in Test mode, from the server", async ({ pag
   expect(JSON.stringify(keys)).not.toContain("playground");
   const refused = await page.request.post("/api/playground/send", { data: { method: "POST", path: "/oauth/token", body: "" } });
   expect(refused.status()).toBe(400);
+  const encoded = await page.request.post("/api/playground/send", { data: { method: "POST", path: "/%6Fauth/token", body: "" } });
+  expect(encoded.status()).toBe(400);
   expect((await page.request.post("/api/playground/credentials", { data: {} })).status()).toBe(404);
 });
 
