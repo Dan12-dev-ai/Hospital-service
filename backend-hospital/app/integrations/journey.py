@@ -1,6 +1,7 @@
 """The patient journey through the integration API: everything the hospital
 portal does, for hospitals that keep their own system and use Endod as a
-layer (docs/integrations.md, sections 4 to 8; charges in app/integrations/charges.py, section 10; webhooks in section 11).
+layer (docs/integrations.md, sections 4 to 8; webhooks in section 11; charges,
+section 10, are in app/integrations/charges.py).
 
 Every endpoint calls the portal's own domain code (app/api/patients.py,
 history.py, bookings.py, queue.py; app/bookings.py, app/linking.py,
