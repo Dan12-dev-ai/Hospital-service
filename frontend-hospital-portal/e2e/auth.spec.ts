@@ -127,7 +127,7 @@ test("a temporary password must be changed before anything else", async ({ page 
 
   // The next sign-in asks for a code; a recovery code works once.
   await page.getByRole("button", { name: "Sign out" }).click();
-  await expect(page).toHaveURL(//login$/);
+  await expect(page).toHaveURL(/\/login$/);
   await signInThroughForm(page, hospital.accounts.newdev.email, "My-own-password-9");
   await page.getByRole("button", { name: "Use a recovery code" }).click();
   await page.getByLabel("Recovery code").fill(recovery);
