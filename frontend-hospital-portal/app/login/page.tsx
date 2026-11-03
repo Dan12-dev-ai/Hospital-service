@@ -1,19 +1,15 @@
 import type { Metadata } from "next";
 import { AuthCard } from "@/components/auth/auth-card";
 import { LoginForm } from "@/components/auth/login-form";
-import { InstallPwaButton } from "@/components/pwa/install-button";
 
 export const metadata: Metadata = {
-  title: "Sign in • Endod hospital portal",
+  title: "Sign in • Endod Developers",
 };
 
 export default function LoginPage() {
   return (
-    <AuthCard title="Sign in" subtitle="Use the staff account your hospital's administrator gave you.">
+    <AuthCard title="Sign in" subtitle="The Endod developer dashboard, for your hospital's administrators and developers.">
       <LoginForm />
-      <div className="mt-4 flex justify-center">
-        <InstallPwaButton />
-      </div>
     </AuthCard>
   );
 }

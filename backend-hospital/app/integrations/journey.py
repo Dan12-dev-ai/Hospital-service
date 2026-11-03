@@ -39,6 +39,7 @@ from sqlalchemy import select
 from app import bookings as booking_rules, dispensing, records
 from app.api import bookings as bookings_api, history, patients as patients_api, queue as queue_api
 from app.auth import audit
+from app.config import get_settings
 from app.db import ensure_aware, session_scope
 from app.integrations import apidoc as D, scopes as S, schemas as M
 from app.integrations.calls import is_test, needs, run, via
@@ -143,13 +144,27 @@ def booking_out(b: Booking, doctors: Dict[str, str]) -> Dict[str, Any]:
     }
 
 
+def video_visits() -> bool:
+    """Video visits are on (HOSPITAL_VIDEO_VISITS_ENABLED; off by default)."""
+    return get_settings().VIDEO_VISITS_ENABLED
+
+
+def _video_only() -> None:
+    """404 for the video-only endpoints while video visits are off (as if they did not exist)."""
+    if not video_visits():
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
 def _sample_rows() -> List[Dict[str, Any]]:
     now = datetime.now(timezone.utc)
     base = datetime.combine(now.date() + timedelta(days=1), clock(6, 0), timezone.utc)
     started = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
     return [
         {"n": 1, "mode": "in_person", "status": "confirmed", "at": base, "payment": "at_hospital"},
-        {"n": 2, "mode": "video", "status": "awaiting_doctor", "at": base + timedelta(hours=1), "payment": "online"},
+        # A video visit to approve or decline, while video visits are on (HOSPITAL_VIDEO_VISITS_ENABLED).
+        {"n": 2, "mode": "video", "status": "awaiting_doctor", "at": base + timedelta(hours=1), "payment": "online"}
+        if video_visits() else
+        {"n": 2, "mode": "in_person", "status": "confirmed", "at": base + timedelta(hours=1), "payment": "online"},
         {"n": 3, "mode": "in_person", "status": "cancelled", "at": base + timedelta(hours=2), "payment": "online"},
         # Already started: one a Test connection can mark completed.
         {"n": 4, "mode": "in_person", "status": "confirmed", "at": started, "payment": "at_hospital"},
@@ -470,7 +485,12 @@ def add_routes(api: FastAPI) -> None:  # noqa: C901 -- one place lists every jou
                  "nothing changes and nothing is sent.")
     decided = D.ok(200, M.BookingOut, "The booking, decided.", M.BOOKING_EXAMPLE, D.IDEMPOTENT_REPLAY)
 
-    @api.post("/bookings/{booking_id}/approve", **D.operation(
+    # Video visits only (HOSPITAL_VIDEO_VISITS_ENABLED): while they are off, approve and decline are left
+    # out of the OpenAPI document and answer 404, before anything else is checked.
+    video = video_visits()
+
+    @api.post("/bookings/{booking_id}/approve", include_in_schema=video, dependencies=[Depends(_video_only)],
+              **D.operation(
         [S.BOOKINGS_WRITE], "Approve a video visit",
         "A video visit awaiting a doctor (`awaiting_doctor`) is confirmed: the doctor becomes its doctor and a "
         "video room is opened. Endod tells the patient (`appointment.confirmed`); webhook `booking.confirmed`. "
@@ -487,7 +507,8 @@ def add_routes(api: FastAPI) -> None:  # noqa: C901 -- one place lists every jou
     reason_examples = _example(("reason", "Told to the patient",
                                 {"reason": "The doctor is away that day; please book another day."}))
 
-    @api.post("/bookings/{booking_id}/decline", **D.operation(
+    @api.post("/bookings/{booking_id}/decline", include_in_schema=video, dependencies=[Depends(_video_only)],
+              **D.operation(
         [S.BOOKINGS_WRITE], "Decline a video visit",
         "A video visit awaiting a doctor is declined with a reason (told to the patient). A patient who paid "
         "online is refunded by Endod (`appointment.rejected`); webhook `booking.cancelled` with status "
@@ -527,7 +548,8 @@ def add_routes(api: FastAPI) -> None:  # noqa: C901 -- one place lists every jou
 
     @api.get("/doctors", **D.operation(
         [S.BOOKINGS_WRITE, S.QUEUE, S.FOLLOWUPS], "List the hospital's doctors",
-        "Active doctors, to name one when approving a video visit, checking a patient in or setting a follow-up.",
+        ("Active doctors, to name one when approving a video visit, checking a patient in or setting a follow-up."
+         if video else "Active doctors, to name one when checking a patient in or setting a follow-up."),
         D.ok(200, M.DoctorList, "The doctors."), tags=[D.DOCTORS]))
     def list_doctors(who: Caller = Depends(needs(S.BOOKINGS_WRITE, S.QUEUE, S.FOLLOWUPS))) -> Dict[str, Any]:
         with session_scope(who.hospital_id) as session:

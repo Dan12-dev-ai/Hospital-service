@@ -3,11 +3,11 @@ from conftest import PASSWORD, bearer, finish_sign_in, make_hospital, make_staff
 
 class TestSignIn:
     def test_sign_in_and_me(self, client, hospital):
-        make_staff(hospital, "nurse@sph.example", role="nurse")
+        make_staff(hospital, "nurse@sph.example", role="developer")
         resp = client.post("/auth/login", json={"email": "NURSE@sph.example", "password": PASSWORD})
         assert resp.status_code == 200
         body = resp.json()
-        assert body["token_type"] == "Bearer" and body["staff"]["role"] == "nurse"
+        assert body["token_type"] == "Bearer" and body["staff"]["role"] == "developer"
         assert body["staff"]["hospital"]["code"] == "SPH"
         me = client.get("/auth/me", headers={"Authorization": f"Bearer {body['access_token']}"}).json()
         assert me["email"] == "nurse@sph.example"

@@ -11,6 +11,10 @@ from history_support import (  # noqa: F401  (fixtures)
     bus, consume, events, link_directly, platform_key, register, send, staff, today,
 )
 
+#: The old portal's clinical staff API: kept (the integration API shares its logic) but no longer
+#: signed in to; its tests sign clinical roles in (HOSPITAL_CLINICAL_SIGN_IN_ENABLED).
+pytestmark = pytest.mark.clinical_staff
+
 
 @pytest.fixture
 def desk(client, hospital):

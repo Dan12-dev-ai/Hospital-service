@@ -39,7 +39,12 @@ class Role:
     PHARMACIST = "pharmacist"
     BILLING = "billing"
     RECORDS = "records"
-    ALL = (ADMIN, DOCTOR, NURSE, RECEPTION, PHARMACIST, BILLING, RECORDS)
+    #: Builds the hospital's integration: the developer dashboard (keys,
+    #: webhooks, logs, playground, docs), without hospital settings or the team.
+    DEVELOPER = "developer"
+    ALL = (ADMIN, DOCTOR, NURSE, RECEPTION, PHARMACIST, BILLING, RECORDS, DEVELOPER)
+    #: Who signs in to the developer dashboard (app.auth.may_sign_in).
+    DASHBOARD = (ADMIN, DEVELOPER)
 
 
 class DepartmentKind:
@@ -1009,6 +1014,10 @@ class IntegrationClient(Base):
     #: issued before are refused.
     credentials_changed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    #: The dashboard's own Test connection for its playground (app/api/playground.py,
+    #: migration 0012): one per hospital, never listed, shown or changed by staff.
+    playground: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False,
+                                             server_default=text("false"))
 
 
 class IntegrationAssertion(Base):
@@ -1110,6 +1119,37 @@ class WebhookDelivery(Base):
     last_error: Mapped[Optional[str]] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     delivered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class PriceCategory:
+    """The hospital's price list, synced from its own system (PUT /prices/...)."""
+
+    LAB_TESTS = "lab_tests"
+    IMAGING = "imaging"
+    PROCEDURES = "procedures"
+    ALL = (LAB_TESTS, IMAGING, PROCEDURES)
+
+
+class PriceItem(Base):
+    """One priced item of the hospital's list (lab tests, imaging, procedures).
+    A category is replaced as a whole by each sync (migration 0012). The
+    in-person consultation price is the hospital's ``price_in_person``."""
+
+    __tablename__ = "price_items"
+    __table_args__ = (UniqueConstraint("hospital_id", "category", "code", name="uq_price_item_code"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False,
+                                             index=True)
+    category: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: The hospital's own code for the item (e.g. "CBC").
+    code: Mapped[str] = mapped_column(String(40), nullable=False)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    #: Santim (1/100 birr).
+    price: Mapped[int] = mapped_column(Integer, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
 # The encrypted columns are encrypted on flush and decrypted on load.

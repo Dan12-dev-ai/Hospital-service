@@ -23,7 +23,7 @@ export function AuthCard({
             <Icon name="local_hospital" className="text-[24px]" />
           </div>
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Endod hospital portal</p>
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Endod developer dashboard</p>
             <h1 className="text-xl font-bold tracking-tight text-slate-900">{title}</h1>
           </div>
         </div>

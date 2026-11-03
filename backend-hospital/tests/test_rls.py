@@ -109,6 +109,10 @@ def build(table, h, n):
             status_code=200, response="{}"),
         "staff_recovery_codes": lambda: m.StaffRecoveryCode(
             id=_id(h, "recovery", n), hospital_id=h, user_id=staff, code_hash=f"{n}" * 64),
+        # The price list (migration 0012).
+        "price_items": lambda: m.PriceItem(
+            id=_id(h, "price", n), hospital_id=h, category="lab_tests", code=f"CBC-{n}", name="Complete blood count",
+            price=35000, active=True),
         "webhook_deliveries": lambda: m.WebhookDelivery(
             id=_id(h, "delivery", n), hospital_id=h, client_pk=client, event_id=f"evt-{n}",
             event_type="booking.created", body="{}", status="pending", attempts=0),
@@ -122,7 +126,7 @@ SEED_ORDER = ["hospitals", "hospital_keys", "departments", "staff_users", "staff
               "record_files", "queue_days", "queue_entries", "record_shares", "shared_records", "import_batches",
               "onboarding_applications", "onboarding_documents", "demo_bookings", "prescription_dispenses",
               "integration_clients", "integration_assertions", "integration_requests", "integration_resources",
-              "integration_idempotency", "webhook_deliveries", "staff_recovery_codes"]
+              "integration_idempotency", "webhook_deliveries", "staff_recovery_codes", "price_items"]
 
 
 #: A second row for the same hospital is not possible (or not a new hospital's).
@@ -179,21 +183,23 @@ def _migration(name="0007_row_level_security.py"):
 
 def test_migration_installs_what_app_rls_describes():
     """0007 installed everything but the policies of hospital_keys, which 0008
-    adds, and the integration API's tables and lookup, which 0009 adds."""
+    adds, the integration API's tables and lookup, which 0009 adds, the
+    recovery codes (0010) and the price list (0012)."""
     migration, keys = _migration(), _migration("0008_encryption_at_rest.py")
     integrations = _migration("0009_integration_api.py")
     two_step = _migration("0010_two_step_verification.py")
-    assert migration.TENANT_TABLES + keys.TENANT_TABLES + integrations.TENANT_TABLES + two_step.TENANT_TABLES         == rls.TENANT_TABLES
+    prices = _migration("0012_price_list_and_playground.py")
+    assert migration.TENANT_TABLES + keys.TENANT_TABLES + integrations.TENANT_TABLES + two_step.TENANT_TABLES         + prices.TENANT_TABLES == rls.TENANT_TABLES
     assert migration.CHILD_TABLES == rls.CHILD_TABLES
     assert migration.SAME_HOSPITAL_REFERENCES + integrations.SAME_HOSPITAL_REFERENCES         + two_step.SAME_HOSPITAL_REFERENCES == rls.SAME_HOSPITAL_REFERENCES
     assert migration.FUNCTIONS + integrations.FUNCTIONS == rls.FUNCTIONS
-    for later in (keys, integrations, two_step):
+    for later in (keys, integrations, two_step, prices):
         assert later.PLATFORM_ROLE == rls.PLATFORM_ROLE and later.TENANT == rls.TENANT
     assert set(migration._parents()) | set(integrations.NEW_PARENTS) == set(rls.parents())
     assert sorted(migration.install_statements() + keys.policy_statements() + integrations.install_statements()
-                  + two_step.install_statements()) == sorted(rls.install_statements())
+                  + two_step.install_statements() + prices.install_statements()) == sorted(rls.install_statements())
     assert sorted(migration.drop_statements() + keys.drop_statements() + integrations.drop_statements()
-                  + two_step.drop_statements()) == sorted(rls.drop_statements())
+                  + two_step.drop_statements() + prices.drop_statements()) == sorted(rls.drop_statements())
 
 
 def test_every_reference_between_two_rows_of_a_hospital_is_a_composite_key():

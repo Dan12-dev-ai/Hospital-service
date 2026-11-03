@@ -11,10 +11,12 @@ import {
 } from "@/lib/server/backend";
 
 /**
- * Everything else the portal reads or changes, passed to the backend with
- * the session from the cookie. Only the staff API is reachable: sign-in and
- * sign-up have their own handlers (they set the cookie), and Endod's
- * platform endpoints are never exposed through the portal.
+ * Everything else the dashboard reads or changes, passed to the backend with
+ * the session from the cookie. Only what the dashboard uses is reachable:
+ * sign-in and sign-up have their own handlers (they set the cookie), the
+ * playground its own (app/api/playground: its credentials never reach the
+ * browser), and Endod's platform endpoints and the old portal's clinical
+ * staff API are never exposed.
  */
 const ALLOWED: RegExp[] = [
   /^auth\/me$/,
@@ -23,21 +25,13 @@ const ALLOWED: RegExp[] = [
   // authenticator, and a fresh code for sensitive actions.
   /^auth\/(totp|reauth|enroll\/(start|confirm))$/,
   /^hospital$/,
-  /^departments(\/[A-Za-z0-9_-]+)?$/,
+  // Team: the hospital's administrators and developers (admins only).
   /^staff(\/[A-Za-z0-9_-]+(\/(reset-password|reset-2fa))?)?$/,
-  /^patients(\/stats|\/[A-Za-z0-9_-]+(\/alerts(\/[A-Za-z0-9_-]+)?)?)?$/,
-  /^doctors(\/[A-Za-z0-9_-]+(\/(profile|duty))?)?$/,
-  /^bookings(\/[A-Za-z0-9_-]+(\/(approve|reject|cancel|complete|video))?)?$/,
-  // Patient history. File uploads and downloads have their own routes
-  // (app/api/upload, app/api/download): this one only passes JSON.
-  /^patients\/[A-Za-z0-9_-]+\/(link|records|visits)$/,
-  /^records\/[A-Za-z0-9_-]+(\/retract)?$/,
-  /^visits\/[A-Za-z0-9_-]+$/,
-  /^queue(\/check-in|\/[A-Za-z0-9_-]+\/call-next|\/entries\/[A-Za-z0-9_-]+\/(done|skip|cancel))?$/,
-  /^shared$/,
-  /^imports\/[A-Za-z0-9_-]+\/confirm$/,
-  // "Connect your system": the hospital's own systems (admins of approved hospitals).
+  // API keys, webhooks and logs (administrators and developers of approved hospitals).
   /^connections(\/[a-f0-9]{32}(\/(disconnect|rotate-secret|ip-restriction|public-key|webhook(\/(rotate-secret|test))?|requests|deliveries))?)?$/,
+  // The docs (the integration guide) and the price list the hospital's system synced.
+  /^developer\/guide$/,
+  /^prices$/,
   // The onboarding application (its documents go through app/api/upload and app/api/download).
   /^onboarding\/(status|application|contact|facility|location|documents|demo-slots|demo|submit)$/,
 ];

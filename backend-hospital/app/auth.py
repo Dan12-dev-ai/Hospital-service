@@ -16,8 +16,8 @@ from app import rls
 from app.config import get_settings
 from app.db import ensure_aware, session_scope, set_tenant, utcnow
 from app.models import (
-    ApplicationStatus, AuditEvent, Hospital, HospitalStatus, OnboardingApplication, SessionStage, StaffSession,
-    StaffUser,
+    ApplicationStatus, AuditEvent, Hospital, HospitalStatus, OnboardingApplication, Role, SessionStage,
+    StaffSession, StaffUser,
 )
 from app.security import hash_password, new_session_token, password_problem, token_hash, verify_password
 
@@ -28,6 +28,10 @@ NOT_APPROVED = "Your hospital is not approved by Endod yet. Finish your applicat
 #: A sign-in half-way through (a code is next, or an authenticator must be set up).
 INCOMPLETE = "Finish signing in first."
 TEMPORARY_PASSWORD = "Change your temporary password to continue."
+#: The old portal's clinical roles, refused at sign-in (and on every route)
+#: while HOSPITAL_CLINICAL_SIGN_IN_ENABLED is off. The dashboard shows it as is.
+ROLE_NOT_ALLOWED = ("Only administrators and developers sign in to the Endod developer dashboard. Patient care "
+                    "now happens in your hospital's own system, connected to Endod through the API.")
 #: A half-finished sign-in lasts this long (the code or the set-up must follow).
 PENDING_SESSION_SECONDS = 600
 
@@ -60,6 +64,12 @@ class Staff:
     reauth_at: Optional[datetime] = None
     #: An authenticator is set up for the account.
     enrolled: bool = False
+
+
+def may_sign_in(role: str) -> bool:
+    """Administrators and developers sign in to the dashboard; the clinical
+    roles only while HOSPITAL_CLINICAL_SIGN_IN_ENABLED is on."""
+    return role in Role.DASHBOARD or (role in Role.ALL and get_settings().CLINICAL_SIGN_IN_ENABLED)
 
 
 def onboarding_locked(hospital_status: str, application_status: Optional[str]) -> bool:
@@ -169,6 +179,10 @@ def login(email: str, password: str, user_agent: Optional[str] = None) -> Dict[s
                 # tells it exists), and its attempts count toward the lockout too.
                 _record_failure(session, user, now, settings)
                 failure = AuthError(INVALID_LOGIN)
+            elif not may_sign_in(user.role):
+                # Only after the right password: a wrong one never tells the account's role.
+                audit(session, user.hospital_id, user.id, "staff_sign_in_refused", detail={"role": user.role})
+                failure = AuthError(ROLE_NOT_ALLOWED, status.HTTP_403_FORBIDDEN)
         if failure is None:
             user.failed_logins = 0
             user.last_failed_at = None
@@ -269,7 +283,10 @@ def session_staff(authorization: Optional[str] = Header(default=None)) -> Staff:
 
 def signed_in_staff(staff: Staff = Depends(session_staff)) -> Staff:
     """A signed-in staff member (the code given, where two-step verification
-    applies), even one who still has to change a temporary password."""
+    applies), even one who still has to change a temporary password.
+    Never a role that may not sign in (a session opened before it was refused)."""
+    if not may_sign_in(staff.role):
+        raise HTTPException(status_code=403, detail=ROLE_NOT_ALLOWED)
     if staff.stage != SessionStage.FULL:
         if staff.stage == SessionStage.ENROLL and staff.must_change_password:
             # A temporary password is changed first, then the authenticator is set up.

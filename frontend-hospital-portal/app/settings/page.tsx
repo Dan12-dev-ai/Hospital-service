@@ -1,15 +1,15 @@
 import type { Metadata } from "next";
-import { PortalShell } from "@/components/dashboard/portal-shell";
-import { HospitalSettings } from "@/components/settings/hospital-settings";
+import { DashboardShell } from "@/components/shell/dashboard-shell";
+import { SettingsPage } from "@/components/settings/settings-page";
 
 export const metadata: Metadata = {
-  title: "Dedan Health OS • Settings",
+  title: "Settings • Endod Developers",
 };
 
-export default function SettingsPage() {
+export default function Page() {
   return (
-    <PortalShell>
-      <HospitalSettings />
-    </PortalShell>
+    <DashboardShell>
+      <SettingsPage />
+    </DashboardShell>
   );
 }

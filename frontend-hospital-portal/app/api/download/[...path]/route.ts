@@ -8,15 +8,12 @@ import {
 } from "@/lib/server/backend";
 
 /**
- * Record files, streamed from the backend to the browser: a hospital record's
- * file, or a file of records a patient shared (which the backend fetches from
- * Endod). Only these paths and only these types; never cached, never
- * sniffed, and sandboxed so a file cannot run anything on the portal's origin.
- * `?download=1` saves the file instead of showing it.
+ * The hospital's onboarding documents, streamed from the backend to the
+ * browser. Only these paths and only these types; never cached, never
+ * sniffed, and sandboxed so a file cannot run anything on the dashboard's
+ * origin. `?download=1` saves the file instead of showing it.
  */
 const ALLOWED: RegExp[] = [
-  /^records\/[0-9a-f]{32}\/files\/[0-9a-f]{32}$/,
-  /^shared\/[0-9a-f]{32}\/files\/[0-9a-f]{32}$/,
   // The hospital's own onboarding documents (the backend takes the hospital from the session).
   /^onboarding\/documents\/(moh_license|trade_license|tin_certificate|owner_id)$/,
 ];

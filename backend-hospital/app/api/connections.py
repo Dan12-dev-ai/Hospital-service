@@ -1,12 +1,15 @@
 """Connections of a hospital's own systems to the integration API, managed
-in the portal ("Connect your system"): admins of hospitals approved by Endod
-only.
+in the developer dashboard ("API keys", "Webhooks", "Logs"): administrators
+and developers of hospitals approved by Endod only.
 
 Connecting a system, changing its credentials (rotating a secret, public
 keys), where it may call from, where its events go, and disconnecting it,
-each needs a fresh code from the admin's authenticator (given within 10
+each needs a fresh code from the staff member's authenticator (given within 10
 minutes: POST /auth/reauth, app/twofactor.py) and is audited (ids, names and
 scopes; never a secret). Secrets are shown once, in the answer that creates them.
+
+The dashboard's own playground connection (app/api/playground.py) is never
+listed, counted, shown or changed here: it is "not found".
 """
 
 from __future__ import annotations
@@ -34,15 +37,16 @@ MAX_CONNECTIONS = 20
 RECENT = 50
 
 
-def approved_admin(staff: Staff = Depends(require_roles(Role.ADMIN))) -> Staff:
-    """An admin of a hospital that passed onboarding and is not suspended."""
+def approved_admin(staff: Staff = Depends(require_roles(*Role.DASHBOARD))) -> Staff:
+    """An administrator or developer of a hospital that passed onboarding and
+    is not suspended (the name is kept: every connection route uses it)."""
     if staff.hospital_status != HospitalStatus.APPROVED or staff.locked:
         raise HTTPException(status_code=403, detail=NOT_APPROVED)
     return staff
 
 
 def fresh_admin(staff: Staff = Depends(approved_admin)) -> Staff:
-    """An approved hospital's admin who gave a fresh authenticator code (403 otherwise)."""
+    """An approved hospital's administrator or developer who gave a fresh authenticator code (403 otherwise)."""
     return twofactor.require_fresh(staff)
 
 
@@ -99,7 +103,8 @@ def _about(session, hospital_id: str) -> Dict[str, Any]:
 
 def _client(session, staff: Staff, connection_id: str, lock: bool = True) -> IntegrationClient:
     query = select(IntegrationClient).where(IntegrationClient.id == connection_id,
-                                            IntegrationClient.hospital_id == staff.hospital_id)
+                                            IntegrationClient.hospital_id == staff.hospital_id,
+                                            IntegrationClient.playground.is_(False))
     client = session.scalar(query.with_for_update() if lock else query)
     if client is None:
         raise HTTPException(status_code=404, detail="Connection not found.")
@@ -122,7 +127,8 @@ def _webhook_url(url: Optional[str]) -> str:
 def list_connections(staff: Staff = Depends(approved_admin)) -> Dict[str, Any]:
     with session_scope(staff.hospital_id) as session:
         rows = session.scalars(select(IntegrationClient).where(
-            IntegrationClient.hospital_id == staff.hospital_id, IntegrationClient.revoked_at.is_(None))
+            IntegrationClient.hospital_id == staff.hospital_id, IntegrationClient.revoked_at.is_(None),
+            IntegrationClient.playground.is_(False))
             .order_by(IntegrationClient.created_at.desc()))
         return {"items": [_payload(session, c) for c in rows], **_about(session, staff.hospital_id)}
 
@@ -146,7 +152,8 @@ def connect(body: NewConnection, staff: Staff = Depends(fresh_admin)) -> Dict[st
     webhook_secret = clients.new_webhook_secret() if webhook_url else None
     with session_scope(staff.hospital_id) as session:
         active = session.scalar(select(func.count()).where(
-            IntegrationClient.hospital_id == staff.hospital_id, IntegrationClient.revoked_at.is_(None))) or 0
+            IntegrationClient.hospital_id == staff.hospital_id, IntegrationClient.revoked_at.is_(None),
+            IntegrationClient.playground.is_(False))) or 0
         if active >= MAX_CONNECTIONS:
             raise HTTPException(status_code=409, detail=f"At most {MAX_CONNECTIONS} systems can be connected; "
                                                         "disconnect one first.")

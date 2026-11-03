@@ -23,6 +23,10 @@ MARK = "Quokkafever"  # in every clinical field below; must never reach the data
 DIAGNOSIS = {"category": "diagnosis", "title": f"{MARK} suspected", "details": {
     "condition": f"{MARK} infection", "code": "B50.9", "status": "active", "notes": f"{MARK} notes"}}
 
+#: Encrypts what the old portal's clinical staff API stores: its tests sign clinical roles in
+#: (HOSPITAL_CLINICAL_SIGN_IN_ENABLED).
+pytestmark = pytest.mark.clinical_staff
+
 
 @pytest.fixture
 def doctor(client, hospital):

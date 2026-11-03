@@ -35,14 +35,14 @@ def actions():
 
 
 @pytest.fixture
-def nurse(hospital):
-    make_staff(hospital, "nurse@sph.example", role="nurse")
-    return "nurse@sph.example"
+def developer(hospital):
+    make_staff(hospital, "dev@sph.example", role="developer")
+    return "dev@sph.example"
 
 
 class TestEnrolment:
-    def test_staff_of_an_approved_hospital_set_up_an_authenticator_first(self, client, nurse):
-        pending = login(client, nurse)
+    def test_staff_of_an_approved_hospital_set_up_an_authenticator_first(self, client, developer):
+        pending = login(client, developer)
         assert pending["stage"] == "enroll" and pending["expires_in"] == 600
         refused = client.get("/patients", headers=bearer(pending))
         assert refused.status_code == 403 and refused.json()["error"] == "Finish signing in first."
@@ -62,24 +62,24 @@ class TestEnrolment:
         assert me["two_factor_enrolled"] is True and me["recovery_codes_left"] == 10
         assert "staff_2fa_enrolled" in actions()
 
-    def test_secrets_are_encrypted_and_recovery_codes_hashed(self, client, nurse):
-        _headers, codes = enrol(client, nurse)
+    def test_secrets_are_encrypted_and_recovery_codes_hashed(self, client, developer):
+        _headers, codes = enrol(client, developer)
         with platform_session() as session:  # as stored, every hospital's rows (row-level security)
             connection = session.connection()
             stored = connection.execute(text("SELECT totp_secret FROM staff_users")).one()
             pending = connection.execute(text("SELECT totp_pending_secret FROM staff_sessions")).scalars().all()
             hashes = connection.execute(text("SELECT code_hash FROM staff_recovery_codes")).scalars().all()
         assert stored[0].startswith("enc:v1:") and pending == [None, None]
-        assert totp_secret(nurse) not in stored[0]
+        assert totp_secret(developer) not in stored[0]
         assert len(hashes) == 10 and not set(codes) & set(hashes)
         assert all(c.replace("-", "") not in h for c in codes for h in hashes)
 
-    def test_each_set_up_session_has_its_own_secret(self, client, nurse):
+    def test_each_set_up_session_has_its_own_secret(self, client, developer):
         """Someone who knows the password and starts a set-up first never learns
         the secret the real staff member's authenticator will hold."""
-        attacker = login(client, nurse)
+        attacker = login(client, developer)
         stolen = client.post("/auth/enroll/start", headers=bearer(attacker)).json()["secret"]
-        real = login(client, nurse)
+        real = login(client, developer)
         started = client.post("/auth/enroll/start", headers=bearer(real)).json()
         assert started["secret"] != stolen
         with platform_session() as session:  # encrypted at rest, on the session
@@ -88,10 +88,10 @@ class TestEnrolment:
         assert len(pending) == 2 and all(p.startswith("enc:v1:") for p in pending)
         done = client.post("/auth/enroll/confirm", headers=bearer(real), json={"code": totp_code(started["secret"])})
         assert done.status_code == 200
-        assert totp_secret(nurse) == started["secret"]
+        assert totp_secret(developer) == started["secret"]
         # The attacker's set-up ended with its secret; its codes never worked.
         assert client.get("/auth/me", headers=bearer(attacker)).status_code == 401
-        pending = login(client, nurse)
+        pending = login(client, developer)
         stale = pyotp.TOTP(stolen).at(totp._clock())
         assert client.post("/auth/totp", headers=bearer(pending), json={"code": stale}).status_code == 400
 
@@ -149,75 +149,75 @@ class TestEnrolment:
 
 
 class TestSignIn:
-    def test_password_then_code(self, client, nurse):
-        enrol(client, nurse)
-        pending = login(client, nurse)
+    def test_password_then_code(self, client, developer):
+        enrol(client, developer)
+        pending = login(client, developer)
         assert pending["stage"] == "totp"
         assert client.get("/patients", headers=bearer(pending)).status_code == 403
         assert client.post("/auth/password", headers=bearer(pending), json={
             "current_password": PASSWORD, "new_password": "BrandNewPass1"}).status_code == 403
-        done = client.post("/auth/totp", headers=bearer(pending), json={"code": totp_code(totp_secret(nurse))})
+        done = client.post("/auth/totp", headers=bearer(pending), json={"code": totp_code(totp_secret(developer))})
         assert done.status_code == 200 and done.json()["stage"] == "full"
         assert client.get("/patients", headers=bearer(done.json())).status_code == 200
 
-    def test_a_code_works_once(self, client, nurse):
-        enrol(client, nurse)
-        code = totp_code(totp_secret(nurse))
-        first = login(client, nurse)
+    def test_a_code_works_once(self, client, developer):
+        enrol(client, developer)
+        code = totp_code(totp_secret(developer))
+        first = login(client, developer)
         assert client.post("/auth/totp", headers=bearer(first), json={"code": code}).status_code == 200
-        second = login(client, nurse)
+        second = login(client, developer)
         replay = client.post("/auth/totp", headers=bearer(second), json={"code": code})
         assert replay.status_code == 400
         # ... and so does any older one.
-        secret = totp_secret(nurse)
+        secret = totp_secret(developer)
         older = pyotp.TOTP(secret).at(totp._clock() - totp.INTERVAL)
         assert client.post("/auth/totp", headers=bearer(second), json={"code": older}).status_code == 400
 
-    def test_recovery_codes_work_once(self, client, nurse):
-        _headers, codes = enrol(client, nurse)
-        pending = login(client, nurse)
+    def test_recovery_codes_work_once(self, client, developer):
+        _headers, codes = enrol(client, developer)
+        pending = login(client, developer)
         done = client.post("/auth/totp", headers=bearer(pending), json={"recovery_code": codes[0].upper()})
         assert done.status_code == 200 and done.json()["recovery_codes_left"] == 9
-        again = login(client, nurse)
+        again = login(client, developer)
         assert client.post("/auth/totp", headers=bearer(again), json={"recovery_code": codes[0]}).status_code == 400
         assert client.post("/auth/totp", headers=bearer(again), json={"recovery_code": codes[1]}).status_code == 200
 
-    def test_a_pending_session_reaches_nothing_else(self, client, nurse):
-        enrol(client, nurse)
-        pending = bearer(login(client, nurse))
+    def test_a_pending_session_reaches_nothing_else(self, client, developer):
+        enrol(client, developer)
+        pending = bearer(login(client, developer))
         for method, path in (("GET", "/hospital"), ("GET", "/onboarding/application"), ("POST", "/auth/reauth"),
                              ("POST", "/auth/enroll/start")):
             assert client.request(method, path, headers=pending, json={"code": "123456"}).status_code in (403, 409)
 
 
 class TestThrottles:
-    def test_an_account_pauses_after_wrong_codes_and_nobody_is_signed_out(self, client, nurse, monkeypatch):
+    def test_an_account_pauses_after_wrong_codes_and_nobody_is_signed_out(self, client, developer, monkeypatch):
         monkeypatch.setenv("HOSPITAL_TRUSTED_PROXY_HOPS", "1")
-        full, _codes = enrol(client, nurse)
-        pending = login(client, nurse)
+        full, _codes = enrol(client, developer)
+        pending = login(client, developer)
         for n in range(twofactor.CODE_BACKOFF_AFTER):  # from different addresses: the account counts them all
             wrong = client.post("/auth/totp", headers={**bearer(pending), "X-Forwarded-For": f"198.51.100.{n}"},
                                 json={"code": "000000"})
             assert wrong.status_code == 400
         paused = client.post("/auth/totp", headers={**bearer(pending), "X-Forwarded-For": "203.0.113.9"},
-                             json={"code": totp_code(totp_secret(nurse))})
+                             json={"code": totp_code(totp_secret(developer))})
         assert paused.status_code == 429 and "Wait" in paused.json()["error"]
         assert client.get("/patients", headers=full).status_code == 200  # no session ended
         assert client.get("/auth/me", headers=bearer(pending)).status_code == 200
         with platform_session() as session:
-            user = session.scalar(select(StaffUser).where(StaffUser.email == nurse))
+            user = session.scalar(select(StaffUser).where(StaffUser.email == developer))
             assert user.code_failures == 5 and user.code_backoff_until is not None
 
-    def test_per_address_and_per_account_address(self, client, hospital, nurse, monkeypatch):
+    def test_per_address_and_per_account_address(self, client, hospital, developer, monkeypatch):
         monkeypatch.setattr(twofactor, "CODE_FAILURES_PER_PAIR", twofactor.Failures(2, 900))
         monkeypatch.setattr(twofactor, "CODE_FAILURES_PER_ADDRESS", twofactor.Failures(3, 900))
-        enrol(client, nurse)
-        make_staff(hospital, "doc@sph.example", role="doctor")
+        enrol(client, developer)
+        make_staff(hospital, "doc@sph.example", role="developer")
         enrol(client, "doc@sph.example")
-        pending = login(client, nurse)
+        pending = login(client, developer)
         for _ in range(2):
             client.post("/auth/totp", headers=bearer(pending), json={"code": "000000"})
-        pair = client.post("/auth/totp", headers=bearer(pending), json={"code": totp_code(totp_secret(nurse))})
+        pair = client.post("/auth/totp", headers=bearer(pending), json={"code": totp_code(totp_secret(developer))})
         assert pair.status_code == 429
         other = login(client, "doc@sph.example")
         client.post("/auth/totp", headers=bearer(other), json={"code": "000000"})  # the address's 3rd
@@ -227,8 +227,8 @@ class TestThrottles:
 
 
 class TestResetAndReauth:
-    def test_an_admin_resets_someones_authenticator_with_a_fresh_code(self, client, hospital, nurse):
-        nurse_headers, _ = enrol(client, nurse)
+    def test_an_admin_resets_someones_authenticator_with_a_fresh_code(self, client, hospital, developer):
+        nurse_headers, _ = enrol(client, developer)
         make_staff(hospital, "boss@sph.example", role="admin")
         boss = sign_in(client, "boss@sph.example")
         user_id = client.get("/auth/me", headers=nurse_headers).json()["id"]
@@ -240,22 +240,22 @@ class TestResetAndReauth:
         assert client.post(f"/staff/{boss_id}/reset-2fa", headers=boss).status_code == 400  # not one's own
         assert client.post(f"/staff/{user_id}/reset-2fa", headers=boss).status_code == 200
         assert client.get("/auth/me", headers=nurse_headers).status_code == 401
-        assert login(client, nurse)["stage"] == "enroll"
+        assert login(client, developer)["stage"] == "enroll"
         with platform_session() as session:
             assert session.scalar(select(AuditEvent).where(AuditEvent.action == "staff_2fa_reset")).target_id == user_id
 
-    def test_a_recovery_code_does_not_reauthenticate(self, client, nurse):
-        headers, codes = enrol(client, nurse)
+    def test_a_recovery_code_does_not_reauthenticate(self, client, developer):
+        headers, codes = enrol(client, developer)
         assert client.post("/auth/reauth", headers=headers, json={"code": codes[0][:12]}).status_code in (400, 422)
 
-    def test_the_cli_resets_anyone(self, client, nurse, capsys):
+    def test_the_cli_resets_anyone(self, client, developer, capsys):
         from app import cli
 
-        headers, _ = enrol(client, nurse)
-        assert cli.main(["reset-2fa", "--email", nurse.upper()]) == 0
+        headers, _ = enrol(client, developer)
+        assert cli.main(["reset-2fa", "--email", developer.upper()]) == 0
         assert "reset" in capsys.readouterr().out
         assert client.get("/auth/me", headers=headers).status_code == 401
-        assert login(client, nurse)["stage"] == "enroll"
+        assert login(client, developer)["stage"] == "enroll"
         with platform_session() as session:
             assert session.scalar(select(StaffSession).where(StaffSession.revoked_at.is_(None),
                                                              StaffSession.stage == "full")) is None

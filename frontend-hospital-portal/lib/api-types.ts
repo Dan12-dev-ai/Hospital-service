@@ -2,6 +2,7 @@
 
 export type Role =
   | "admin"
+  | "developer"
   | "doctor"
   | "nurse"
   | "reception"
@@ -9,8 +10,12 @@ export type Role =
   | "billing"
   | "records";
 
+/** The roles that sign in to the developer dashboard (the backend refuses the others). */
+export type DashboardRole = "admin" | "developer";
+
 export const ROLE_LABELS: Record<Role, string> = {
   admin: "Administrator",
+  developer: "Developer",
   doctor: "Doctor",
   nurse: "Nurse",
   reception: "Reception",
@@ -78,6 +83,8 @@ export type Hospital = {
   services: ServiceKey[];
   open_hours: string | null;
   video_enabled: boolean;
+  /** Whether Endod offers video visits at all (off by default: no video settings anywhere). */
+  video_visits_offered?: boolean;
   /** Birr, as text with two decimals. */
   price_in_person: string | null;
   price_video: string | null;
@@ -90,98 +97,16 @@ export const MISSING_LABELS: Record<string, string> = {
   location: "the hospital's location on the map",
 };
 
-export type BookingStatus = "awaiting_doctor" | "confirmed" | "rejected" | "cancelled" | "completed";
-export type VisitMode = "in_person" | "video";
-/** Paid online to Endod when booking, or paid to the hospital at the visit. */
-export type BookingPayment = "online" | "at_hospital";
+/** One priced item the hospital's system synced (PUT /prices/... in the integration API). */
+export type PriceItem = { code: string; name: string; price: string; active: boolean; updated_at: string | null };
 
-export type Booking = {
-  id: string;
-  external_id: string;
-  patient: { dedan_id: string; name: string; phone: string | null };
-  visit_mode: VisitMode;
-  service: string | null;
-  scheduled_at: string;
-  duration_minutes: number;
-  notes: string | null;
-  /** Birr, as text with two decimals. */
-  price: string;
-  payment: BookingPayment;
-  status: BookingStatus;
-  doctor: { id: string; full_name: string } | null;
-  has_video_room: boolean;
-  reason: string | null;
-  decided_at: string | null;
-  created_at: string;
+export type PriceList = {
+  currency: string;
+  consultation: { in_person: string | null };
+  lab_tests: PriceItem[];
+  imaging: PriceItem[];
+  procedures: PriceItem[];
 };
 
-export type BookingList = { items: Booking[]; counts: Record<BookingStatus, number> };
-
-export type VideoJoin = { domain: string; room: string; jwt: string; url: string };
-
-export type DutyStatus = "on-duty" | "in-consultation" | "on-call" | "off-duty";
-export type DoctorRank = "chief" | "senior-consultant" | "attending" | "resident";
-
-export type ApiDoctor = {
-  id: string;
-  full_name: string;
-  full_name_am: string | null;
-  email: string;
-  phone: string | null;
-  active: boolean;
-  department: { id: string; name: string; name_am: string | null } | null;
-  license_number: string | null;
-  credentials: string | null;
-  specialty: string | null;
-  rank: DoctorRank | null;
-  extension: string | null;
-  duty_status: DutyStatus;
-  duty_location: string | null;
-  duty_updated_at: string | null;
-  load: { patients: number; capacity: number | null; percent: number | null };
-};
-
-export type DoctorList = {
-  items: ApiDoctor[];
-  counts: { all: number } & Record<DutyStatus, number>;
-};
-
-export type Department = {
-  id: string;
-  kind: "department" | "ward" | "clinic" | "dispensary";
-  name: string;
-  name_am: string | null;
-  capacity: number | null;
-  active: boolean;
-};
-
-export type PatientStatus = "opd" | "emergency" | "admitted" | "discharge" | "discharged";
-
-export type ApiPatient = {
-  id: string;
-  mrn: string;
-  /** Confirmed by Endod (linked). */
-  dedan_id: string | null;
-  /** Given by the patient but not confirmed: "Endod ID given, not yet linked". */
-  claimed_dedan_id: string | null;
-  full_name: string;
-  full_name_am: string | null;
-  sex: "female" | "male";
-  age_years: number | null;
-  status: PatientStatus;
-  department: { id: string; name: string; name_am: string | null } | null;
-  ward: { id: string; name: string; name_am: string | null } | null;
-  bed: string | null;
-  attending_doctor: { id: string; full_name: string } | null;
-  diagnosis: string | null;
-  alerts: { id: string; kind: "allergy" | "risk"; label: string }[];
-  status_changed_at: string | null;
-};
-
-export type PatientList = { items: ApiPatient[]; total: number; limit: number; offset: number };
-
-export type PatientStats = {
-  total: number;
-  registered_today: number;
-  by_status: Record<PatientStatus, number>;
-};
+/** The integration guide, served by the hospital service (GET /developer/guide). */
+export type GuideSource = { markdown: string; api_url: string; docs_url: string; openapi_url: string };

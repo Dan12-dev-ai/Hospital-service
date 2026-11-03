@@ -16,8 +16,8 @@ test.beforeAll(() => {
 });
 
 test("signed-out visitors are sent to the sign-in page", async ({ page }) => {
-  await page.goto("/appointments");
-  await expect(page).toHaveURL(/\/login\?next=%2Fappointments$/);
+  await page.goto("/keys");
+  await expect(page).toHaveURL(/\/login\?next=%2Fkeys$/);
   await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
 
   // The BFF refuses portal API calls without a session.
@@ -26,13 +26,21 @@ test("signed-out visitors are sent to the sign-in page", async ({ page }) => {
 });
 
 test("a wrong code is refused and nobody is signed out; the right one signs in", async ({ page }) => {
-  await signInThroughForm(page, hospital.accounts.billing.email, hospital.password);
+  await signInThroughForm(page, hospital.accounts.developer.email, hospital.password);
   await page.getByLabel("Authentication code").fill("000000");
   await page.getByRole("button", { name: "Verify" }).click();
   await expect(page.getByTestId("form-error")).toContainText("That code is not valid");
-  await page.getByLabel("Authentication code").fill(totpCode(hospital.accounts.billing.email));
+  await page.getByLabel("Authentication code").fill(totpCode(hospital.accounts.developer.email));
   await page.getByRole("button", { name: "Verify" }).click();
-  await expect(page.getByTestId("signed-in-name")).toHaveText(hospital.accounts.billing.name);
+  await expect(page.getByTestId("signed-in-name")).toHaveText(hospital.accounts.developer.name);
+});
+
+test("clinical roles are refused with a clear message", async ({ page }) => {
+  await signInThroughForm(page, hospital.accounts.nurse.email, hospital.password);
+  await expect(page.getByTestId("form-error")).toContainText("Only administrators and developers sign in");
+  await expect(page).toHaveURL(/\/login/);
+  const me = await page.request.get("/api/auth/me");
+  expect(me.status()).toBe(401);
 });
 
 test("a wrong password is refused", async ({ page }) => {
@@ -41,9 +49,9 @@ test("a wrong password is refused", async ({ page }) => {
   await expect(page).toHaveURL(/\/login/);
 });
 
-test("sign in, then sign out from the top bar", async ({ page, context }) => {
-  await page.goto("/patients");
-  await expect(page).toHaveURL(/\/login\?next=%2Fpatients/);
+test("sign in, then sign out from the sidebar", async ({ page, context }) => {
+  await page.goto("/webhooks");
+  await expect(page).toHaveURL(/\/login\?next=%2Fwebhooks/);
   await page.getByLabel("Email").fill(hospital.accounts.admin.email);
   await page.getByLabel("Password").fill(hospital.password);
   await page.getByRole("button", { name: "Sign in" }).click();
@@ -52,9 +60,9 @@ test("sign in, then sign out from the top bar", async ({ page, context }) => {
   await enterCode(page, hospital.accounts.admin.email);
 
   // Back where the visitor was going.
-  await expect(page).toHaveURL(/\/patients$/);
+  await expect(page).toHaveURL(/\/webhooks$/);
   await expect(page.getByTestId("signed-in-name")).toHaveText(hospital.accounts.admin.name);
-  await expect(page.getByTestId("signed-in-email")).toHaveText(hospital.accounts.admin.email);
+  await expect(page.getByTestId("signed-in-email")).toContainText(hospital.accounts.admin.email);
 
   // The backend's token is in an httpOnly cookie the page cannot read.
   const cookie = (await context.cookies()).find((c) => c.name === "hp_session");
@@ -64,7 +72,7 @@ test("sign in, then sign out from the top bar", async ({ page, context }) => {
   const me = await page.request.get("/api/auth/me");
   expect(JSON.stringify(await me.json())).not.toContain("access_token");
 
-  await page.getByTestId("top-bar").getByRole("button", { name: "Sign out" }).click();
+  await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/\/login$/);
   expect((await context.cookies()).find((c) => c.name === "hp_session")).toBeUndefined();
   await page.goto("/");
@@ -72,22 +80,22 @@ test("sign in, then sign out from the top bar", async ({ page, context }) => {
 });
 
 test("a stale session is dropped and the visitor signs in again", async ({ page, context }) => {
-  await signIn(page, hospital.accounts.nurse.email, hospital.password);
+  await signIn(page, hospital.accounts.developer.email, hospital.password);
   const cookie = (await context.cookies()).find((c) => c.name === "hp_session");
   expect(cookie).toBeDefined();
   // Sign out elsewhere (ends the session on the backend), keep the cookie here.
   await context.addCookies([{ ...cookie!, value: "no-longer-valid-token" }]);
-  await page.goto("/doctors");
-  await expect(page).toHaveURL(/\/login\?next=%2Fdoctors/);
+  await page.goto("/logs");
+  await expect(page).toHaveURL(/\/login\?next=%2Flogs/);
 });
 
 test("a temporary password must be changed before anything else", async ({ page }) => {
-  await signInThroughForm(page, hospital.accounts.newdoc.email, hospital.temporary_password);
+  await signInThroughForm(page, hospital.accounts.newdev.email, hospital.temporary_password);
   await expect(page).toHaveURL(/\/account\/password$/);
   await expect(page.getByTestId("must-change-password")).toBeVisible();
 
-  // The rest of the portal sends them back here.
-  await page.goto("/patients");
+  // The rest of the dashboard sends them back here.
+  await page.goto("/keys");
   await expect(page).toHaveURL(/\/account\/password$/);
 
   await page.getByLabel("Temporary password").fill(hospital.temporary_password);
@@ -115,25 +123,25 @@ test("a temporary password must be changed before anything else", async ({ page 
   const recovery = (await page.getByTestId("recovery-code").first().textContent()) ?? "";
   await page.getByLabel("I have saved my recovery codes").check();
   await page.getByRole("button", { name: "Continue to the portal" }).click();
-  await expect(page.getByTestId("signed-in-name")).toHaveText(hospital.accounts.newdoc.name);
+  await expect(page.getByTestId("signed-in-name")).toHaveText(hospital.accounts.newdev.name);
 
   // The next sign-in asks for a code; a recovery code works once.
-  await page.getByTestId("top-bar").getByRole("button", { name: "Sign out" }).click();
-  await signInThroughForm(page, hospital.accounts.newdoc.email, "My-own-password-9");
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await signInThroughForm(page, hospital.accounts.newdev.email, "My-own-password-9");
   await page.getByRole("button", { name: "Use a recovery code" }).click();
   await page.getByLabel("Recovery code").fill(recovery);
   await page.getByRole("button", { name: "Verify" }).click();
-  await expect(page.getByTestId("signed-in-name")).toHaveText(hospital.accounts.newdoc.name);
+  await expect(page.getByTestId("signed-in-name")).toHaveText(hospital.accounts.newdev.name);
 });
 
-test("change password from the top bar", async ({ page }) => {
-  await signIn(page, hospital.accounts.reception.email, hospital.password);
+test("change password from the sidebar", async ({ page }) => {
+  await signIn(page, hospital.accounts.developer.email, hospital.password);
   await page.goto("/");
   await page.getByRole("link", { name: "Change password" }).click();
   await expect(page).toHaveURL(/\/account\/password$/);
   await page.getByLabel("Current password").fill("Wrong-password-1");
-  await page.getByLabel("New password", { exact: true }).fill("Reception-pass-22");
-  await page.getByLabel("Confirm new password").fill("Reception-pass-22");
+  await page.getByLabel("New password", { exact: true }).fill("Developer-pass-22");
+  await page.getByLabel("Confirm new password").fill("Developer-pass-22");
   await page.getByRole("button", { name: "Change password" }).click();
   await expect(page.getByTestId("form-error")).toHaveText("Current password is incorrect.");
 
@@ -142,13 +150,13 @@ test("change password from the top bar", async ({ page }) => {
   await expect(page.getByTestId("password-changed")).toBeVisible();
 
   const again = await page.request.post("/api/auth/login", {
-    data: { email: hospital.accounts.reception.email, password: "Reception-pass-22" },
+    data: { email: hospital.accounts.developer.email, password: "Developer-pass-22" },
   });
   expect(again.status()).toBe(200);
 });
 
 for (const next of ["/%09/evil.example", "//evil.example", "/%5Cevil.example", "https://evil.example"]) {
-  test(`after sign-in, never leaves the portal (next=${next})`, async ({ page }) => {
+  test(`after sign-in, never leaves the dashboard (next=${next})`, async ({ page }) => {
     await page.goto(`/login?next=${next}`);
     await page.getByLabel("Email").fill(hospital.accounts.admin.email);
     await page.getByLabel("Password").fill(hospital.password);

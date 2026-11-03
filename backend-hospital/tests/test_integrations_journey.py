@@ -240,6 +240,7 @@ def video(hospital):
     return book(hospital, mode="video")
 
 
+@pytest.mark.video_visits  # approve and decline are video-only (HOSPITAL_VIDEO_VISITS_ENABLED)
 class TestBookingDecisions:
     def test_approve_a_video_visit(self, client, auth, live, doctor, video):
         resp = client.post(f"{API}/bookings/{video}/approve", headers=auth, json={"doctor_id": doctor})

@@ -31,7 +31,7 @@ class TestDepartments:
         assert client.get("/departments", headers=admin).json() == []
 
     def test_only_admins_change_departments(self, client, hospital):
-        make_staff(hospital, "doc@sph.example", role="doctor")
+        make_staff(hospital, "doc@sph.example", role="developer")
         doctor = sign_in(client, "doc@sph.example")
         assert client.post("/departments", headers=doctor, json={"kind": "clinic", "name": "X Desk"}).status_code == 403
         assert client.get("/departments", headers=doctor).status_code == 200
@@ -40,7 +40,7 @@ class TestDepartments:
 class TestStaff:
     def test_create_with_a_one_time_password(self, client, admin):
         resp = client.post("/staff", headers=admin, json={
-            "email": "Hiwot@sph.example", "full_name": "Dr. Hiwot M. Gebre", "role": "doctor"})
+            "email": "Hiwot@sph.example", "full_name": "Hiwot M. Gebre", "role": "developer"})
         assert resp.status_code == 201
         body = resp.json()
         assert body["email"] == "hiwot@sph.example" and body["must_change_password"] is True
@@ -83,7 +83,7 @@ class TestStaff:
             "email": "admin@sph.example", "full_name": "Again", "role": "nurse"}).status_code == 409
 
     def test_deactivating_ends_sessions(self, client, admin, hospital):
-        nurse_id = make_staff(hospital, "nurse@sph.example", role="nurse")
+        nurse_id = make_staff(hospital, "nurse@sph.example", role="developer")
         nurse = sign_in(client, "nurse@sph.example")
         assert client.patch(f"/staff/{nurse_id}", headers=admin, json={"active": False}).status_code == 200
         assert client.get("/auth/me", headers=nurse).status_code in (401, 403)
@@ -94,7 +94,7 @@ class TestStaff:
         assert client.patch(f"/staff/{me['id']}", headers=admin, json={"active": False}).status_code == 400
 
     def test_reset_password(self, client, admin, hospital):
-        nurse_id = make_staff(hospital, "nurse@sph.example", role="nurse")
+        nurse_id = make_staff(hospital, "nurse@sph.example", role="developer")
         old = sign_in(client, "nurse@sph.example")
         reset = client.post(f"/staff/{nurse_id}/reset-password", headers=admin).json()
         assert client.get("/auth/me", headers=old).status_code == 401
@@ -103,12 +103,12 @@ class TestStaff:
 
     def test_other_hospitals_staff_are_out_of_reach(self, client, admin):
         other = make_hospital(code="BLH", name="Black Lion")
-        stranger = make_staff(other, "nurse@blh.example", role="nurse")
+        stranger = make_staff(other, "nurse@blh.example", role="developer")
         assert client.patch(f"/staff/{stranger}", headers=admin, json={"role": "admin"}).status_code == 404
         assert client.post(f"/staff/{stranger}/reset-password", headers=admin).status_code == 404
 
     def test_non_admins_cannot_manage_staff(self, client, hospital):
-        make_staff(hospital, "nurse@sph.example", role="nurse")
+        make_staff(hospital, "nurse@sph.example", role="developer")
         nurse = sign_in(client, "nurse@sph.example")
         assert client.get("/staff", headers=nurse).status_code == 403
 

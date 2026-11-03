@@ -1,6 +1,9 @@
 # Endod hospital service (backend)
 
-The backend of the hospital staff portal (`../frontend-hospital-portal`).
+The backend of the Endod developer dashboard (`../frontend-hospital-portal`)
+and of the integration API hospitals' own systems call: every client hospital
+keeps its own hospital system, and Endod is the layer between it and the
+Endod patient app.
 It is a separate service with **its own database**: hospital staff, wards,
 pharmacy stock, billing and reports live here. It exchanges data with the
 Endod patient platform only through APIs, and patient data crosses over only
@@ -378,10 +381,43 @@ other), as TenaCare does it (`app/twofactor.py`, `app/totp.py`):
 Migration 0010 adds the columns and the `staff_recovery_codes` table (with
 row-level security); nobody is signed out by deploying it.
 
+## The developer dashboard
+
+- **Who signs in:** administrators and developers (role `developer`: API
+  keys, webhooks, logs, playground and docs, but not the hospital's settings
+  or its team). The old portal's clinical roles (doctor, nurse, reception,
+  pharmacist, billing, records) are refused at sign-in, after the right
+  password, with a message saying so (`app/auth.py`, `ROLE_NOT_ALLOWED`), and
+  on every route for a session opened before. Doctors stay as records (the
+  integration API names them in queues and follow-ups).
+  `HOSPITAL_CLINICAL_SIGN_IN_ENABLED=true` lets them sign in again (the
+  clinical staff API is kept, unused by the dashboard; its tests use it).
+- **Team:** admins invite administrators and developers with `POST /staff`
+  (a temporary password, then two-step verification) and remove them with
+  `PATCH /staff/{id}` (`active: false`).
+- **Docs:** `GET /developer/guide` serves `app/integrations/guide.md`.
+- **Playground:** `POST /playground/credentials` (`app/api/playground.py`)
+  creates or reuses the hospital's own Test connection (`integration_clients.playground`,
+  migration 0012: never listed, counted or changeable through `/connections`)
+  and answers a new secret for it, to the dashboard's server only, 10 times a
+  minute per hospital at most.
+- **Prices:** `GET /prices` (administrators and developers) is the price list
+  the hospital's system synced through the integration API.
+
+### Video visits (off)
+
+`HOSPITAL_VIDEO_VISITS_ENABLED` (default `false`). Off: the integration API's
+`POST /bookings/{id}/approve` and `/decline` are left out of the OpenAPI
+document and answer 404, test bookings are in-person only, the listing sent
+to the patient platform never offers video (`video_enabled: false`, no video
+price), `PATCH /hospital` refuses video settings, a video booking request is
+refused, and the guide's video text stays in hidden `<!-- -->` blocks. The
+code is kept: `true` brings it all back.
+
 ## Integration API (hospitals' own systems)
 
 Hospitals approved by Endod connect their own systems (EMR, LIS, RIS) in the
-portal ("Connect your system", admins only): each connection is an OAuth 2.0
+developer dashboard ("API keys", administrators and developers): each connection is an OAuth 2.0
 client with the scopes chosen in plain words, Live or Test. The API is served
 under `/integrations/v1` (its own OpenAPI at `/integrations/v1/openapi.json`,
 docs at `/integrations/v1/docs`) and published by nginx at
@@ -414,6 +450,14 @@ developers is [docs/integrations.md](../docs/integrations.md) (served from
   and never says whether a patient exists.
 - **Logs:** method, path, status, client, time, duration and address, 30 days;
   never a body.
+- **Prices** (`prices.write`, `prices.read`; `app/integrations/pricing.py`):
+  `PUT /prices/consultation` sets the hospital's in-person price
+  (`price_in_person`) and announces the listing at once;
+  `PUT /prices/lab-tests`, `/imaging`, `/procedures` each replace a whole
+  category of `{code, name, price, active}` items (table `price_items`,
+  migration 0012, with row-level security like every hospital table);
+  `GET /prices` reads everything. Test connections check and answer without
+  writing. Changes are audited with the client ID.
 
 ### Deploying it
 
@@ -466,6 +510,7 @@ alone; the portal API and the worker run without it.
 | --- | --- |
 | Sign-in | `POST /auth/login`, `POST /auth/totp` (the code), `POST /auth/enroll/start|confirm` (setting up the authenticator), `POST /auth/reauth` (a fresh code), `POST /auth/logout`, `GET /auth/me`, `POST /auth/password`; `POST /staff/{id}/reset-2fa` (admin, fresh code) |
 | Hospital | `GET /hospital`, `PATCH /hospital` (admin) |
+| Developer dashboard (administrators and developers of approved hospitals) | `GET /developer/guide`, `GET /prices`, `POST /playground/credentials` |
 | Departments, wards, clinics, dispensaries | `GET /departments?kind=`, `POST /departments`, `PATCH /departments/{id}` (admin) |
 | Staff accounts | `GET /staff`, `POST /staff`, `PATCH /staff/{id}`, `POST /staff/{id}/reset-password` (admin) |
 | Patients | `GET /patients?q=&status=&department_id=&ward_id=&doctor_id=`, `GET /patients/stats`, `POST /patients`, `GET /patients/{id}`, `PATCH /patients/{id}`, `POST`/`DELETE /patients/{id}/alerts` |
@@ -475,8 +520,8 @@ alone; the portal API and the worker run without it.
 | Queues | `GET /queue?day=`, `POST /queue/check-in`, `POST /queue/{doctor_id}/call-next`, `POST /queue/entries/{id}/done|skip|cancel` |
 | Shared with us | `GET /shared?patient_id=`, `GET /shared/{share_id}/files/{file_id}` |
 | Imports | `POST /imports/preview` (the file as the body), `POST /imports/{id}/confirm`, `GET /imports/template.csv` |
-| Connected systems (admins of approved hospitals; changes need a fresh authenticator code) | `GET`/`POST /connections`, `GET /connections/{id}`, `POST /connections/{id}/disconnect|rotate-secret|ip-restriction|public-key|webhook`, `POST /connections/{id}/webhook/rotate-secret|test`, `GET /connections/{id}/requests|deliveries` |
-| Integration API (hospitals' systems, OAuth 2.0) | under `/integrations/v1`: `POST /oauth/token`, `GET /.well-known/jwks.json`, `POST /fhir`, `POST /fhir/{Type}`, `GET /bookings`, `GET /bookings/{id}` ([docs/integrations.md](../docs/integrations.md)) |
+| Connected systems (administrators and developers of approved hospitals; changes need a fresh authenticator code) | `GET`/`POST /connections`, `GET /connections/{id}`, `POST /connections/{id}/disconnect|rotate-secret|ip-restriction|public-key|webhook`, `POST /connections/{id}/webhook/rotate-secret|test`, `GET /connections/{id}/requests|deliveries` |
+| Integration API (hospitals' systems, OAuth 2.0) | under `/integrations/v1`: `POST /oauth/token`, `GET /.well-known/jwks.json`, `POST /fhir`, `POST /fhir/{Type}`, patients, bookings, queue, follow-ups, prescriptions, `GET /prices`, `PUT /prices/consultation|lab-tests|imaging|procedures` ([docs/integrations.md](../docs/integrations.md)) |
 | Joining Endod (a pending hospital's admin) | `POST /onboarding` (public: the account), `GET /onboarding/application`, `PATCH /onboarding/contact|facility|location|documents`, `POST`/`GET /onboarding/documents/{kind}` (one file as the body), `GET /onboarding/demo-slots`, `POST /onboarding/demo`, `POST /onboarding/submit` |
 | Endod platform only (`X-Platform-Key`) | `GET /platform/records/{record_id}/files/{file_id}`; `GET /platform/hospitals`, `POST /platform/hospitals/{id}/approve|suspend|reject`, `DELETE /platform/hospitals/{id}`; `GET /platform/applications?status=`, `GET /platform/applications/{hospital_id}`, `GET /platform/applications/{hospital_id}/documents/{kind}` |
 
