@@ -6,13 +6,22 @@ Reception asks Endod to confirm who the patient is, by the health card's QR
 ``patient.link_refused``; only then is ``dedan_id`` stored on the patient
 and their records published. Checking in an Endod booking links the patient
 directly: the platform already identified them.
+
+A patient without an Endod account (often without a smartphone) is enrolled
+by SMS (section 8 of the contract): ``patient.sms_enrol_requested`` makes
+Endod text a code to the patient's phone (``patient.sms_enrol_code_sent``);
+reception types the code the patient reads out (``patient.sms_enrol_verify``,
+with the patient's name and language); Endod creates or finds the account,
+links it and texts the patient their card number and PIN
+(``patient.sms_enrolled``), or refuses (``patient.sms_enrol_refused``). The
+enrolled patient is then linked exactly as on ``patient.linked``.
 """
 
 from __future__ import annotations
 
 import logging
 import re
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import parse_qs, urlsplit
 
@@ -24,7 +33,7 @@ from app import eventbus, records
 from app.integrations import webhooks
 from app.db import utcnow
 from app.eventbus import PermanentEventError
-from app.models import LinkStatus, Patient, PatientLinkRequest
+from app.models import LinkStatus, Patient, PatientLinkRequest, SmsEnrolment, SmsEnrolmentStatus
 from app.validation import normalize_dedan_id
 
 logger = logging.getLogger("hospital.linking")
@@ -80,6 +89,7 @@ def request_link(session: Session, patient: Patient, dedan_id: str, staff_id: Op
     if not card_signature and not phone:
         raise LinkError("Scan the health card, or give the phone number on the Endod account.", 400)
     _close_pending(session, patient.id, LinkStatus.SUPERSEDED, "replaced")
+    _close_enrolments(session, patient.id, "replaced")
     request = PatientLinkRequest(
         hospital_id=patient.hospital_id, patient_id=patient.id, dedan_id=dedan_id,
         method="card" if card_signature else "phone", requested_by=staff_id,
@@ -110,6 +120,7 @@ def link(session: Session, patient: Patient, dedan_id: str, today: date, request
     patient.claimed_dedan_id = None
     session.flush()
     _close_pending(session, patient.id, LinkStatus.SUPERSEDED, "linked")
+    _close_enrolments(session, patient.id, "linked")
     records.publish_history(session, patient, today)
     webhooks.patient_event(session, patient, "patient.linked", dedan_id, request_id=request_id)
 
@@ -118,6 +129,7 @@ def unlink(session: Session, patient: Patient) -> Optional[str]:
     """Forget the Endod ID (nothing more is sent), or withdraw a pending request.
     Returns the Endod ID that was linked, if any."""
     _close_pending(session, patient.id, LinkStatus.SUPERSEDED, "withdrawn")
+    _close_enrolments(session, patient.id, "withdrawn")
     old, patient.dedan_id = patient.dedan_id, None
     if old:
         webhooks.patient_event(session, patient, "patient.unlinked", old)
@@ -198,7 +210,161 @@ def _refused_event(session: Session, request: PatientLinkRequest) -> None:
                                request_id=request.id, reason=request.reason)
 
 
+# --- enrolment by SMS (section 8) -----------------------------------------------------
+
+#: Refusals after which the code may be typed again.
+_RETRYABLE = {"wrong_code"}
+#: Endod's refusals, as stored (anything else is kept as "refused").
+ENROL_REASONS = {"invalid_phone", "rate_limited", "sms_unavailable", "wrong_code", "too_many_attempts", "expired",
+                 "superseded", "no_code", "not_allowed"}
+
+
+def _close_enrolments(session: Session, patient_id: str, reason: str) -> None:
+    for row in session.scalars(select(SmsEnrolment).where(
+            SmsEnrolment.patient_id == patient_id, SmsEnrolment.status.in_(SmsEnrolmentStatus.OPEN))):
+        row.status, row.reason, row.decided_at = SmsEnrolmentStatus.SUPERSEDED, reason, utcnow()
+
+
+def latest_enrolment(session: Session, patient_id: str) -> Optional[SmsEnrolment]:
+    return session.scalar(select(SmsEnrolment).where(SmsEnrolment.patient_id == patient_id)
+                          .order_by(SmsEnrolment.created_at.desc(), SmsEnrolment.id.desc()).limit(1))
+
+
+def request_sms_enrolment(session: Session, patient: Patient, phone: Optional[str]) -> SmsEnrolment:
+    """Ask Endod to text the patient a code (``patient`` is locked). ``phone``
+    (normalised): where, else the patient's own number."""
+    if patient.dedan_id:
+        raise LinkError(f"This patient is already linked to {patient.dedan_id}.")
+    phone = phone or patient.phone
+    if not phone:
+        raise LinkError("The patient has no phone number: give one.", 400)
+    _close_pending(session, patient.id, LinkStatus.SUPERSEDED, "replaced")
+    _close_enrolments(session, patient.id, "replaced")
+    row = SmsEnrolment(hospital_id=patient.hospital_id, patient_id=patient.id, phone=phone,
+                       status=SmsEnrolmentStatus.SENDING)
+    session.add(row)
+    session.flush()
+    # The phone only: nothing else about the patient before the code is checked.
+    eventbus.emit(session, "patient.sms_enrol_requested", {
+        "request_id": row.id, "hospital_id": patient.hospital_id, "patient_id": patient.id, "phone": phone})
+    return row
+
+
+def verify_sms_enrolment(session: Session, patient: Patient, code: str, language: str) -> SmsEnrolment:
+    """Send the code the patient read out to Endod to check (``patient`` is locked)."""
+    if patient.dedan_id:
+        raise LinkError(f"This patient is already linked to {patient.dedan_id}.")
+    row = latest_enrolment(session, patient.id)
+    if row is None or row.status not in (SmsEnrolmentStatus.SENDING, SmsEnrolmentStatus.CODE_SENT):
+        raise LinkError("No code is waiting for this patient: send one first (POST /patients/{mrn}/sms-enrol).")
+    row.status, row.reason = SmsEnrolmentStatus.VERIFYING, None
+    session.flush()
+    # Now the patient's name and language too: Endod may create their account.
+    eventbus.emit(session, "patient.sms_enrol_verify", {
+        "request_id": row.id, "hospital_id": patient.hospital_id, "patient_id": patient.id, "code": code,
+        "name": patient.full_name, "language": language})
+    return row
+
+
+class _EnrolReply(BaseModel):
+    request_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    hospital_id: str = Field(min_length=1, max_length=32)
+    patient_id: str = Field(min_length=1, max_length=32)
+
+
+class _CodeSent(_EnrolReply):
+    expires_at: Optional[datetime] = None
+
+
+class _EnrolRefused(_EnrolReply):
+    reason: str = Field(min_length=1, max_length=40)
+    attempts_left: Optional[int] = Field(default=None, ge=0)
+
+
+class _Enrolled(_EnrolReply):
+    dedan_id: str = Field(min_length=1, max_length=16)
+    name: Optional[str] = Field(default=None, max_length=160)
+    phone: Optional[str] = Field(default=None, max_length=20)
+    created: bool = False
+
+
+def _parse_reply(model, payload: Dict[str, Any]):
+    try:
+        return model.model_validate(payload)
+    except ValidationError as exc:
+        raise PermanentEventError(str(exc).splitlines()[0]) from exc
+
+
+def _enrolment_for(session: Session, reply: _EnrolReply) -> Optional[SmsEnrolment]:
+    row = session.scalar(select(SmsEnrolment).where(SmsEnrolment.id == reply.request_id).with_for_update())
+    if row is None:
+        # Requests are made here, so a missing one was deleted with its patient.
+        logger.info("sms_enrol_reply_for_unknown_request id=%s", reply.request_id)
+        return None
+    if (row.hospital_id, row.patient_id) != (reply.hospital_id, reply.patient_id):
+        raise PermanentEventError("the reply does not match its request")
+    return row
+
+
+def _enrolment_event(session: Session, row: SmsEnrolment) -> None:
+    """Tell the hospital's systems (webhook ``patient.sms_enrolment``)."""
+    patient = session.get(Patient, row.patient_id)
+    if patient is not None:
+        webhooks.patient_event(session, patient, "patient.sms_enrolment", row.dedan_id, request_id=row.id,
+                               status=row.status, reason=row.reason, attempts_left=row.attempts_left)
+
+
+def on_sms_code_sent(session: Session, payload: Dict[str, Any]) -> None:
+    reply = _parse_reply(_CodeSent, payload)
+    row = _enrolment_for(session, reply)
+    if row is None or row.status != SmsEnrolmentStatus.SENDING:
+        return  # answered already, replaced, or the code was typed meanwhile
+    row.status, row.code_expires_at = SmsEnrolmentStatus.CODE_SENT, reply.expires_at
+    _enrolment_event(session, row)
+
+
+def on_sms_refused(session: Session, payload: Dict[str, Any]) -> None:
+    reply = _parse_reply(_EnrolRefused, payload)
+    row = _enrolment_for(session, reply)
+    if row is None or row.status not in SmsEnrolmentStatus.OPEN:
+        return
+    reason = reply.reason if reply.reason in ENROL_REASONS else "refused"
+    row.reason, row.attempts_left = reason, reply.attempts_left
+    if reason in _RETRYABLE and (reply.attempts_left or 0) > 0:
+        row.status = SmsEnrolmentStatus.CODE_SENT  # the code may be typed again
+    else:
+        row.status, row.decided_at = SmsEnrolmentStatus.FAILED, utcnow()
+    _enrolment_event(session, row)
+
+
+def on_sms_enrolled(session: Session, payload: Dict[str, Any]) -> None:
+    reply = _parse_reply(_Enrolled, payload)
+    try:
+        dedan_id = normalize_dedan_id(reply.dedan_id)
+    except ValueError as exc:
+        raise PermanentEventError("not an Endod ID") from exc
+    row = _enrolment_for(session, reply)
+    if row is None or row.status not in SmsEnrolmentStatus.OPEN:
+        return
+    patient = session.scalar(select(Patient).where(Patient.id == row.patient_id).with_for_update())
+    row.decided_at, row.dedan_id, row.created_account = utcnow(), dedan_id, reply.created
+    try:
+        link(session, patient, dedan_id, records.hospital_today(session, patient.hospital_id), row.id)
+    except LinkError:
+        # Another patient of this hospital holds the Endod ID (the same person
+        # registered twice), or this one was linked another way meanwhile.
+        row.status, row.reason = SmsEnrolmentStatus.FAILED, "already_linked"
+        _enrolment_event(session, row)
+        return
+    # link() closed the open enrolments (as superseded): this one is the link.
+    row.status, row.reason, row.attempts_left = SmsEnrolmentStatus.ENROLLED, None, None
+    _enrolment_event(session, row)
+
+
 HANDLERS = {
     "patient.linked": on_linked,
     "patient.link_refused": on_refused,
+    "patient.sms_enrol_code_sent": on_sms_code_sent,
+    "patient.sms_enrol_refused": on_sms_refused,
+    "patient.sms_enrolled": on_sms_enrolled,
 }

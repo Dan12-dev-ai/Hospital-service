@@ -148,6 +148,52 @@ class LinkOut(BaseModel):
     endod_id: Optional[str] = Field(description="The confirmed Endod ID (only once linked).")
     claimed_endod_id: Optional[str] = Field(description="An Endod ID the patient gave, not confirmed.")
     request: Optional[LinkRequestOut] = Field(description="The latest link request, if any.")
+    sms_enrolment: Optional["SmsEnrolmentOut"] = Field(default=None, description="The latest enrolment by SMS, "
+                                                                                 "if any.")
+    sample: Optional[bool] = Field(default=None, description="Test connections only: a made-up answer.")
+
+
+class SmsEnrolBody(BaseModel):
+    """Enrol a patient who has no Endod account by SMS."""
+
+    model_config = _examples({"phone": "+251911234567"}, {})
+    phone: OptionalPhone = Field(default=None, description="Where to text the code (an Ethiopian mobile number); "
+                                                           "default: the patient's phone number.")
+
+
+class SmsEnrolVerifyBody(BaseModel):
+    """The 6-digit code the patient read out from the SMS."""
+
+    model_config = _examples({"code": "482913", "language": "am"})
+    code: str = Field(pattern=r"^\s*[0-9]{6}\s*$", description="The 6-digit code from the patient's SMS.")
+    language: Literal["am", "en"] = Field(default="am", description="The language of the patient's texts "
+                                                                     "(Amharic or English).")
+
+
+class SmsEnrolmentOut(BaseModel):
+    """Where the patient's enrolment by SMS stands."""
+
+    model_config = _examples({"id": "3c2b1a0f9e8d4c7b6a5f4e3d2c1b0a9f", "status": "code_sent", "reason": None,
+                              "attempts_left": None, "endod_id": None, "created_account": None,
+                              "code_expires_at": "2026-10-01T06:10:00+00:00",
+                              "created_at": "2026-10-01T06:00:00+00:00", "decided_at": None})
+    id: str = Field(description="The request's id (named again in the patient.sms_enrolment and patient.linked "
+                                "events).")
+    status: Literal["sending", "code_sent", "verifying", "enrolled", "failed", "superseded"] = Field(
+        description="`sending`: Endod is texting the code; `code_sent`: ask the patient for it; `verifying`: Endod "
+                    "is checking it; `enrolled`: linked (see `endod_id`); `failed`: see `reason`; `superseded`: "
+                    "replaced by a newer request or another link.")
+    reason: Optional[str] = Field(default=None, description="`wrong_code` (with `attempts_left`: type it again), "
+                                                            "`expired`, `too_many_attempts`, `rate_limited`, "
+                                                            "`invalid_phone`, `sms_unavailable`, `not_allowed`, "
+                                                            "`already_linked`, ...")
+    attempts_left: Optional[int] = None
+    endod_id: Optional[str] = Field(default=None, description="The patient's Endod ID (card number), once enrolled.")
+    created_account: Optional[bool] = Field(default=None, description="Whether Endod created the account (false: "
+                                                                      "the phone already had one).")
+    code_expires_at: Optional[str] = None
+    created_at: str
+    decided_at: Optional[str] = None
     sample: Optional[bool] = Field(default=None, description="Test connections only: a made-up answer.")
 
 
@@ -496,14 +542,17 @@ class PatientEventData(BaseModel):
     request_id: Optional[str] = Field(default=None, description="patient.linked and patient.link_refused: the "
                                                                 "link request answered (null when a booking's "
                                                                 "check-in linked the patient).")
-    reason: Optional[str] = Field(default=None, description="patient.link_refused only: `not_found`, "
-                                                            "`not_verified`, `already_linked`, ...")
+    reason: Optional[str] = Field(default=None, description="patient.link_refused: `not_found`, "
+                                                            "`not_verified`, `already_linked`, ...; "
+                                                            "patient.sms_enrolment: as SmsEnrolmentOut.reason.")
+    status: Optional[str] = Field(default=None, description="patient.sms_enrolment only: as SmsEnrolmentOut.status.")
+    attempts_left: Optional[int] = Field(default=None, description="patient.sms_enrolment only, after a wrong code.")
 
 
 class PatientEvent(_Envelope):
-    """patient.linked, patient.link_refused, patient.unlinked."""
+    """patient.linked, patient.link_refused, patient.unlinked, patient.sms_enrolment."""
 
-    type: Literal["patient.linked", "patient.link_refused", "patient.unlinked"]
+    type: Literal["patient.linked", "patient.link_refused", "patient.unlinked", "patient.sms_enrolment"]
     data: PatientEventData
 
 
@@ -570,6 +619,13 @@ WEBHOOK_EVENTS: Dict[str, Any] = {
                                                              "reason": "not_found"})),
     "patient.unlinked": (PatientEvent, "A patient was unlinked (nothing more is sent to their Endod app).",
                          _event("patient.unlinked", _PATIENT_DATA)),
+    "patient.sms_enrolment": (PatientEvent, "An enrolment by SMS moved on: the code was texted (`code_sent`), a "
+                                            "wrong code was typed (`code_sent`, `reason: wrong_code`, "
+                                            "`attempts_left`), it failed, or the patient was enrolled (`enrolled`; "
+                                            "patient.linked follows).",
+                              _event("patient.sms_enrolment", {**_PATIENT_DATA, "endod_id": None,
+                                                               "request_id": _REQUEST, "status": "code_sent",
+                                                               "reason": None, "attempts_left": None})),
     "prescription.dispensed": (PrescriptionDispensedEvent, "A pharmacy gave medicine from one of the hospital's "
                                                            "prescriptions through Endod.",
                                _event("prescription.dispensed", {

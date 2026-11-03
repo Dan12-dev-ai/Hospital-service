@@ -130,6 +130,33 @@ def ask_link(session, patient: Patient, body: LinkBody, actor_id: Optional[str],
     return request
 
 
+def ask_sms_enrolment(session, patient: Patient, phone: Optional[str], actor_id: Optional[str],
+                      audit_extra: Optional[Dict[str, Any]] = None):
+    """Ask Endod to text the patient an enrolment code (``patient`` locked) and audit it
+    (docs/history-events.md section 8). HTTPException on refusal."""
+    try:
+        row = linking.request_sms_enrolment(session, patient, phone)
+    except linking.LinkError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    audit(session, patient.hospital_id, actor_id, "patient_sms_enrol_requested", "patient", patient.id,
+          {"request_id": row.id, **(audit_extra or {})})
+    session.flush()
+    return row
+
+
+def check_sms_enrolment(session, patient: Patient, code: str, language: str, actor_id: Optional[str],
+                        audit_extra: Optional[Dict[str, Any]] = None):
+    """Send the code the patient read out to Endod (``patient`` locked) and audit it (never the code)."""
+    try:
+        row = linking.verify_sms_enrolment(session, patient, code, language)
+    except linking.LinkError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    audit(session, patient.hospital_id, actor_id, "patient_sms_enrol_verified", "patient", patient.id,
+          {"request_id": row.id, **(audit_extra or {})})
+    session.flush()
+    return row
+
+
 def end_link(session, patient: Patient, actor_id: Optional[str],
              audit_extra: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """Unlink (nothing more is sent to Endod), or withdraw a pending request, and audit it."""

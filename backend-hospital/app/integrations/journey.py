@@ -36,7 +36,7 @@ from fastapi import Body, Depends, FastAPI, Header, HTTPException, Path, Query, 
 from pydantic import AwareDatetime
 from sqlalchemy import select
 
-from app import bookings as booking_rules, dispensing, records
+from app import bookings as booking_rules, dispensing, linking, records
 from app.api import bookings as bookings_api, history, patients as patients_api, queue as queue_api
 from app.auth import audit
 from app.config import get_settings
@@ -88,8 +88,26 @@ def link_out(session, patient: Patient) -> Dict[str, Any]:
         request = {"id": latest["id"], "endod_id": latest["dedan_id"], "method": latest["method"],
                    "status": latest["status"], "reason": latest["reason"], "created_at": latest["created_at"],
                    "decided_at": latest["decided_at"]}
-    return {"status": status, "endod_id": patient.dedan_id, "claimed_endod_id": patient.claimed_dedan_id,
-            "request": request}
+    out = {"status": status, "endod_id": patient.dedan_id, "claimed_endod_id": patient.claimed_dedan_id,
+           "request": request}
+    enrolment = linking.latest_enrolment(session, patient.id)
+    if enrolment is not None:
+        out["sms_enrolment"] = enrolment_out(enrolment)
+    return out
+
+
+def enrolment_out(row) -> Dict[str, Any]:
+    return {"id": row.id, "status": row.status, "reason": row.reason, "attempts_left": row.attempts_left,
+            "endod_id": row.dedan_id, "created_account": row.created_account,
+            "code_expires_at": _iso(row.code_expires_at), "created_at": _iso(row.created_at),
+            "decided_at": _iso(row.decided_at)}
+
+
+def _sample_enrolment(status: str) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    return {"id": "test-mode", "status": status, "reason": None, "attempts_left": None, "endod_id": None,
+            "created_account": None, "code_expires_at": (now + timedelta(minutes=10)).isoformat(),
+            "created_at": now.isoformat(), "decided_at": None, "sample": True}
 
 
 def patient_out(session, patient: Patient) -> Dict[str, Any]:
@@ -428,6 +446,60 @@ def add_routes(api: FastAPI) -> None:  # noqa: C901 -- one place lists every jou
             patient = patient_by_mrn(session, who.hospital_id, mrn, lock=True)
             history.end_link(session, patient, None, via(who))
             return link_out(session, patient)
+
+
+    @api.post("/patients/{mrn}/sms-enrol", status_code=202, **D.operation(
+        [S.PATIENTS_WRITE], "Enrol a patient without an Endod account by SMS",
+        "For a patient who has no Endod account (often no smartphone). Endod texts a 6-digit code to the "
+        "patient's phone (`phone`, default the patient's number); ask the patient for it and send it to POST "
+        "/patients/{mrn}/sms-enrol/verify. Answers 202 with `status: sending`; the webhook `patient.sms_enrolment` "
+        "(and GET /patients/{mrn}, `link.sms_enrolment`) follows: `code_sent`, or `failed` (`rate_limited`: one "
+        "code a minute and five an hour per phone; `invalid_phone`; `sms_unavailable`). Nothing but the phone "
+        "number reaches Endod before the code is checked. A newer request replaces the last one.\n\n"
+        "Test connections: checked, a made-up answer; nothing is sent to Endod and no SMS goes out.",
+        D.ok(202, M.SmsEnrolmentOut, "Asked; Endod is texting the code.", None, D.IDEMPOTENT_REPLAY),
+        [400, 404, 409], {409: "This patient is already linked to DE482731.",
+                          400: "The patient has no phone number: give one."}, [D.PATIENTS]))
+    async def sms_enrol(
+            request: Request, mrn: str = MRN,
+            body: M.SmsEnrolBody = Body(openapi_examples=_example(
+                ("own", "To the patient's phone number", {}),
+                ("phone", "To another number", {"phone": "+251911234567"}))),
+            who: Caller = Depends(needs(S.PATIENTS_WRITE)), idempotency_key: Optional[str] = IDEMPOTENCY):
+        def work(session):
+            if is_test(who):
+                return 202, _sample_enrolment("sending")
+            patient = patient_by_mrn(session, who.hospital_id, mrn, lock=True)
+            row = history.ask_sms_enrolment(session, patient, body.phone, None, via(who))
+            return 202, enrolment_out(row)
+        return await run(request, who, idempotency_key, work)
+
+    @api.post("/patients/{mrn}/sms-enrol/verify", status_code=202, **D.operation(
+        [S.PATIENTS_WRITE], "Check the code the patient received",
+        "Send the 6-digit code the patient read out from the SMS. Answers 202 with `status: verifying`; Endod "
+        "checks it (10 minutes, 5 tries) and the webhook `patient.sms_enrolment` follows: `enrolled` (Endod "
+        "created the patient's account, or found the one this phone already has, linked it, and texted the "
+        "patient their card number and an SMS PIN; `patient.linked` follows and records reach the patient), "
+        "`code_sent` with `reason: wrong_code` and `attempts_left` (ask again), or `failed` (`expired`, "
+        "`too_many_attempts`: send a new code). The patient's name and language go to Endod with the code.\n\n"
+        "Test connections: checked, a made-up answer (the code 000000 is refused as wrong).",
+        D.ok(202, M.SmsEnrolmentOut, "Sent to Endod to check.", None, D.IDEMPOTENT_REPLAY), [404, 409],
+        {409: "No code is waiting for this patient: send one first (POST /patients/{mrn}/sms-enrol)."},
+        [D.PATIENTS]))
+    async def sms_enrol_verify(
+            request: Request, mrn: str = MRN,
+            body: M.SmsEnrolVerifyBody = Body(openapi_examples=_example(
+                ("code", "The code the patient read out", {"code": "482913", "language": "am"}))),
+            who: Caller = Depends(needs(S.PATIENTS_WRITE)), idempotency_key: Optional[str] = IDEMPOTENCY):
+        def work(session):
+            if is_test(who):
+                if body.code.strip() == "000000":
+                    return 202, {**_sample_enrolment("code_sent"), "reason": "wrong_code", "attempts_left": 4}
+                return 202, _sample_enrolment("verifying")
+            patient = patient_by_mrn(session, who.hospital_id, mrn, lock=True)
+            row = history.check_sms_enrolment(session, patient, body.code.strip(), body.language, None, via(who))
+            return 202, enrolment_out(row)
+        return await run(request, who, idempotency_key, work)
 
     # Bookings ------------------------------------------------------------------------------------------------
 

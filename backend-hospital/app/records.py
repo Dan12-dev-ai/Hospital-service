@@ -81,6 +81,9 @@ class Prescription(_Details):
 
 class LabItem(_Details):
     test: Required(120)
+    #: The test's LOINC code, e.g. 718-7 (optional). Endod never texts a
+    #: sensitive test's result (HIV, pregnancy, ...), whether named by code or words.
+    code: T(20)
     value: T(60)
     unit: T(30)
     reference_range: T(60)
@@ -160,7 +163,7 @@ SALVAGE: Dict[str, Dict[str, Any]] = {
                                "notes": 2000},
     RecordCategory.PRESCRIPTION: {"items": {"drug": 120, "dose": 60, "route": 40, "frequency": 60, "duration": 60,
                                             "quantity": 40, "notes": 300}, "notes": 2000},
-    RecordCategory.LAB_RESULT: {"items": {"test": 120, "value": 60, "unit": 30, "reference_range": 60,
+    RecordCategory.LAB_RESULT: {"items": {"test": 120, "code": 20, "value": 60, "unit": 30, "reference_range": 60,
                                           "flag": _FLAGS}, "specimen": 60, "notes": 2000},
     RecordCategory.IMAGING: {"modality": 60, "body_part": 80, "findings": 4000, "impression": 2000},
     RecordCategory.VISIT_NOTE: {"complaint": 1000, "findings": 4000, "plan": 2000,

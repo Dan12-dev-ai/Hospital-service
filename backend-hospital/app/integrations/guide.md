@@ -397,6 +397,45 @@ sent to their Endod app. A patient already linked is refused (`409`: unlink
 first). `DELETE /patients/{mrn}/link` unlinks (or withdraws a pending request):
 nothing more is sent; webhook `patient.unlinked`.
 
+### Enrol a patient without an Endod account (by SMS)
+
+For a patient who has no Endod account, often no smartphone: Endod creates one
+on the strength of a code texted to the patient's phone. The patient then
+gets their health information by SMS: their card number (Endod ID), follow-up
+and appointment texts, prescription codes for pharmacies, and "a new lab result
+/ report is ready" notices (never the result itself). Later, the patient may
+sign up in the Endod app with the same phone and keep the same account.
+
+1. Ask Endod to text the code (to the patient's phone number, or `phone`):
+
+```bash
+curl -s -X POST https://api.endod-health.com/hospital/v1/patients/SPH-000124/sms-enrol \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{}'
+```
+
+`202` with `status: sending`; the webhook `patient.sms_enrolment` follows with
+`status: code_sent` (or `failed`: `rate_limited`, one code a minute and five an
+hour per phone; `invalid_phone`; `sms_unavailable`). Only the phone number goes to
+Endod at this step.
+
+2. Ask the patient for the 6-digit code and send it (valid 10 minutes, 5 tries):
+
+```bash
+curl -s -X POST https://api.endod-health.com/hospital/v1/patients/SPH-000124/sms-enrol/verify \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"code": "482913", "language": "am"}'
+```
+
+`202` with `status: verifying`; then `patient.sms_enrolment` with `status:
+enrolled` and the Endod ID (followed by `patient.linked`: the patient is linked
+and their records reach Endod), or `code_sent` with `reason: wrong_code` and
+`attempts_left` (ask again), or `failed` (`expired`, `too_many_attempts`: start
+again at step 1; `not_allowed`: the phone's Endod account is closed). If the
+phone already has an Endod account, that account is linked (no second one).
+Endod texts the patient their card number and an SMS PIN. A patient who forgot
+their PIN is enrolled again (steps 1 and 2): a new PIN is texted. The latest
+enrolment is in `GET /patients/{mrn}` (`link.sms_enrolment`).
+
 ## 5. Bookings (`bookings.read`, `bookings.write`)
 
 ```bash
@@ -585,6 +624,7 @@ Endod POSTs JSON events to your webhook URL (https only, a public address):
 | `patient.linked` | Endod confirmed a link request, or a booking's check-in linked the patient |
 | `patient.link_refused` | Endod refused a link request (`data.reason`: `not_found`, `not_verified`, `already_linked`, ...) |
 | `patient.unlinked` | a patient was unlinked |
+| `patient.sms_enrolment` | an enrolment by SMS moved on (`data.status`: `code_sent`, `enrolled`, `failed`; `data.reason`, `data.attempts_left`) |
 | `prescription.dispensed` | a pharmacy gave medicine from one of your prescriptions |
 | `endpoint.test` | "Send test event" in the dashboard |
 
@@ -728,6 +768,8 @@ patients' data:
   the same made-up patient whatever the number, `GET /prescriptions/sample-prescription-1`
   a made-up prescription, and the queue the hospital's doctors each with a made-up
   patient (`sample-entry-<doctor id>`);
+- enrolment by SMS is checked and answers a made-up enrolment (`sms-enrol`: `sending`;
+  `verify`: `verifying`, or with the code `000000` a wrong code): no SMS is sent;
 - prices are checked as in Live and answered back; nothing is written or announced,
   and `GET /prices` answers a made-up price list (`"sample": true`);
 - `GET /fhir/{Type}/{id}` is always "not found" (nothing was stored);

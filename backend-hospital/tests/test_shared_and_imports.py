@@ -290,7 +290,7 @@ class TestFhirImport:
             "drug": "Metformin 500 mg", "dose": "1 tablet", "route": "oral", "frequency": "twice daily",
             "duration": None, "quantity": "60 tablets", "notes": None}
         lab = published["lab_result"]["details"]["items"][0]
-        assert lab == {"test": "HbA1c", "value": "8.2", "unit": "%", "reference_range": "4-5.6", "flag": "high"}
+        assert lab == {"test": "HbA1c", "code": None, "value": "8.2", "unit": "%", "reference_range": "4-5.6", "flag": "high"}
         assert published["imaging"]["details"]["modality"] == "CT"
         assert published["imaging"]["details"]["findings"] == "No acute findings."
         [document_file] = published["document"]["files"]
@@ -421,7 +421,8 @@ class TestSharedDetailsAreCleaned:
         assert dead_letters(bus) == []
         details = {r["category"]: r["details"] for r in shared(client, doctor)[0]["records"]}
         assert details["lab_result"] == {
-            "items": [{"test": "Hemoglobin", "value": "9.1", "unit": None, "reference_range": None, "flag": None}],
+            "items": [{"test": "Hemoglobin", "code": None, "value": "9.1", "unit": None, "reference_range": None,
+                       "flag": None}],
             "specimen": None, "notes": "x" * 2000}
         assert details["diagnosis"] == {"condition": None, "code": None, "status": None, "notes": None}
         assert details["visit_note"]["vitals"] == {k: None for k in ("bp", "pulse", "temp", "weight", "height",
