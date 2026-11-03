@@ -100,6 +100,11 @@ class Settings(BaseSettings):
     #: it, and answers 503 in production while it is not set.
     EDGE_SHARED_SECRET: Optional[str] = None
 
+    # --- Endod's service fee (app/fees.py, docs/integrations.md "Charges") ---
+    #: The flat fee (santim) used only until the patient platform has sent its
+    #: settings (``fees.updated``) once; from then on the last ones it sent.
+    DEFAULT_SERVICE_FEE_SANTIM: int = 2500
+
     @field_validator("ENVIRONMENT", mode="before")
     @classmethod
     def _lower(cls, value):

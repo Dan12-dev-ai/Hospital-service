@@ -14,7 +14,7 @@ import time
 
 import redis
 
-from app import bookings, chores, dispensing, eventbus, linking, sharing
+from app import bookings, chores, dispensing, eventbus, fees, linking, sharing
 from app.integrations import webhooks
 from app.crypto import check_master_key, verify_master_key
 from app.db import check_connection_role
@@ -38,7 +38,7 @@ _last = {"expire": 0.0, "housekeeping": 0.0, "purge": 0.0}
 
 def handlers() -> dict:
     """Every event this service handles from the patient platform."""
-    return {**bookings.HANDLERS, **linking.HANDLERS, **sharing.HANDLERS, **dispensing.HANDLERS}
+    return {**bookings.HANDLERS, **linking.HANDLERS, **sharing.HANDLERS, **dispensing.HANDLERS, **fees.HANDLERS}
 
 
 def run_once(client: redis.Redis, now: float | None = None) -> int:

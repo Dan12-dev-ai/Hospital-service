@@ -21,6 +21,7 @@ FOLLOW_UPS = "Follow-ups"
 PRESCRIPTIONS = "Prescriptions"
 QUEUE = "Queue"
 PRICING = "Pricing"
+CHARGES = "Charges"
 WEBHOOKS = "Webhooks"
 
 TAGS = [
@@ -41,6 +42,11 @@ TAGS = [
     {"name": PRICING, "description": "The hospital's price list, synced from its own system: the in-person "
                                      "consultation price patients see in the Endod app, lab tests, imaging and "
                                      "procedures. Each category is replaced as a whole."},
+    {"name": CHARGES, "description": "Bills for hospital services (lab tests, imaging, procedures, consultations, "
+                                     "anything else): Endod adds its service fee to each charge (one fee per "
+                                     "charge; the patient pays it, never the hospital), the patient sees the bill in "
+                                     "the Endod app; mark it paid at the hospital (the hospital then owes Endod the "
+                                     "fee) or void it."},
     {"name": WEBHOOKS, "description": "Events Endod POSTs to your webhook URL (see `webhooks` in this document), "
                                       "signed with `Endod-Signature`."},
 ]

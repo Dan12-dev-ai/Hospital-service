@@ -241,7 +241,8 @@ class PatientOut(BaseModel):
 BOOKING_EXAMPLE = {
     "id": "9f0c2b7a1e4d4f6a8b3c5d7e9f1a2b4c", "endod_appointment_id": "apt_7d1c9e", "status": "confirmed",
     "visit_mode": "video", "service": "general_medicine", "scheduled_at": "2026-10-02T06:30:00+00:00",
-    "duration_minutes": 30, "payment": "online", "price": "150.00",
+    "duration_minutes": 30, "payment": "online", "price": "150.00", "service_fee": "25.00", "total": "175.00",
+    "collect_at_hospital": "0.00", "fee_owed_to_endod": "0.00", "paid_at": None, "paid_method": None,
     "patient": {"endod_id": "DE482731", "name": "Almaz Tefera", "phone": "+251911234567"},
     "doctor": {"id": "c0ffee00c0ffee00c0ffee00c0ffee00", "full_name": "Dr. Abebe Kebede"},
     "reason": None, "decided_at": "2026-10-01T07:10:00+00:00", "created_at": "2026-10-01T06:00:00+00:00",
@@ -275,8 +276,16 @@ class BookingOut(BaseModel):
     duration_minutes: int
     payment: Literal["online", "at_hospital"] = Field(
         description="`online`: paid to Endod when booking (Endod pays the hospital); `at_hospital`: collect "
-                    "`price` at the visit.")
-    price: str = Field(description="Birr, two decimals.")
+                    "`total` at the visit (the price plus Endod's service fee, which the hospital owes Endod).")
+    price: str = Field(description="The hospital's price, birr, two decimals.")
+    service_fee: str = Field(description="Endod's service fee on the visit, birr (0 on a free visit).")
+    total: str = Field(description="What the patient pays: price + service_fee, birr.")
+    collect_at_hospital: str = Field(description="What the hospital collects at the visit (`total` when paid at "
+                                                 "the hospital, else 0.00).")
+    fee_owed_to_endod: str = Field(description="Paid at the hospital: the fee the hospital collects for Endod.")
+    paid_at: Optional[str] = Field(default=None, description="Paid at the hospital: when (POST "
+                                                             "/bookings/{id}/paid).")
+    paid_method: Optional[str] = Field(default=None, description="cash, card, mobile_money or other.")
     patient: BookingPatient
     doctor: Optional[DoctorRef] = Field(default=None, description="The doctor of an approved video visit.")
     reason: Optional[str] = Field(default=None, description="Why it was declined or cancelled.")
@@ -579,6 +588,28 @@ class PrescriptionDispensedEvent(_Envelope):
     data: PrescriptionDispensedData
 
 
+class ChargeEventData(BaseModel):
+    charge_id: str = Field(description="GET /charges/{charge_id} for the items.")
+    patient_id: str
+    mrn: str
+    endod_id: Optional[str]
+    booking_id: Optional[str]
+    status: Literal["open", "paid", "voided"]
+    currency: Literal["ETB"]
+    subtotal: str = Field(description="Birr, two decimals.")
+    service_fee: str = Field(description="Endod's service fee, birr.")
+    total: str = Field(description="What the patient pays, birr.")
+    method: Optional[str] = Field(default=None, description="charge.paid: cash, card, mobile_money or other.")
+    paid_at: Optional[str] = None
+
+
+class ChargeEvent(_Envelope):
+    """charge.created, charge.paid, charge.voided: amounts and ids only (never the items)."""
+
+    type: Literal["charge.created", "charge.paid", "charge.voided"]
+    data: ChargeEventData
+
+
 class EndpointTestEvent(_Envelope):
     """endpoint.test: "Send test event" in the portal (the only event a Test connection gets)."""
 
@@ -597,6 +628,9 @@ _BOOKING_DATA = {"booking_id": "9f0c2b7a1e4d4f6a8b3c5d7e9f1a2b4c", "endod_appoin
                  "patient": {"endod_id": "DE482731"}}
 _PATIENT_DATA = {"patient_id": "5f0c1e2d3c4b5a69788796a5b4c3d2e1", "mrn": "SPH-000124", "endod_id": "DE482731"}
 _REQUEST = "8b7c0f3e6a1d4c55b2e9f0a1c3d5e7f9"
+_CHARGE_DATA = {"charge_id": "3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f", "patient_id": _PATIENT_DATA["patient_id"],
+                "mrn": "SPH-000124", "endod_id": "DE482731", "booking_id": None, "status": "open", "currency": "ETB",
+                "subtotal": "350.00", "service_fee": "25.00", "total": "375.00", "method": None, "paid_at": None}
 
 #: event -> (model, when it is sent, example). Every event in app.integrations.webhooks (a test checks).
 WEBHOOK_EVENTS: Dict[str, Any] = {
@@ -633,6 +667,15 @@ WEBHOOK_EVENTS: Dict[str, Any] = {
                                    "dispense_status": "open", "dispensing_status": "partly",
                                    "dispensed_at": "2026-10-01T10:15:00+00:00",
                                    "patient": {**_PATIENT_DATA}})),
+    "charge.created": (ChargeEvent, "A charge was made (POST /charges): the subtotal, Endod's service fee and "
+                                    "the total the patient pays.",
+                       _event("charge.created", _CHARGE_DATA)),
+    "charge.paid": (ChargeEvent, "A charge was paid at the hospital (POST /charges/{id}/paid): the hospital "
+                                 "collected the total and owes Endod the service fee.",
+                    _event("charge.paid", {**_CHARGE_DATA, "status": "paid", "method": "cash",
+                                           "paid_at": "2026-10-01T09:00:00+00:00"})),
+    "charge.voided": (ChargeEvent, "An open charge was voided (POST /charges/{id}/void).",
+                      _event("charge.voided", {**_CHARGE_DATA, "status": "voided"})),
     "endpoint.test": (EndpointTestEvent, "\"Send test event\" in the portal.",
                       _event("endpoint.test", {"message": "A test event from Endod: your endpoint works."},
                              mode="test")),

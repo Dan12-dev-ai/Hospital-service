@@ -3,7 +3,10 @@
 They arrive as ``appointment.requested`` events. ``payment`` says how the
 patient pays: ``online`` (already paid to Endod; the default, for requests
 sent before the field existed) or ``at_hospital`` (the patient pays the
-hospital at the visit). An in-person visit is confirmed at once; a video visit
+hospital at the visit: the price plus Endod's ``service_fee``, which the
+hospital owes Endod; docs/integrations.md "Charges"). The hospital says when
+a visit paid at the hospital was paid (:func:`mark_paid`,
+``appointment.paid`` to the platform). An in-person visit is confirmed at once; a video visit
 waits for a doctor to approve it, which opens a video room. Every decision goes
 back to the patient platform as an event: ``appointment.confirmed``,
 ``appointment.rejected``, ``appointment.cancelled`` (for an online payment,
@@ -61,6 +64,10 @@ class Requested(BaseModel):
     #: Paid to Endod when booking, or to the hospital at the visit. Missing
     #: means online (requests sent before the platform added the field).
     payment: Literal["online", "at_hospital"] = BookingPayment.ONLINE
+    #: Endod's service fee (santim): at the hospital, collected with the price
+    #: and owed to Endod. Missing: 0 (requests sent before the fee).
+    service_fee: int = Field(default=0, ge=0, strict=True)
+    total: Optional[int] = Field(default=None, ge=0, strict=True)
 
 
 class _Ref(BaseModel):
@@ -112,7 +119,7 @@ def on_requested(session: Session, payload: Dict[str, Any]) -> None:
         # Stored in UTC: SQLite would otherwise drop the offset and keep the
         # wall-clock time, moving the visit by the offset (3 hours in Addis).
         scheduled_at=request.scheduled_at.astimezone(timezone.utc), duration_minutes=request.duration_minutes,
-        notes=request.notes, price=request.price, payment=request.payment,
+        notes=request.notes, price=request.price, payment=request.payment, service_fee=request.service_fee,
         status=BookingStatus.CONFIRMED if mode == VisitMode.IN_PERSON else BookingStatus.AWAITING_DOCTOR,
     )
     session.add(booking)
@@ -219,6 +226,29 @@ def complete(session: Session, booking: Booking, decided_by: Optional[str]) -> N
     booking.status = BookingStatus.COMPLETED
     booking.decided_by, booking.decided_at = decided_by, utcnow()
     eventbus.emit(session, "appointment.completed", _decision(booking))
+
+
+def mark_paid(session: Session, booking: Booking, method: str, reference: Optional[str],
+              paid_at: Optional[datetime]) -> None:
+    """The patient paid a visit at the hospital (the price plus Endod's fee):
+    the platform records the fee as owed by the hospital (``appointment.paid``).
+    Once; a second call with the same details changes nothing."""
+    if booking.payment != BookingPayment.AT_HOSPITAL or not booking.price:
+        raise BookingError("Only a priced visit paid at the hospital is marked paid here (an online one is "
+                           "paid to Endod already).", 409)
+    if booking.paid_at is not None:
+        if booking.paid_method == method:
+            return
+        raise BookingError("This visit is already marked paid.", 409)
+    if booking.status not in (BookingStatus.CONFIRMED, BookingStatus.COMPLETED):
+        raise BookingError("Only a confirmed or completed visit can be marked paid.", 409)
+    when = (paid_at or utcnow()).astimezone(timezone.utc)
+    if when > utcnow() + timedelta(minutes=5):
+        raise BookingError("paid_at cannot be in the future.")
+    booking.paid_at, booking.paid_method, booking.paid_reference = when, method, reference
+    eventbus.emit(session, "appointment.paid", {
+        "appointment_id": booking.external_id, "hospital_id": booking.hospital_id, "method": method,
+        "reference": reference, "paid_at": when.isoformat()})
 
 
 #: A video visit nobody approved is declined this long after it was due to start.

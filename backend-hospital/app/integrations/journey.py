@@ -153,8 +153,15 @@ def booking_out(b: Booking, doctors: Dict[str, str]) -> Dict[str, Any]:
     return {
         "id": b.id, "endod_appointment_id": b.external_id, "status": b.status, "visit_mode": b.visit_mode,
         "service": b.service, "scheduled_at": _iso(b.scheduled_at), "duration_minutes": b.duration_minutes,
-        # "online" (paid to Endod) or "at_hospital" (collect `price`, in birr, at the visit).
+        # "online" (paid to Endod) or "at_hospital" (collect `total`, in birr, at the visit: the price
+        # plus Endod's service fee, which the hospital owes Endod).
         "payment": b.payment, "price": f"{Decimal(b.price) / 100:.2f}",
+        "service_fee": f"{Decimal(b.service_fee or 0) / 100:.2f}",
+        "total": f"{Decimal(b.price + (b.service_fee or 0)) / 100:.2f}",
+        "collect_at_hospital": f"{Decimal(b.price + (b.service_fee or 0)) / 100:.2f}"
+        if b.payment == "at_hospital" else "0.00",
+        "fee_owed_to_endod": f"{Decimal(b.service_fee or 0) / 100:.2f}" if b.payment == "at_hospital" else "0.00",
+        "paid_at": _iso(b.paid_at), "paid_method": b.paid_method,
         "patient": {"endod_id": b.patient_dedan_id, "name": b.patient_name, "phone": b.patient_phone},
         "doctor": {"id": b.doctor_id, "full_name": doctors.get(b.doctor_id, "")} if b.doctor_id else None,
         "reason": b.reason, "decided_at": _iso(b.decided_at),
@@ -196,7 +203,7 @@ def sample_booking(row: Dict[str, Any], hospital_id: Optional[str] = None) -> Bo
     return Booking(id=f"sample{n:0>26}", hospital_id=hospital_id, external_id=f"sample-appointment-{n}",
                    patient_dedan_id=f"DE00000{n}", patient_name=f"Sample Patient {n}", patient_phone=None,
                    visit_mode=row["mode"], service="general_medicine", scheduled_at=row["at"], duration_minutes=30,
-                   price=15000, payment=row["payment"], status=row["status"],
+                   price=15000, service_fee=2500, payment=row["payment"], status=row["status"],
                    reason="Cancelled by the patient." if row["status"] == "cancelled" else None,
                    created_at=created, updated_at=created)
 

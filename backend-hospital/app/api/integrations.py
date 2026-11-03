@@ -47,7 +47,7 @@ from starlette.exceptions import HTTPException
 from app.config import get_settings
 from app.db import ensure_aware, session_scope
 from app.integrations import (
-    apidoc as D, fhir, fhir_docs as F, journey, pricing, scopes as S, schemas as M, signing, tokens,
+    apidoc as D, charges, fhir, fhir_docs as F, journey, pricing, scopes as S, schemas as M, signing, tokens,
 )
 from app.integrations import webhooks
 from app.integrations.calls import (
@@ -484,6 +484,10 @@ def create_app() -> FastAPI:  # noqa: C901 -- the app and its handlers in one pl
     # --- the price list ----------------------------------------------------------------------------------
 
     pricing.add_routes(api)
+
+    # --- charges: hospital services with Endod's service fee ----------------------------------------------
+
+    charges.add_routes(api)
 
     # --- webhooks (documented only: Endod sends them) -------------------------------------------------
 
