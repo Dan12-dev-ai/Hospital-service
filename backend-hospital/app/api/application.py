@@ -26,12 +26,12 @@ from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.concurrency import run_in_threadpool
-from pydantic import AwareDatetime, BaseModel, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, EmailStr, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app import crypto, eventbus, files, onboarding
-from app.api.onboarding import platform_admin
+from app.api.onboarding import _code_for, platform_admin
 from app.auth import Staff, audit, signed_in_staff
 from app.db import ensure_aware, new_id, platform_session, session_scope, utcnow
 from app.models import (
@@ -83,6 +83,7 @@ def read_status(staff: Staff = Depends(signed_in_staff)) -> Dict[str, Any]:
         app = onboarding.application_for(session, hospital)
         contact = onboarding.contact_person(session, hospital.id)
         is_applicant = contact is not None and contact.id == staff.id and staff.role == Role.ADMIN
+        contact_phone = onboarding.contact_details(contact, app)["phone"]
         demo = onboarding.demo_of(session, hospital.id)
         return {
             "name": hospital.name,
@@ -94,7 +95,7 @@ def read_status(staff: Staff = Depends(signed_in_staff)) -> Dict[str, Any]:
             "submitted_at": ensure_aware(app.submitted_at).isoformat() if app.submitted_at else None,
             "rejection_reason": app.rejection_reason,
             "demo_at": onboarding.demo_iso(demo.slot_start) if demo else None,
-            "contact_phone": contact.phone if is_applicant and contact else None,
+            "contact_phone": contact_phone if is_applicant else None,
         }
 
 
@@ -107,15 +108,31 @@ def read_application(staff: Staff = Depends(applicant)) -> Dict[str, Any]:
 # --- the steps -----------------------------------------------------------------------------
 
 class ContactStep(BaseModel):
-    full_name: Name = Field(max_length=120)
+    """The contact person. By default the applicant ("The contact person is
+    me"): only their role and mobile are new, the name and email are the
+    account's. Otherwise someone else, with their own name and email.
+
+    Earlier clients send ``full_name`` without ``is_applicant``: that renames
+    the applicant, as it always did."""
+
+    is_applicant: bool = True
+    full_name: Optional[Name] = Field(default=None, max_length=120)
     title: Name = Field(max_length=80)
     #: An Ethiopian mobile: Endod texts the demo confirmation to it.
     phone: str = Field(max_length=32)
+    #: The other contact person's email (the applicant's is their sign-in).
+    email: Optional[EmailStr] = None
 
     @field_validator("phone")
     @classmethod
     def _mobile(cls, value: str) -> str:
         return normalize_phone(value)
+
+    @model_validator(mode="after")
+    def _someone_else(self) -> "ContactStep":
+        if not self.is_applicant and (self.full_name is None or self.email is None):
+            raise ValueError("give the contact person's full name and email")
+        return self
 
 
 class FacilityStep(BaseModel):
@@ -172,11 +189,19 @@ def _save_step(staff: Staff, step: str, apply) -> Dict[str, Any]:
 @router.patch("/onboarding/contact")
 def save_contact(body: ContactStep, staff: Staff = Depends(applicant)) -> Dict[str, Any]:
     def apply(session, hospital: Hospital, app: OnboardingApplication) -> None:
-        contact = onboarding.contact_person(session, hospital.id)
-        if contact is None:  # never: the hospital signed up with this account
+        applicant_row = onboarding.contact_person(session, hospital.id)
+        if applicant_row is None:  # never: the hospital signed up with this account
             raise HTTPException(status_code=409, detail="The hospital has no contact person.")
-        contact.full_name, contact.phone = body.full_name, body.phone
         app.contact_title = body.title
+        if body.is_applicant:
+            # One record of the applicant: their account.
+            if body.full_name is not None:
+                applicant_row.full_name = body.full_name
+            applicant_row.phone = body.phone
+            app.contact_name = app.contact_phone = app.contact_email = None
+        else:
+            app.contact_name, app.contact_phone = body.full_name, body.phone
+            app.contact_email = str(body.email).lower()
         booking = onboarding.demo_of(session, hospital.id)
         if booking is not None and booking.phone != body.phone:
             if _phone_taken(session, body.phone, hospital.id):
@@ -188,7 +213,12 @@ def save_contact(body: ContactStep, staff: Staff = Depends(applicant)) -> Dict[s
 
 @router.patch("/onboarding/facility")
 def save_facility(body: FacilityStep, staff: Staff = Depends(applicant)) -> Dict[str, Any]:
-    def apply(_session, hospital: Hospital, _app) -> None:
+    def apply(session, hospital: Hospital, _app) -> None:
+        if not (hospital.name or "").strip():
+            # Named for the first time here (the account step no longer asks):
+            # its code, used in hospital numbers, comes from the name. Nothing
+            # uses it yet: a pending hospital has no patients.
+            hospital.code = _code_for(session, body.name)
         hospital.facility_type = body.facility_type
         hospital.kind = body.ownership
         hospital.name, hospital.name_am = body.name, body.name_am
@@ -352,8 +382,9 @@ def book_demo(body: DemoChoice, staff: Staff = Depends(applicant)) -> Dict[str, 
         with session_scope(staff.hospital_id) as session:
             hospital = _hospital(session, staff, lock=True)
             onboarding.require_pending(hospital)
-            contact = onboarding.contact_person(session, hospital.id)
-            if contact is None or not (contact.phone or "").startswith("+251"):
+            contact = onboarding.contact_details(onboarding.contact_person(session, hospital.id),
+                                                 onboarding.application_for(session, hospital))
+            if not (contact["phone"] or "").startswith("+251"):
                 raise HTTPException(status_code=400, detail="Add the contact person's mobile number first.")
             if len(onboarding.documents_of(session, hospital.id)) < len(DocumentKind.ALL):
                 raise HTTPException(status_code=400, detail=DOCUMENTS_FIRST)
@@ -364,13 +395,13 @@ def book_demo(body: DemoChoice, staff: Staff = Depends(applicant)) -> Dict[str, 
                 return onboarding.application_payload(session, hospital)
             if slot_utc in onboarding.taken_slots(session, except_hospital=hospital.id):
                 raise HTTPException(status_code=409, detail=SLOT_TAKEN)
-            if _phone_taken(session, contact.phone, hospital.id):
+            if _phone_taken(session, contact["phone"], hospital.id):
                 raise HTTPException(status_code=409, detail=PHONE_TAKEN)
             changed = booking is not None
             if booking is None:
                 # Booked "now" on the same clock that releases it (app.onboarding.now).
                 booking = DemoBooking(id=new_id(), hospital_id=hospital.id, slot_start=slot_utc,
-                                      phone=contact.phone, created_at=onboarding.now())
+                                      phone=contact["phone"], created_at=onboarding.now())
                 session.add(booking)
             else:
                 booking.slot_start = slot_utc
@@ -379,8 +410,8 @@ def book_demo(body: DemoChoice, staff: Staff = Depends(applicant)) -> Dict[str, 
             eventbus.emit(session, DEMO_EVENT, {
                 "hospital_id": hospital.id,
                 "booking_id": booking.id,
-                "contact_name": contact.full_name,
-                "phone": contact.phone,
+                "contact_name": contact["full_name"],
+                "phone": contact["phone"],
                 "demo_at": slot.isoformat(),
                 "hospital_name": hospital.name,
                 "changed": changed,
@@ -391,9 +422,9 @@ def book_demo(body: DemoChoice, staff: Staff = Depends(applicant)) -> Dict[str, 
             return onboarding.application_payload(session, hospital)
     except IntegrityError as exc:
         with session_scope(staff.hospital_id) as session:
-            contact = onboarding.contact_person(session, staff.hospital_id)
-            phone_lost = bool(contact is not None and contact.phone
-                              and _phone_taken(session, contact.phone, staff.hospital_id))
+            phone = onboarding.contact_details(onboarding.contact_person(session, staff.hospital_id),
+                                               onboarding.application_for(session, _hospital(session, staff)))["phone"]
+            phone_lost = bool(phone and _phone_taken(session, phone, staff.hospital_id))
         raise HTTPException(status_code=409, detail=PHONE_TAKEN if phone_lost else SLOT_TAKEN) from exc
 
 
@@ -431,7 +462,8 @@ def submit(staff: Staff = Depends(applicant)) -> Dict[str, Any]:
 # --- Endod ---------------------------------------------------------------------------------
 
 def _summary(session, hospital: Hospital, app: Optional[OnboardingApplication]) -> Dict[str, Any]:
-    contact = onboarding.contact_person(session, hospital.id)
+    applicant_row = onboarding.contact_person(session, hospital.id)
+    contact = onboarding.contact_details(applicant_row, app) if applicant_row is not None else None
     demo = onboarding.demo_of(session, hospital.id)
     status_value = (onboarding.status_of(hospital, app) if app is not None
                     else ApplicationStatus.APPROVED if hospital.status == HospitalStatus.APPROVED
@@ -450,8 +482,9 @@ def _summary(session, hospital: Hospital, app: Optional[OnboardingApplication]) 
         "submitted_at": ensure_aware(app.submitted_at).isoformat() if app and app.submitted_at else None,
         "demo_at": onboarding.demo_iso(demo.slot_start) if demo else None,
         "contact": None if contact is None else {
-            "name": contact.full_name, "title": app.contact_title if app else None,
-            "email": contact.email, "phone": contact.phone,
+            "name": contact["full_name"], "title": contact["title"],
+            "email": contact["email"], "phone": contact["phone"],
+            "is_applicant": contact["is_applicant"],
         },
     }
 

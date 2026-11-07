@@ -5,7 +5,8 @@ import QRCode from "qrcode";
 import { hardNavigate } from "@/lib/navigation";
 import { ApiError, apiFetch } from "@/lib/api";
 import type { Staff } from "@/lib/api-types";
-import { FormError, LoadingState, inputClass, labelClass, primaryButtonClass, secondaryButtonClass } from "@/components/common/states";
+import { FormError, inputClass, labelClass, primaryButtonClass, secondaryButtonClass } from "@/components/common/states";
+import { AuthFormSkeleton } from "@/components/common/page-skeletons";
 
 type Start = { secret: string; otpauth_uri: string; issuer: string; account: string };
 
@@ -123,7 +124,7 @@ export function EnrollForm() {
     );
   }
 
-  if (!start) return <LoadingState label="Preparing…" />;
+  if (!start) return <AuthFormSkeleton fields={1} media label="Preparing two-step verification…" />;
 
   return (
     <form onSubmit={confirm} className="space-y-4">

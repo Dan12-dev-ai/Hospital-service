@@ -1,10 +1,12 @@
 "use client";
 
 import type { ReactNode } from "react";
+import { usePathname } from "next/navigation";
 import { cn } from "cn";
 import { Icon } from "@/components/ui/icon";
 import { useSession } from "@/components/session/session-context";
 import type { Role } from "@/lib/api-types";
+import { DashboardPageSkeleton } from "@/components/common/page-skeletons";
 
 /** Marks a page or card whose numbers are illustrative, not from the hospital service. */
 export function SampleBadge({ className, label = "Sample data" }: { className?: string; label?: string }) {
@@ -31,22 +33,6 @@ export function SamplePageNotice({ module }: { module: string }) {
       <span>
         {module} is not connected to the hospital service yet. Everything on this page is illustrative.
       </span>
-    </div>
-  );
-}
-
-export function LoadingState({ label = "Loading…", className }: { label?: string; className?: string }) {
-  return (
-    <div
-      role="status"
-      aria-live="polite"
-      className={cn(
-        "flex items-center justify-center gap-2 rounded-2xl bg-surface-container-lowest p-10 text-sm text-outline shadow-soft",
-        className
-      )}
-    >
-      <span className="h-4 w-4 animate-spin rounded-full border-2 border-black border-t-transparent" />
-      <span>{label}</span>
     </div>
   );
 }
@@ -117,7 +103,8 @@ export function NoAccess({ what }: { what: string }) {
  */
 export function RoleGate({ roles, what, children }: { roles: Role[] | "any"; what: string; children: ReactNode }) {
   const session = useSession();
-  if (session.status === "loading") return <LoadingState />;
+  const pathname = usePathname();
+  if (session.status === "loading") return <DashboardPageSkeleton path={pathname} />;
   if (session.status === "error") return <ErrorState message={session.error.message} onRetry={session.reload} />;
   if (roles !== "any" && !roles.includes(session.staff.role)) return <NoAccess what={what} />;
   return <>{children}</>;

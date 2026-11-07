@@ -6,6 +6,7 @@ import { ApiError, apiFetch } from "@/lib/api";
 import { STEPS, type Application, type OnboardingStatus } from "@/lib/onboarding-types";
 import { signOutNow } from "@/components/session/session-context";
 import { OnboardingFrame } from "@/components/onboarding/onboarding-frame";
+import { OnboardingStepSkeleton } from "@/components/onboarding/onboarding-skeletons";
 import {
   AccountStep,
   ContactStep,
@@ -22,8 +23,11 @@ type State =
   | { status: "error"; message: string }
   | { status: "ready"; application: Application };
 
+/** The first step after the account (which exists once signed in). */
+const FIRST_SAVED_STEP = 1;
+
 function stepIndex(application: Application): number {
-  return Math.max(0, STEPS.findIndex((s) => s.key === application.next_step));
+  return Math.max(FIRST_SAVED_STEP, STEPS.findIndex((s) => s.key === application.next_step));
 }
 
 /** The application as the wizard shows it; null when the page is being left. */
@@ -87,7 +91,7 @@ export function OnboardingWizard() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  const back = () => setStep((current) => Math.max(current - 1, 0));
+  const back = () => setStep((current) => Math.max(current - 1, FIRST_SAVED_STEP));
   const signOutFooter = (
     <p className="mt-4 text-center text-[11px] text-slate-500">
       <button type="button" onClick={() => void signOutNow()} className="font-semibold text-[#1E5852] hover:underline">
@@ -107,9 +111,7 @@ export function OnboardingWizard() {
   if (state.status === "loading") {
     return (
       <OnboardingFrame>
-        <p role="status" className="py-10 text-center text-xs text-slate-500">
-          Loading your application…
-        </p>
+        <OnboardingStepSkeleton progress={STEPS.length} />
       </OnboardingFrame>
     );
   }
@@ -131,7 +133,7 @@ export function OnboardingWizard() {
   }
 
   const { application } = state;
-  const key = STEPS[step].key;
+  const key = STEPS[Math.max(step, FIRST_SAVED_STEP)].key;
   return (
     <OnboardingFrame step={step} steps={STEPS} wide footer={footer}>
       {application.status === "rejected" && application.rejection_reason && (
@@ -140,6 +142,7 @@ export function OnboardingWizard() {
           <p className="mt-1">{application.rejection_reason}</p>
         </div>
       )}
+      {/* The account exists: the contact person is the first step left (no Back). */}
       {key === "contact" && <ContactStep key={key} application={application} onSaved={saved} />}
       {key === "facility" && <FacilityStep key={key} application={application} onSaved={saved} onBack={back} />}
       {key === "location" && <LocationStep key={key} application={application} onSaved={saved} onBack={back} />}

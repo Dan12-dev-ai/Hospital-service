@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -60,6 +60,8 @@ class HospitalUpdate(BaseModel):
     name_am: OptionalText = Field(default=None, max_length=160)
     timezone: Optional[str] = Field(default=None, max_length=64)
     kind: Optional[str] = None
+    #: Hospital or clinic (asked in the onboarding facility step).
+    facility_type: Optional[Literal["hospital", "clinic"]] = None
     city: OptionalText = Field(default=None, max_length=100)
     address: OptionalText = Field(default=None, max_length=200)
     phone: ContactNumber = None
@@ -102,7 +104,7 @@ def update_hospital(body: HospitalUpdate, staff: Staff = Depends(admin_only)) ->
             ZoneInfo(changes["timezone"] or "")
         except (ZoneInfoNotFoundError, ValueError) as exc:
             raise HTTPException(status_code=400, detail="Unknown timezone.") from exc
-    for field in ("name", "kind", "emergency", "video_enabled", "queue_notify_ahead"):
+    for field in ("name", "kind", "facility_type", "emergency", "video_enabled", "queue_notify_ahead"):
         if field in changes and changes[field] is None:
             changes.pop(field)
     if changes.get("kind") is not None and changes["kind"] not in HospitalKind.ALL:

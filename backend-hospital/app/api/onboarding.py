@@ -47,11 +47,14 @@ _signups_lock = threading.Lock()
 
 
 class HospitalSignup(BaseModel):
-    """The first step of the application: the facility's name and the contact
-    person's account. The rest (kind, city, location, ...) follows in the
-    wizard; earlier clients send ``kind`` and ``city`` here, which still works."""
+    """The first step of the application: the applicant's account (name,
+    email, password), nothing else. The contact person, the facility (its
+    name and type included) and the rest follow in the wizard, each asked
+    once. Earlier clients also send the facility's name and type and the
+    applicant's title and mobile here, which still works."""
 
-    hospital_name: Name = Field(max_length=160)
+    #: Asked in the facility step now; until then the hospital has no name.
+    hospital_name: Optional[Name] = Field(default=None, max_length=160)
     hospital_name_am: OptionalText = Field(default=None, max_length=160)
     #: Ownership: public or private.
     kind: Optional[str] = None
@@ -132,7 +135,7 @@ def sign_up(body: HospitalSignup, request: Request) -> Dict[str, Any]:
     try:
         with session_scope(hospital_id) as session:
             hospital = Hospital(
-                id=hospital_id, code=_code_for(session, body.hospital_name), name=body.hospital_name,
+                id=hospital_id, code=_code_for(session, body.hospital_name or ""), name=body.hospital_name or "",
                 name_am=body.hospital_name_am, kind=body.kind or HospitalKind.PRIVATE,
                 facility_type=body.facility_type or FacilityType.HOSPITAL, city=body.city, phone=body.phone,
                 status=HospitalStatus.PENDING, timezone=settings.DEFAULT_TIMEZONE,

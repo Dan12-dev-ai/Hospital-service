@@ -63,7 +63,11 @@ export function OnboardingFrame({
                     style={{ width: `${progress}%` }}
                   />
                 </div>
-                <ol className="mt-3 hidden grid-cols-6 gap-1 sm:grid" aria-label="Steps">
+                <ol
+                  className="mt-3 hidden gap-1 sm:grid"
+                  style={{ gridTemplateColumns: `repeat(${total}, minmax(0, 1fr))` }}
+                  aria-label="Steps"
+                >
                   {steps.map((item, index) => (
                     <li
                       key={item.key}

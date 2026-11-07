@@ -48,14 +48,16 @@ test("a clinic applies step by step, resumes after a reload, and waits for Endod
   const name = `Selam ${tag} Clinic`;
   await page.goto("/signup");
   await expect(page).toHaveURL(/\/onboarding$/);
-  await expect(stepOf(page)).toHaveText("Step 1 of 6");
+  await expect(stepOf(page)).toHaveText("Step 1 of 7");
 
-  // 1. The account (the contact person).
-  await page.getByRole("radio", { name: /Clinic/ }).click();
-  await page.getByLabel("Facility name").fill(name);
+  // 1. The account: the login only. The facility and the contact details are
+  // asked later, once each.
+  const account = page.getByTestId("step-account");
+  for (const asked of ["Facility name", "Your role or title", "Your mobile number"]) {
+    await expect(account.getByLabel(asked)).toHaveCount(0);
+  }
+  await expect(account.getByRole("radio")).toHaveCount(0);
   await page.getByLabel("Your full name").fill("Meron Tadesse");
-  await page.getByLabel("Your role or title").fill("Clinic Manager");
-  await page.getByLabel("Your mobile number").fill("0911 223 344");
   await page.getByLabel("Work email").fill(`admin@${tag}.example`);
   await page.getByLabel("Password", { exact: true }).fill("Signup-password-1");
   await page.getByLabel("Confirm password").fill("Signup-password-2");
@@ -64,10 +66,38 @@ test("a clinic applies step by step, resumes after a reload, and waits for Endod
   await page.getByLabel("Confirm password").fill("Signup-password-1");
   await page.getByRole("button", { name: "Create account" }).click();
 
-  // 2. The facility.
-  await expect(stepOf(page)).toHaveText("Step 2 of 6");
-  await expect(page.getByLabel("Name", { exact: true })).toHaveValue(name);
-  await expect(page.getByRole("radio", { name: /Clinic/ })).toHaveAttribute("aria-checked", "true");
+  // 2. The contact person: me by default, so nothing is typed twice; only
+  // my role and mobile are new.
+  await expect(stepOf(page)).toHaveText("Step 2 of 7");
+  const isMe = page.getByRole("checkbox", { name: /The contact person is me/ });
+  await expect(isMe).toBeChecked();
+  await expect(page.getByTestId("contact-account")).toHaveText(`Meron Tadesse · admin@${tag}.example`);
+  const contact = page.getByTestId("step-contact");
+  for (const retyped of ["Your full name", "Their full name", "Their email", "Work email"]) {
+    await expect(contact.getByLabel(retyped)).toHaveCount(0);
+  }
+  await expect(contact.locator('input[type="email"], input[type="password"]')).toHaveCount(0);
+  // Someone else: their own details, asked only then.
+  await isMe.uncheck();
+  await expect(page.getByTestId("other-contact")).toBeVisible();
+  await expect(page.getByLabel("Their full name")).toBeVisible();
+  await expect(page.getByLabel("Their email")).toBeVisible();
+  await isMe.check();
+  await expect(page.getByTestId("other-contact")).toHaveCount(0);
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByTestId("form-error")).toHaveText("Fill in your role and your mobile number.");
+  await page.getByLabel("Your role or title").fill("Clinic Manager");
+  await page.getByLabel("Your mobile number").fill("0911 223 344");
+  await page.getByRole("button", { name: "Continue" }).click();
+
+  // 3. The facility: its type and name are asked here, and only here.
+  await expect(stepOf(page)).toHaveText("Step 3 of 7");
+  await expect(page.getByLabel("Facility name")).toHaveValue("");
+  const facility = page.getByTestId("step-facility");
+  await expect(facility.getByLabel(/mobile/i)).toHaveCount(0);
+  await expect(facility.getByLabel(/email/i)).toHaveCount(0);
+  await page.getByLabel("Facility name").fill(name);
+  await page.getByRole("radio", { name: /Clinic/ }).click();
   await page.getByRole("radio", { name: "Public" }).click();
   await page.getByLabel("Name in Amharic (optional)").fill("ሰላም ክሊኒክ");
   await page.getByLabel("City").fill("Addis Ababa");
@@ -85,17 +115,17 @@ test("a clinic applies step by step, resumes after a reload, and waits for Endod
     await price.fill(wrong);
     await page.getByRole("button", { name: "Continue" }).click();
     await expect(page.getByTestId("form-error")).toHaveText("The price is in birr, e.g. 150 or 150.50 (at most 1,000,000).");
-    await expect(stepOf(page)).toHaveText("Step 2 of 6");
+    await expect(stepOf(page)).toHaveText("Step 3 of 7");
   }
   await price.fill("250");
   await page.getByRole("button", { name: "Continue" }).click();
-  await expect(stepOf(page)).toHaveText("Step 3 of 6");
+  await expect(stepOf(page)).toHaveText("Step 4 of 7");
 
   // Saved as it goes: a reload comes back to the same step.
   await page.reload();
-  await expect(stepOf(page)).toHaveText("Step 3 of 6");
+  await expect(stepOf(page)).toHaveText("Step 4 of 7");
 
-  // 3. The location: the browser's position, then the pin dragged a little.
+  // 4. The location: the browser's position, then the pin dragged a little.
   await expect(page.getByTestId("location-map")).toHaveAttribute("data-ready", "true");
   await page.getByRole("button", { name: "Use my location" }).click();
   await expect(page.getByLabel("Latitude")).toHaveValue("9.010500");
@@ -114,8 +144,8 @@ test("a clinic applies step by step, resumes after a reload, and waits for Endod
   await page.getByLabel("Address").fill("Bole Road, near Edna Mall");
   await page.getByRole("button", { name: "Continue" }).click();
 
-  // 4. Documents: all four are required, and only real PDFs or images pass.
-  await expect(stepOf(page)).toHaveText("Step 4 of 6");
+  // 5. Documents: all four are required, and only real PDFs or images pass.
+  await expect(stepOf(page)).toHaveText("Step 5 of 7");
   await page.getByLabel("Ministry of Health facility license number").fill("MOH/AA/7781");
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByTestId("form-error")).toContainText("Upload every document first");
@@ -136,8 +166,8 @@ test("a clinic applies step by step, resumes after a reload, and waits for Endod
   await expect(replaced.getByRole("button", { name: "Replace" })).toBeVisible();
   await page.getByRole("button", { name: "Continue" }).click();
 
-  // 5. The demo.
-  await expect(stepOf(page)).toHaveText("Step 5 of 6");
+  // 6. The demo.
+  await expect(stepOf(page)).toHaveText("Step 6 of 7");
   await expect(page.getByRole("button", { name: "Continue" })).toBeDisabled();
   const firstSlot = page.getByTestId("demo-slot").first();
   const firstTime = (await firstSlot.textContent())!.trim();
@@ -146,10 +176,12 @@ test("a clinic applies step by step, resumes after a reload, and waits for Endod
   await expect(page.getByTestId("demo-current")).toContainText(firstTime);
   await page.getByRole("button", { name: "Continue" }).click();
 
-  // 6. Review and submit.
-  await expect(stepOf(page)).toHaveText("Step 6 of 6");
+  // 7. Review and submit.
+  await expect(stepOf(page)).toHaveText("Step 7 of 7");
   const summary = page.getByTestId("review-summary");
   await expect(summary).toContainText(name);
+  await expect(summary).toContainText("Meron Tadesse (you)");
+  await expect(summary).toContainText("Clinic Manager · +251911223344");
   await expect(summary).toContainText("Public clinic in Addis Ababa");
   await expect(summary).toContainText("Bole Road, near Edna Mall");
   await expect(summary).toContainText("MOH/AA/7781");
@@ -191,15 +223,15 @@ test("a clinic applies step by step, resumes after a reload, and waits for Endod
   await page.getByRole("link", { name: "Fix and resubmit" }).click();
   await expect(page).toHaveURL(/\/onboarding\?fix=1$/);
   // Sending it back released the demo slot: the wizard resumes at the demo.
-  await expect(stepOf(page)).toHaveText("Step 5 of 6");
+  await expect(stepOf(page)).toHaveText("Step 6 of 7");
   await expect(page.getByTestId("rejection-note")).toContainText("unreadable");
   await expect(page.getByTestId("demo-current")).toHaveCount(0);
   await page.getByRole("button", { name: "Back" }).click();
-  await expect(stepOf(page)).toHaveText("Step 4 of 6");
+  await expect(stepOf(page)).toHaveText("Step 5 of 7");
   await uploadDocument(page, "tin_certificate", FAKE_PDF("tin-clear.pdf"));
   await expect(page.locator('[data-kind="tin_certificate"]').getByTestId("document-status")).toContainText("tin-clear.pdf");
   await page.getByRole("button", { name: "Continue" }).click();
-  await expect(stepOf(page)).toHaveText("Step 5 of 6");
+  await expect(stepOf(page)).toHaveText("Step 6 of 7");
   await page.getByTestId("demo-slot").first().click();
   await page.getByRole("button", { name: "Book this time" }).click();
   await expect(page.getByTestId("demo-current")).toBeVisible();
@@ -236,7 +268,7 @@ test("a draft saved before the price was asked for is asked for it", async ({ pa
   await signIn(page, draft.email, draft.password);
   // Every other step is done: the wizard resumes at the facility, for the price.
   await page.goto("/onboarding");
-  await expect(stepOf(page)).toHaveText("Step 2 of 6");
+  await expect(stepOf(page)).toHaveText("Step 3 of 7");
   await expect(page.getByLabel("In-person visit price (ETB)")).toHaveValue("");
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByTestId("form-error")).toHaveText("Enter the in-person visit price in birr (0 if visits are free).");
@@ -249,20 +281,20 @@ test("a draft saved before the price was asked for is asked for it", async ({ pa
     await route.fulfill({ response, json: { ...body, next_step: "review" } });
   });
   await page.reload();
-  await expect(stepOf(page)).toHaveText("Step 6 of 6");
+  await expect(stepOf(page)).toHaveText("Step 7 of 7");
   await page.unroute("**/api/onboarding/application");
   await expect(page.getByTestId("review-price")).toContainText("In-person visit price not given yet");
   await expect(page.getByRole("button", { name: "Submit application" })).toBeDisabled();
   await page.getByRole("button", { name: "Add the price" }).click();
-  await expect(stepOf(page)).toHaveText("Step 2 of 6");
+  await expect(stepOf(page)).toHaveText("Step 3 of 7");
   // 0 is a price: free visits.
   await page.getByLabel("In-person visit price (ETB)").fill("0");
   await page.getByRole("button", { name: "Continue" }).click();
-  await expect(stepOf(page)).toHaveText("Step 3 of 6");
+  await expect(stepOf(page)).toHaveText("Step 4 of 7");
   await page.getByRole("button", { name: "Continue" }).click();
-  await expect(stepOf(page)).toHaveText("Step 4 of 6");
+  await expect(stepOf(page)).toHaveText("Step 5 of 7");
   await page.getByRole("button", { name: "Continue" }).click();
-  await expect(stepOf(page)).toHaveText("Step 5 of 6");
+  await expect(stepOf(page)).toHaveText("Step 6 of 7");
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByTestId("review-price")).toHaveText("In-person visit: ETB 0.00");
   await page.getByRole("button", { name: "Submit application" }).click();
@@ -274,7 +306,7 @@ test("a demo time goes to one hospital only", async ({ page, request }) => {
   const rival = seedApplicant("sb", "complete");
   await signIn(page, mine.email, mine.password);
   await page.goto("/onboarding");
-  await expect(stepOf(page)).toHaveText("Step 5 of 6");
+  await expect(stepOf(page)).toHaveText("Step 6 of 7");
 
   const slot = page.getByTestId("demo-slot").nth(2);
   const wanted = await slot.getAttribute("data-slot");
@@ -316,7 +348,7 @@ test("a hospital that is not approved sees only its application", async ({ page 
   await page.request.post("/api/auth/logout");
   await signInThroughForm(page, draft.email, draft.password);
   await expect(page).toHaveURL(/\/onboarding$/);
-  await expect(stepOf(page)).toHaveText("Step 2 of 6");
+  await expect(stepOf(page)).toHaveText("Step 3 of 7");
 
   // Once submitted, every page leads to Under review.
   const submitted = seedApplicant("lu", "submitted");

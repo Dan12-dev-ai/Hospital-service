@@ -137,8 +137,11 @@ test("settings: the consultation price and the synced price list; no video", asy
   await expect(page.getByLabel("Video visit price (birr)")).toHaveCount(0);
   await expect(page.getByText("Offer video visits")).toHaveCount(0);
 
+  // The consultation price is asked once, in its own section; the synced list does not repeat it.
   const priceList = page.getByTestId("price-list");
-  await expect(priceList.getByTestId("consultation-price")).toHaveText("ETB 150.00");
+  await expect(page.getByLabel("In-person visit price (birr)")).toHaveValue("150.00");
+  await expect(priceList.getByTestId("consultation-price")).toHaveCount(0);
+  await expect(priceList).toContainText("The consultation price is under Consultation price above.");
   await expect(priceList.getByTestId("prices-lab_tests")).toContainText("Complete blood count");
   await expect(priceList.getByTestId("prices-lab_tests")).toContainText("ETB 350.00");
   await expect(priceList.getByTestId("prices-imaging")).toContainText("Chest X-ray");
@@ -151,7 +154,7 @@ test("settings: the consultation price and the synced price list; no video", asy
   const hospitalNow = await (await page.request.get("/api/hospital")).json();
   expect(hospitalNow).toMatchObject({ price_in_person: "175.50", city: "Adama", video_visits_offered: false });
   await page.reload();
-  await expect(page.getByTestId("consultation-price")).toHaveText("ETB 175.50");
+  await expect(page.getByLabel("In-person visit price (birr)")).toHaveValue("175.50");
 });
 
 test("developers read the settings but cannot change them, and have no team page", async ({ page }) => {

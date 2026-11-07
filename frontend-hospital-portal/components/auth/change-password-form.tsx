@@ -9,12 +9,12 @@ import { signOutNow } from "@/components/session/session-context";
 import {
   ErrorState,
   FormError,
-  LoadingState,
   inputClass,
   labelClass,
   primaryButtonClass,
   secondaryButtonClass,
 } from "@/components/common/states";
+import { AuthFormSkeleton } from "@/components/common/page-skeletons";
 
 /**
  * Change password. Also the way out of a temporary password: the backend
@@ -30,7 +30,7 @@ export function ChangePasswordForm() {
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
 
-  if (me.loading && !me.data) return <LoadingState />;
+  if (me.loading && !me.data) return <AuthFormSkeleton fields={3} label="Loading your account…" />;
   if (me.error || !me.data) {
     return <ErrorState message={me.error?.message ?? "Could not load your account."} onRetry={me.reload} />;
   }

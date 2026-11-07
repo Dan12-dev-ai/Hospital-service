@@ -21,12 +21,13 @@ import {
   Webhook,
   X,
 } from "lucide-react";
-import { ErrorState, LoadingState } from "@/components/common/states";
+import { ErrorState } from "@/components/common/states";
 import { SessionProvider, useSession } from "@/components/session/session-context";
 import { ToastProvider } from "@/components/shell/toast";
 import { ROLE_LABELS, type Hospital, type Staff } from "@/lib/api-types";
 import { OPENAPI_URL, SWAGGER_URL } from "@/lib/connect-types";
 import { initialsOf } from "@/lib/format";
+import { DashboardPageSkeleton } from "@/components/common/page-skeletons";
 
 type NavItem = { href: string; label: string; icon: ComponentType<{ className?: string }>; adminOnly?: boolean };
 
@@ -91,7 +92,7 @@ function Frame({ children, wide }: { children: ReactNode; wide: boolean }) {
 
   const ready = session.status === "ready" ? session : null;
   let body: ReactNode;
-  if (session.status === "loading") body = <LoadingState className="mt-10" />;
+  if (session.status === "loading") body = <DashboardPageSkeleton path={pathname} />;
   else if (session.status === "error") body = <ErrorState message={session.error.message} onRetry={session.reload} className="mt-10" />;
   else if (session.hospital.status !== "approved") body = <Suspended hospital={session.hospital} />;
   else body = children;

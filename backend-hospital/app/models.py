@@ -880,8 +880,15 @@ class OnboardingApplication(Base):
 
     hospital_id: Mapped[str] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"), primary_key=True)
     status: Mapped[str] = mapped_column(String(12), nullable=False, default=ApplicationStatus.DRAFT)
-    #: The contact person's role or title (the person is the first admin account).
+    #: The contact person's role or title.
     contact_title: Mapped[Optional[str]] = mapped_column(String(80))
+    #: A contact person other than the applicant (the first admin account):
+    #: their name, mobile and email. All None (every application made before
+    #: these existed, and the usual case): the applicant is the contact
+    #: person, with the account's name and mobile (app.onboarding.contact_details).
+    contact_name: Mapped[Optional[str]] = mapped_column(String(120))
+    contact_phone: Mapped[Optional[str]] = mapped_column(String(32))
+    contact_email: Mapped[Optional[str]] = mapped_column(String(254))
     #: The Ministry of Health facility license number.
     license_number: Mapped[Optional[str]] = mapped_column(String(60))
     submitted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))

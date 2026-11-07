@@ -9,10 +9,12 @@ import { SERVICES, type FacilityType, type HospitalKind, type ServiceKey } from 
 import { passwordProblem } from "@/lib/password";
 import { BIRR_PATTERN, formatBirr } from "@/lib/format";
 import {
+  STEPS,
   formatDemo,
   formatSize,
   type Application,
   type ApplicationDocument,
+  type StepKey,
 } from "@/lib/onboarding-types";
 import {
   StepError,
@@ -26,11 +28,12 @@ import {
 import { DemoPicker } from "@/components/onboarding/demo-picker";
 import { OpenHoursInput, openHoursTextProblem } from "@/components/common/open-hours-input";
 import type { Point } from "@/components/onboarding/location-map";
+import { MapSkeleton } from "@/components/onboarding/onboarding-skeletons";
 
 // Leaflet touches `window` as it loads: the map is rendered in the browser only.
 const LocationMap = dynamic(() => import("@/components/onboarding/location-map").then((m) => m.LocationMap), {
   ssr: false,
-  loading: () => <div className="h-64 w-full animate-pulse rounded-2xl bg-slate-100 sm:h-72" />,
+  loading: () => <MapSkeleton />,
 });
 
 function message(err: unknown, fallback: string): string {
@@ -129,28 +132,22 @@ const FACILITY_TYPES: { value: FacilityType; label: string; hint: string }[] = [
   { value: "clinic", label: "Clinic", hint: "Out-patient care" },
 ];
 
-// --- 1. the account (signed out) or the contact person (signed in) ---------------------
+// --- 1. the account (signed out): the login only -----------------------------------------
+//
+// Each fact is asked once in the wizard. The account step creates the login;
+// the contact person defaults to this person (step 2), and the facility's
+// name and type are asked with the rest of the facility (step 3).
 
 export function AccountStep({ onCreated }: { onCreated: () => void }) {
-  const [form, setForm] = useState({
-    hospital_name: "",
-    facility_type: "hospital" as FacilityType,
-    admin_name: "",
-    admin_title: "",
-    admin_phone: "",
-    admin_email: "",
-    password: "",
-    confirm: "",
-  });
+  const [form, setForm] = useState({ admin_name: "", admin_email: "", password: "", confirm: "" });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const set = (key: keyof typeof form, value: string) => setForm((current) => ({ ...current, [key]: value }));
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!form.hospital_name.trim() || !form.admin_name.trim() || !form.admin_title.trim() || !form.admin_phone.trim()) {
-      return setError("Fill in the facility's name and your name, role and mobile number.");
-    }
+    if (!form.admin_name.trim()) return setError("Enter your full name.");
+    if (!form.admin_email.trim()) return setError("Enter your work email.");
     const problem = passwordProblem(form.password);
     if (problem) return setError(problem);
     if (form.password !== form.confirm) return setError("The two passwords do not match.");
@@ -160,15 +157,7 @@ export function AccountStep({ onCreated }: { onCreated: () => void }) {
       await apiFetch("onboarding", {
         method: "POST",
         redirectOn401: false,
-        body: {
-          hospital_name: form.hospital_name.trim(),
-          facility_type: form.facility_type,
-          admin_name: form.admin_name.trim(),
-          admin_title: form.admin_title.trim(),
-          admin_phone: form.admin_phone.trim(),
-          admin_email: form.admin_email.trim(),
-          password: form.password,
-        },
+        body: { admin_name: form.admin_name.trim(), admin_email: form.admin_email.trim(), password: form.password },
       });
       onCreated();
     } catch (err) {
@@ -181,33 +170,21 @@ export function AccountStep({ onCreated }: { onCreated: () => void }) {
     <form onSubmit={submit} noValidate data-testid="step-account">
       <StepHeading
         title="Let's get you started"
-        hint="Tell us your facility's name and who we should talk to. This creates your account: you can stop at any step and continue later by signing in."
+        hint="Create your account: you can stop at any step and continue later by signing in."
       />
-      <div className="space-y-4">
-        <Choices label="Facility type" value={form.facility_type} options={FACILITY_TYPES} onChange={(v) => set("facility_type", v)} />
-        <Field id="account-facility-name" label="Facility name">
-          <input id="account-facility-name" className={fieldClass} maxLength={160} value={form.hospital_name} onChange={(e) => set("hospital_name", e.target.value)} />
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <Field id="account-name" label="Your full name">
+          <input id="account-name" className={fieldClass} autoComplete="name" maxLength={120} value={form.admin_name} onChange={(e) => set("admin_name", e.target.value)} />
         </Field>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field id="account-name" label="Your full name">
-            <input id="account-name" className={fieldClass} autoComplete="name" maxLength={120} value={form.admin_name} onChange={(e) => set("admin_name", e.target.value)} />
-          </Field>
-          <Field id="account-title" label="Your role or title">
-            <input id="account-title" className={fieldClass} maxLength={80} placeholder="Medical Director" value={form.admin_title} onChange={(e) => set("admin_title", e.target.value)} />
-          </Field>
-          <Field id="account-phone" label="Your mobile number" hint="Endod texts your demo confirmation here.">
-            <input id="account-phone" className={fieldClass} type="tel" inputMode="tel" autoComplete="tel" placeholder="0911 234 567" value={form.admin_phone} onChange={(e) => set("admin_phone", e.target.value)} />
-          </Field>
-          <Field id="account-email" label="Work email">
-            <input id="account-email" className={fieldClass} type="email" autoComplete="username" value={form.admin_email} onChange={(e) => set("admin_email", e.target.value)} />
-          </Field>
-          <Field id="account-password" label="Password" hint="At least 10 characters, with upper and lower case letters.">
-            <input id="account-password" className={fieldClass} type="password" autoComplete="new-password" value={form.password} onChange={(e) => set("password", e.target.value)} />
-          </Field>
-          <Field id="account-confirm" label="Confirm password">
-            <input id="account-confirm" className={fieldClass} type="password" autoComplete="new-password" value={form.confirm} onChange={(e) => set("confirm", e.target.value)} />
-          </Field>
-        </div>
+        <Field id="account-email" label="Work email" hint="You sign in with it.">
+          <input id="account-email" className={fieldClass} type="email" autoComplete="username" value={form.admin_email} onChange={(e) => set("admin_email", e.target.value)} />
+        </Field>
+        <Field id="account-password" label="Password" hint="At least 10 characters, with upper and lower case letters.">
+          <input id="account-password" className={fieldClass} type="password" autoComplete="new-password" value={form.password} onChange={(e) => set("password", e.target.value)} />
+        </Field>
+        <Field id="account-confirm" label="Confirm password">
+          <input id="account-confirm" className={fieldClass} type="password" autoComplete="new-password" value={form.confirm} onChange={(e) => set("confirm", e.target.value)} />
+        </Field>
       </div>
       <StepError message={error} />
       <StepNav busy={busy} nextLabel="Create account" disabled={!form.admin_email || !form.password} />
@@ -227,21 +204,50 @@ type StepProps = {
   onBack?: () => void;
 };
 
+/**
+ * The contact person: the account holder unless they say otherwise ("The
+ * contact person is me", checked by default). Their name and email come from
+ * the account, so only the role and the mobile are asked; someone else's
+ * name and email are asked only when the box is unchecked.
+ */
 export function ContactStep({ application, onSaved, onBack }: StepProps) {
-  const [form, setForm] = useState({
-    full_name: application.contact.full_name ?? "",
-    title: application.contact.title ?? "",
-    phone: application.contact.phone ?? "",
+  const { account, contact } = application;
+  const [isMe, setIsMe] = useState(contact.is_applicant);
+  // Kept apart: unchecking the box does not hand my role and mobile to someone else.
+  const [me, setMe] = useState({
+    title: contact.is_applicant ? (contact.title ?? "") : "",
+    phone: contact.is_applicant ? (contact.phone ?? "") : "",
+  });
+  const [other, setOther] = useState({
+    full_name: contact.is_applicant ? "" : (contact.full_name ?? ""),
+    email: contact.is_applicant ? "" : (contact.email ?? ""),
+    title: contact.is_applicant ? "" : (contact.title ?? ""),
+    phone: contact.is_applicant ? "" : (contact.phone ?? ""),
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    const body = isMe
+      ? { is_applicant: true, title: me.title.trim(), phone: me.phone.trim() }
+      : {
+          is_applicant: false,
+          full_name: other.full_name.trim(),
+          email: other.email.trim(),
+          title: other.title.trim(),
+          phone: other.phone.trim(),
+        };
+    if (!isMe && (!other.full_name.trim() || !other.email.trim())) {
+      return setError("Fill in the contact person's full name and email.");
+    }
+    if (!body.title || !body.phone) {
+      return setError(isMe ? "Fill in your role and your mobile number." : "Fill in their role and mobile number.");
+    }
     setBusy(true);
     setError(null);
     try {
-      onSaved(await apiFetch<Application>("onboarding/contact", { method: "PATCH", body: form }));
+      onSaved(await apiFetch<Application>("onboarding/contact", { method: "PATCH", body }));
     } catch (err) {
       setError(message(err, "Could not save."));
     } finally {
@@ -251,21 +257,49 @@ export function ContactStep({ application, onSaved, onBack }: StepProps) {
 
   return (
     <form onSubmit={submit} noValidate data-testid="step-contact">
-      <StepHeading title="Contact person" hint="Endod contacts this person about the application and the demo." />
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <Field id="contact-name" label="Full name">
-          <input id="contact-name" className={fieldClass} maxLength={120} value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
-        </Field>
-        <Field id="contact-title" label="Role or title">
-          <input id="contact-title" className={fieldClass} maxLength={80} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
-        </Field>
-        <Field id="contact-phone" label="Mobile number" hint="Endod texts your demo confirmation here.">
-          <input id="contact-phone" className={fieldClass} type="tel" inputMode="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
-        </Field>
-        <Field id="contact-email" label="Email (your sign-in)">
-          <input id="contact-email" className={fieldClass} value={application.contact.email ?? ""} disabled readOnly />
-        </Field>
-      </div>
+      <StepHeading title="Contact person" hint="Endod contacts this person about the application, and texts them the demo time." />
+      <label className={`${choiceClass(isMe)} mb-4 flex items-center gap-3`}>
+        <input
+          type="checkbox"
+          className="h-4 w-4 accent-[#1E5852]"
+          checked={isMe}
+          onChange={(e) => {
+            setIsMe(e.target.checked);
+            setError(null);
+          }}
+        />
+        <span>
+          <span className="block">The contact person is me</span>
+          <span data-testid="contact-account" className="mt-0.5 block text-[11px] font-normal text-slate-500">
+            {account.full_name} · {account.email}
+          </span>
+        </span>
+      </label>
+      {isMe ? (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Field id="contact-title" label="Your role or title">
+            <input id="contact-title" className={fieldClass} maxLength={80} placeholder="Medical Director" value={me.title} onChange={(e) => setMe({ ...me, title: e.target.value })} />
+          </Field>
+          <Field id="contact-phone" label="Your mobile number" hint="Endod texts the demo time here.">
+            <input id="contact-phone" className={fieldClass} type="tel" inputMode="tel" autoComplete="tel" placeholder="0911 234 567" value={me.phone} onChange={(e) => setMe({ ...me, phone: e.target.value })} />
+          </Field>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2" data-testid="other-contact">
+          <Field id="contact-name" label="Their full name">
+            <input id="contact-name" className={fieldClass} maxLength={120} value={other.full_name} onChange={(e) => setOther({ ...other, full_name: e.target.value })} />
+          </Field>
+          <Field id="contact-other-title" label="Their role or title">
+            <input id="contact-other-title" className={fieldClass} maxLength={80} value={other.title} onChange={(e) => setOther({ ...other, title: e.target.value })} />
+          </Field>
+          <Field id="contact-other-phone" label="Their mobile number" hint="Endod texts the demo time here.">
+            <input id="contact-other-phone" className={fieldClass} type="tel" inputMode="tel" placeholder="0911 234 567" value={other.phone} onChange={(e) => setOther({ ...other, phone: e.target.value })} />
+          </Field>
+          <Field id="contact-email" label="Their email">
+            <input id="contact-email" className={fieldClass} type="email" value={other.email} onChange={(e) => setOther({ ...other, email: e.target.value })} />
+          </Field>
+        </div>
+      )}
       <StepError message={error} />
       <StepNav onBack={onBack} busy={busy} />
     </form>
@@ -302,7 +336,7 @@ export function FacilityStep({ application, onSaved, onBack }: StepProps) {
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!form.name.trim() || !form.city.trim() || !form.phone.trim() || !form.open_hours.trim()) {
-      return setError("Fill in the name, city, phone and opening hours.");
+      return setError("Fill in the facility's name, city, phone and opening hours.");
     }
     const hoursProblem = openHoursTextProblem(form.open_hours, true);
     if (hoursProblem) return setError(hoursProblem);
@@ -349,7 +383,7 @@ export function FacilityStep({ application, onSaved, onBack }: StepProps) {
           onChange={(v) => setForm({ ...form, ownership: v })}
         />
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field id="facility-name" label="Name">
+          <Field id="facility-name" label="Facility name">
             <input id="facility-name" className={fieldClass} maxLength={160} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </Field>
           <Field id="facility-name-am" label="Name in Amharic (optional)">
@@ -358,7 +392,7 @@ export function FacilityStep({ application, onSaved, onBack }: StepProps) {
           <Field id="facility-city" label="City">
             <input id="facility-city" className={fieldClass} maxLength={100} value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} />
           </Field>
-          <Field id="facility-phone" label="Facility phone">
+          <Field id="facility-phone" label="Facility phone" hint="The number patients call (not a personal mobile).">
             <input id="facility-phone" className={fieldClass} type="tel" placeholder="011 551 7611" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
           </Field>
         </div>
@@ -628,7 +662,7 @@ export function DemoStep({ application, onChanged, onBack, onNext }: {
     >
       <StepHeading
         title="Book a demo"
-        hint="A 30-minute video call with Endod: we show you the portal and check your details. We text the time to your mobile."
+        hint="A 30-minute video call with Endod: we show you the portal and check your details. We text the time to the contact person's mobile."
       />
       <DemoPicker current={application.demo?.demo_at ?? null} onBooked={onChanged} />
       <StepNav onBack={onBack} disabled={!application.demo} />
@@ -661,6 +695,7 @@ export function ReviewStep({ application, onBack, onEdit, onSubmitted }: {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const { contact, facility, location, documents, demo } = application;
+  const edit = (key: StepKey) => () => onEdit(STEPS.findIndex((s) => s.key === key));
   const services = facility.services.map((key) => SERVICES.find((s) => s.key === key)?.label ?? key).join(", ");
 
   async function submit(event: FormEvent) {
@@ -680,13 +715,16 @@ export function ReviewStep({ application, onBack, onEdit, onSubmitted }: {
     <form onSubmit={submit} noValidate data-testid="step-review">
       <StepHeading title="Review and submit" hint="Check everything once more. After you submit, Endod reviews your application and meets you at the demo." />
       <div className="space-y-2.5" data-testid="review-summary">
-        <Section title="Contact person" onEdit={() => onEdit(0)}>
-          <p className="font-semibold">{contact.full_name}</p>
+        <Section title="Contact person" onEdit={edit("contact")}>
+          <p className="font-semibold">
+            {contact.full_name}
+            {contact.is_applicant && <span className="font-normal text-slate-500"> (you)</span>}
+          </p>
           <p className="text-xs text-slate-500">
             {contact.title} · {contact.phone} · {contact.email}
           </p>
         </Section>
-        <Section title="Facility" onEdit={() => onEdit(1)}>
+        <Section title="Facility" onEdit={edit("facility")}>
           <p className="font-semibold">
             {facility.name}
             {facility.name_am && <span className="font-normal text-slate-500"> · {facility.name_am}</span>}
@@ -704,19 +742,19 @@ export function ReviewStep({ application, onBack, onEdit, onSubmitted }: {
             <p data-testid="review-price" className="text-xs font-semibold text-red-600">
               <Icon name="error" className="mr-1 align-middle text-[14px]" />
               In-person visit price not given yet: add it to submit.{" "}
-              <button type="button" onClick={() => onEdit(1)} className="underline">
+              <button type="button" onClick={edit("facility")} className="underline">
                 Add the price
               </button>
             </p>
           )}
         </Section>
-        <Section title="Location" onEdit={() => onEdit(2)}>
+        <Section title="Location" onEdit={edit("location")}>
           <p>{location.address}</p>
           <p className="text-xs text-slate-500">
             {location.latitude?.toFixed(6)}, {location.longitude?.toFixed(6)}
           </p>
         </Section>
-        <Section title="Documents" onEdit={() => onEdit(3)}>
+        <Section title="Documents" onEdit={edit("documents")}>
           <p className="text-xs text-slate-500">License number {documents.license_number}</p>
           {documents.items.map((item) => (
             <p key={item.kind} className="text-xs">
@@ -725,7 +763,7 @@ export function ReviewStep({ application, onBack, onEdit, onSubmitted }: {
             </p>
           ))}
         </Section>
-        <Section title="Demo" onEdit={() => onEdit(4)}>
+        <Section title="Demo" onEdit={edit("demo")}>
           <p>{demo ? `${formatDemo(demo.demo_at)} (Addis Ababa time)` : "Not booked"}</p>
         </Section>
       </div>

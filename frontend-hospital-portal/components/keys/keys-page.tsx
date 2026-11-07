@@ -8,7 +8,6 @@ import {
   EmptyState,
   ErrorState,
   FormError,
-  LoadingState,
   Modal,
   dangerButtonClass,
   inputClass,
@@ -31,6 +30,7 @@ import {
   type ConnectionMode,
   type NewConnectionResult,
 } from "@/lib/connect-types";
+import { KeysListSkeleton } from "@/components/common/page-skeletons";
 
 export function ModeBadge({ mode }: { mode: ConnectionMode }) {
   return (
@@ -71,7 +71,7 @@ export function KeysPage() {
         }
       />
 
-      {loading && !data && <LoadingState label="Loading your keys…" />}
+      {loading && !data && <KeysListSkeleton />}
       {error && <ErrorState message={error.message} onRetry={reload} />}
       {data && data.items.length === 0 && (
         <div className="rounded-lg border border-dashed border-neutral-300">

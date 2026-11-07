@@ -4,8 +4,11 @@ its documents and its demo with Endod.
 The wizard in the portal saves each step through app.api.onboarding; nothing
 here is visible to patients. The steps, in the order the portal shows them:
 
-1. ``contact``: the contact person, who is also the first admin account
-   (created by ``POST /onboarding``, so uploads have an owner);
+0. the account (``POST /onboarding``): the applicant's name, email and
+   password, the hospital's first admin (so uploads have an owner);
+1. ``contact``: the contact person, by default the applicant ("The contact
+   person is me": only their role and mobile are asked), or someone else
+   (name, role, mobile and email); see contact_details;
 2. ``facility``: kind, ownership, name, city, phone, services, opening hours
    and the in-person visit price (the hospital's own price, as in Settings,
    so approval lists it for patients at once);
@@ -184,9 +187,29 @@ def application_for(session: Session, hospital: Hospital, lock: bool = False) ->
 
 
 def contact_person(session: Session, hospital_id: str) -> Optional[StaffUser]:
-    """The contact person: the hospital's first admin (who signed it up)."""
+    """The applicant: the hospital's first admin (who signed it up), the only
+    one who can change the application."""
     return session.scalar(select(StaffUser).where(StaffUser.hospital_id == hospital_id, StaffUser.role == Role.ADMIN)
                           .order_by(StaffUser.created_at, StaffUser.id).limit(1))
+
+
+def contact_details(applicant: Optional[StaffUser], app: Optional[OnboardingApplication]) -> Dict[str, Any]:
+    """Who Endod contacts about the application (and texts the demo to).
+
+    Each fact is kept once: the applicant is the contact person unless the
+    application names someone else (``contact_name``), so the applicant's name,
+    email and mobile are never typed twice. Applications from before
+    ``contact_name`` existed have it None: the applicant, as they always were.
+    """
+    other = app is not None and app.contact_name is not None
+    if other:
+        name, phone, email = app.contact_name, app.contact_phone, app.contact_email
+    else:
+        name = applicant.full_name if applicant else None
+        phone = applicant.phone if applicant else None
+        email = applicant.email if applicant else None
+    return {"is_applicant": not other, "full_name": name, "title": app.contact_title if app else None,
+            "phone": phone, "email": email}
 
 
 def documents_of(session: Session, hospital_id: str) -> Dict[str, OnboardingDocument]:
@@ -204,15 +227,20 @@ def services_list(hospital: Hospital) -> List[str]:
 
 def missing(session: Session, hospital: Hospital, app: OnboardingApplication) -> Dict[str, List[str]]:
     """What each step still needs (an empty list: the step is complete)."""
-    contact = contact_person(session, hospital.id)
+    contact = contact_details(contact_person(session, hospital.id), app)
     docs = documents_of(session, hospital.id)
     result: Dict[str, List[str]] = {step: [] for step in STEPS}
-    if contact is None or not contact.full_name:
+    if not contact["full_name"]:
         result["contact"].append("full_name")
-    if not app.contact_title:
+    if not contact["title"]:
         result["contact"].append("title")
-    if contact is None or not (contact.phone or "").startswith("+251"):
+    if not (contact["phone"] or "").startswith("+251"):
         result["contact"].append("phone")
+    if not contact["email"]:
+        result["contact"].append("email")
+    # Asked in this step only (the account step no longer asks for it).
+    if not (hospital.name or "").strip():
+        result["facility"].append("name")
     for field in ("city", "phone", "open_hours"):
         if not getattr(hospital, field):
             result["facility"].append(field)
@@ -260,7 +288,7 @@ def application_payload(session: Session, hospital: Hospital) -> Dict[str, Any]:
     """Everything the wizard and the Under review page show (and Endod reviews)."""
     release_stale(session)
     app = application_for(session, hospital)
-    contact = contact_person(session, hospital.id)
+    applicant = contact_person(session, hospital.id)
     docs = documents_of(session, hospital.id)
     demo = demo_of(session, hospital.id)
     gaps = missing(session, hospital, app)
@@ -277,12 +305,13 @@ def application_payload(session: Session, hospital: Hospital) -> Dict[str, Any]:
         "submitted_at": _iso(app.submitted_at),
         "rejected_at": _iso(app.rejected_at),
         "rejection_reason": app.rejection_reason,
-        "contact": {
-            "full_name": contact.full_name if contact else None,
-            "title": app.contact_title,
-            "phone": contact.phone if contact else None,
-            "email": contact.email if contact else None,
+        # The applicant's account (asked once, in the account step) ...
+        "account": {
+            "full_name": applicant.full_name if applicant else None,
+            "email": applicant.email if applicant else None,
         },
+        # ... and the contact person: the applicant unless someone else is named.
+        "contact": contact_details(applicant, app),
         "facility": {
             "facility_type": hospital.facility_type,
             "ownership": hospital.kind,

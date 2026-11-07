@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { cn } from "cn";
 import { RefreshCw, RotateCw, Send } from "lucide-react";
-import { ErrorState, FormError, LoadingState, inputClass, labelClass, secondaryButtonClass } from "@/components/common/states";
+import { ErrorState, FormError, inputClass, labelClass, secondaryButtonClass } from "@/components/common/states";
 import { PageHeader, Panel } from "@/components/shell/dashboard-shell";
 import { useToast } from "@/components/shell/toast";
 import { WithKey } from "@/components/keys/key-picker";
@@ -12,6 +12,7 @@ import { useSignedIn } from "@/components/session/session-context";
 import { ApiError, apiFetch, useApi } from "@/lib/api";
 import type { Connection, Delivery } from "@/lib/connect-types";
 import { formatDateTime } from "@/lib/format";
+import { LogTableSkeleton, WebhookBodySkeleton } from "@/components/common/page-skeletons";
 
 /** Webhooks: where a key's events go, their signing secret, a test event, and recent deliveries. */
 export function WebhooksPage() {
@@ -21,7 +22,9 @@ export function WebhooksPage() {
         title="Webhooks"
         description="Endod POSTs events to your system (bookings, patient links, dispensing), signed with Endod-Signature. Test keys receive only the test event."
       />
-      <WithKey>{(connection, reload) => <KeyWebhook connection={connection} onChanged={reload} />}</WithKey>
+      <WithKey skeleton={<WebhookBodySkeleton />}>
+        {(connection, reload) => <KeyWebhook connection={connection} onChanged={reload} />}
+      </WithKey>
     </div>
   );
 }
@@ -152,7 +155,7 @@ function Deliveries({ base, version }: { base: string; version: number }) {
         </button>
       }
     >
-      {loading && !data && <LoadingState label="Loading…" className="p-4 shadow-none" />}
+      {loading && !data && <LogTableSkeleton rows={4} />}
       {error && <ErrorState message={error.message} onRetry={reload} className="p-4" />}
       {data && data.items.length === 0 && <p className="text-xs text-neutral-500">No events sent yet.</p>}
       {data && data.items.length > 0 && (
