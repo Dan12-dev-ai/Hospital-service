@@ -3,11 +3,12 @@
 import Link from "next/link";
 import { cn } from "cn";
 import { ArrowRight, BookOpen, CheckCircle2, Circle, ExternalLink, KeyRound, Rocket, SquareTerminal } from "lucide-react";
-import { ErrorState, LoadingState } from "@/components/common/states";
+import { ErrorState } from "@/components/common/states";
 import { PageHeader, Panel } from "@/components/shell/dashboard-shell";
 import { useSignedIn } from "@/components/session/session-context";
 import { useApi } from "@/lib/api";
 import { SWAGGER_URL, timeAgo, type Connection, type ConnectionList } from "@/lib/connect-types";
+import { ModeSummarySkeleton } from "@/components/common/page-skeletons";
 
 type Step = { done: boolean; label: string; detail: string; href?: string; action?: string };
 
@@ -84,7 +85,7 @@ export function OverviewPage() {
 
         <div className="flex flex-col gap-6">
           <Panel title="Mode" testId="mode-summary">
-            {loading && !data && <LoadingState className="p-4 shadow-none" />}
+            {loading && !data && <ModeSummarySkeleton />}
             {error && <ErrorState message={error.message} onRetry={reload} className="p-4" />}
             {data && (
               <dl className="flex flex-col gap-3 text-sm">

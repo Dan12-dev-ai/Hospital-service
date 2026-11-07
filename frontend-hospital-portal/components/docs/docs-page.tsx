@@ -5,11 +5,12 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { cn } from "cn";
 import { ArrowLeft, ArrowRight, ExternalLink } from "lucide-react";
-import { ErrorState, LoadingState } from "@/components/common/states";
+import { ErrorState } from "@/components/common/states";
 import { Markdown } from "@/components/docs/markdown";
 import { useApi } from "@/lib/api";
 import type { GuideSource } from "@/lib/api-types";
 import { buildPages, navGroups, navLabel, type DocPage } from "@/lib/docs";
+import { DocsBodySkeleton } from "@/components/common/page-skeletons";
 
 function hrefOf(page: DocPage): string {
   return page.slug ? `/docs/${page.slug}` : "/docs";
@@ -26,7 +27,7 @@ export function DocsPage() {
   const { data, error, loading, reload } = useApi<GuideSource>("developer/guide");
   const pages = useMemo(() => (data ? buildPages(data.markdown) : []), [data]);
 
-  if (loading && !data) return <LoadingState label="Loading the docs…" />;
+  if (loading && !data) return <DocsBodySkeleton />;
   if (error) return <ErrorState message={error.message} onRetry={reload} />;
   if (!data) return null;
   const index = pages.findIndex((p) => p.slug === slug);

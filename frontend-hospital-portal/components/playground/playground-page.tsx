@@ -3,10 +3,11 @@
 import { useMemo, useState } from "react";
 import { cn } from "cn";
 import { Play } from "lucide-react";
-import { ErrorState, FormError, LoadingState, inputClass, labelClass, primaryButtonClass } from "@/components/common/states";
+import { ErrorState, FormError, inputClass, labelClass, primaryButtonClass } from "@/components/common/states";
 import { PageHeader, Panel } from "@/components/shell/dashboard-shell";
 import { CodeBlock } from "@/components/docs/markdown";
 import { ApiError, apiFetch, useApi } from "@/lib/api";
+import { PlaygroundConsoleSkeleton } from "@/components/common/page-skeletons";
 
 /** One operation of the integration API's OpenAPI document. */
 export type Operation = {
@@ -104,7 +105,7 @@ export function PlaygroundPage() {
           </span>
         }
       />
-      {loading && !data && <LoadingState label="Loading the API reference…" />}
+      {loading && !data && <PlaygroundConsoleSkeleton />}
       {error && <ErrorState message={error.message} onRetry={reload} />}
       {operations.length > 0 && <Console operations={operations} />}
     </div>

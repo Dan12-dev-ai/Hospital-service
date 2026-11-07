@@ -2,13 +2,14 @@
 
 import { cn } from "cn";
 import { RefreshCw } from "lucide-react";
-import { ErrorState, LoadingState } from "@/components/common/states";
+import { ErrorState } from "@/components/common/states";
 import { PageHeader, Panel } from "@/components/shell/dashboard-shell";
 import { WithKey } from "@/components/keys/key-picker";
 import { useSignedIn } from "@/components/session/session-context";
 import { useApi } from "@/lib/api";
 import type { Connection, RequestLogEntry } from "@/lib/connect-types";
 import { formatDateTime } from "@/lib/format";
+import { LogTableSkeleton, LogsBodySkeleton } from "@/components/common/page-skeletons";
 
 /** Logs: each key's recent API requests (method, path, status, time, address; never a body). */
 export function LogsPage() {
@@ -18,7 +19,7 @@ export function LogsPage() {
         title="Logs"
         description="The last 50 requests of each key, kept 30 days: method, path, status, duration and address. Never the data sent."
       />
-      <WithKey>{(connection) => <RequestLog connection={connection} />}</WithKey>
+      <WithKey skeleton={<LogsBodySkeleton />}>{(connection) => <RequestLog connection={connection} />}</WithKey>
     </div>
   );
 }
@@ -37,7 +38,7 @@ function RequestLog({ connection }: { connection: Connection }) {
         </button>
       }
     >
-      {loading && !data && <LoadingState label="Loading…" className="p-4 shadow-none" />}
+      {loading && !data && <LogTableSkeleton rows={6} />}
       {error && <ErrorState message={error.message} onRetry={reload} className="p-4" />}
       {data && data.items.length === 0 && (
         <p className="text-xs text-neutral-500" data-testid="no-requests">

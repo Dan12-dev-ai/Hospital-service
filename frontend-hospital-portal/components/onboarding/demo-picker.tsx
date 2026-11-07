@@ -10,6 +10,7 @@ import {
   type DemoSlots,
 } from "@/lib/onboarding-types";
 import { StepError, choiceClass, nextButtonClass } from "@/components/onboarding/onboarding-frame";
+import { DemoCalendarSkeleton } from "@/components/onboarding/onboarding-skeletons";
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"];
 
@@ -121,13 +122,7 @@ export function DemoPicker({
   }
 
   if (loadError) return <StepError message={loadError} />;
-  if (!slots) {
-    return (
-      <p role="status" className="py-8 text-center text-xs text-slate-500">
-        Loading the calendar…
-      </p>
-    );
-  }
+  if (!slots) return <DemoCalendarSkeleton />;
 
   return (
     <div className="space-y-5" data-testid="demo-picker">

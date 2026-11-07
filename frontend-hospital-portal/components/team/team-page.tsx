@@ -5,7 +5,6 @@ import { UserPlus } from "lucide-react";
 import {
   ErrorState,
   FormError,
-  LoadingState,
   Modal,
   RoleGate,
   dangerButtonClass,
@@ -21,6 +20,7 @@ import { CopyField } from "@/components/keys/confirm-code";
 import { ApiError, apiFetch, useApi } from "@/lib/api";
 import { ROLE_LABELS, type DashboardRole, type Staff } from "@/lib/api-types";
 import { timeAgo } from "@/lib/connect-types";
+import { TeamListSkeleton } from "@/components/common/page-skeletons";
 
 const ROLES: { value: DashboardRole; label: string; hint: string }[] = [
   { value: "developer", label: "Developer", hint: "API keys, webhooks, logs, playground and docs" },
@@ -56,7 +56,7 @@ function Team() {
           </button>
         }
       />
-      {loading && !data && <LoadingState />}
+      {loading && !data && <TeamListSkeleton />}
       {error && <ErrorState message={error.message} onRetry={reload} />}
       {data && (
         <ul className="divide-y divide-neutral-200 rounded-lg border border-neutral-200" data-testid="team">

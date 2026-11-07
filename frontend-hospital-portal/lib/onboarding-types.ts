@@ -18,7 +18,8 @@ export type OnboardingStatus = {
   demo_at: string | null;
   contact_phone: string | null;
 };
-export type StepKey = "contact" | "facility" | "location" | "documents" | "demo" | "review";
+/** The wizard's steps: "account" creates the login (signed out); the others are saved on the service. */
+export type StepKey = "account" | "contact" | "facility" | "location" | "documents" | "demo" | "review";
 export type DocumentKind = "moh_license" | "trade_license" | "tin_certificate" | "owner_id";
 
 export type ApplicationDocument = {
@@ -38,13 +39,22 @@ export type Application = {
   status: ApplicationStatus;
   hospital_status: "pending" | "approved" | "suspended";
   next_step: StepKey;
-  missing: Record<Exclude<StepKey, "review">, string[]>;
+  missing: Record<Exclude<StepKey, "account" | "review">, string[]>;
   complete: boolean;
   created_at: string | null;
   submitted_at: string | null;
   rejected_at: string | null;
   rejection_reason: string | null;
-  contact: { full_name: string | null; title: string | null; phone: string | null; email: string | null };
+  /** The applicant's account: asked once, in the account step. */
+  account: { full_name: string | null; email: string | null };
+  /** The contact person: the applicant ("The contact person is me") unless someone else is named. */
+  contact: {
+    is_applicant: boolean;
+    full_name: string | null;
+    title: string | null;
+    phone: string | null;
+    email: string | null;
+  };
   facility: {
     facility_type: FacilityType;
     ownership: HospitalKind;
@@ -73,7 +83,8 @@ export type DemoSlots = {
 };
 
 export const STEPS: { key: StepKey; title: string; short: string }[] = [
-  { key: "contact", title: "Your account", short: "Account" },
+  { key: "account", title: "Your account", short: "Account" },
+  { key: "contact", title: "Contact person", short: "Contact" },
   { key: "facility", title: "Your facility", short: "Facility" },
   { key: "location", title: "Where to find you", short: "Location" },
   { key: "documents", title: "Documents", short: "Documents" },

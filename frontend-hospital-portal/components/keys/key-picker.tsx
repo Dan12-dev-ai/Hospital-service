@@ -2,19 +2,27 @@
 
 import { useState, type ReactNode } from "react";
 import Link from "next/link";
-import { EmptyState, ErrorState, LoadingState, inputClass, labelClass } from "@/components/common/states";
+import { EmptyState, ErrorState, inputClass, labelClass } from "@/components/common/states";
 import { useApi } from "@/lib/api";
 import type { Connection, ConnectionList } from "@/lib/connect-types";
+import { KeyPickerSkeleton } from "@/components/common/page-skeletons";
 
 /**
  * Loads the hospital's API keys and lets the page work on one of them (the
  * first by default): Webhooks and Logs are per key.
  */
-export function WithKey({ children }: { children: (connection: Connection, reload: () => void) => ReactNode }) {
+export function WithKey({
+  children,
+  skeleton,
+}: {
+  children: (connection: Connection, reload: () => void) => ReactNode;
+  /** What the page shows for a key, as a skeleton while the keys load. */
+  skeleton?: ReactNode;
+}) {
   const { data, error, loading, reload } = useApi<ConnectionList>("connections");
   const [chosen, setChosen] = useState<string | null>(null);
 
-  if (loading && !data) return <LoadingState label="Loading your keys…" />;
+  if (loading && !data) return <KeyPickerSkeleton>{skeleton}</KeyPickerSkeleton>;
   if (error) return <ErrorState message={error.message} onRetry={reload} />;
   if (!data) return null;
   if (data.items.length === 0) {

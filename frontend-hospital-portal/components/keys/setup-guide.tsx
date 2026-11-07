@@ -1,9 +1,10 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { ErrorState, LoadingState, primaryButtonClass } from "@/components/common/states";
+import { ErrorState, primaryButtonClass } from "@/components/common/states";
 import { useApi } from "@/lib/api";
 import type { ApiInfo, Connection } from "@/lib/connect-types";
+import { SetupGuideSkeleton } from "@/components/common/page-skeletons";
 
 const ID_PATTERN = /^[0-9a-f]{32}$/;
 
@@ -18,7 +19,7 @@ export function SetupGuide() {
   const { data, error, loading } = useApi<ApiInfo & { connection: Connection }>(id ? `connections/${id}` : null);
 
   if (!id) return <ErrorState message="Unknown connection." className="m-6" />;
-  if (loading && !data) return <LoadingState label="Preparing the setup guide…" className="m-6" />;
+  if (loading && !data) return <SetupGuideSkeleton />;
   if (error || !data) return <ErrorState message={error?.message ?? "Could not load the connection."} className="m-6" />;
   const c = data.connection;
   const rows: [string, string][] = [

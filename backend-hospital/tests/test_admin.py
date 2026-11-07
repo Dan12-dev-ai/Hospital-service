@@ -117,6 +117,11 @@ def test_hospital_settings(client, admin):
     resp = client.patch("/hospital", headers=admin, json={"name_am": "ቅዱስ ጳውሎስ", "timezone": "Africa/Addis_Ababa"})
     assert resp.status_code == 200 and resp.json()["name_am"] == "ቅዱስ ጳውሎስ"
     assert client.patch("/hospital", headers=admin, json={"timezone": "Mars/Base"}).status_code == 400
+    # The facility type asked in onboarding can be corrected in Settings too.
+    clinic = client.patch("/hospital", headers=admin, json={"facility_type": "clinic"})
+    assert clinic.status_code == 200 and clinic.json()["facility_type"] == "clinic"
+    assert client.patch("/hospital", headers=admin, json={"facility_type": "pharmacy"}).status_code == 422
+    assert client.patch("/hospital", headers=admin, json={"facility_type": None}).json()["facility_type"] == "clinic"
 
 
 def test_errors_have_one_shape(client, admin):

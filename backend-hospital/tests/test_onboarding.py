@@ -123,7 +123,8 @@ class TestWizard:
         app = client.get("/onboarding/application", headers=headers).json()
         assert app["status"] == "draft" and app["next_step"] == "facility"
         assert app["contact"] == {"full_name": "Selam Bekele", "title": "Medical Director",
-                                  "phone": "+251911234567", "email": "selam@bethel.example"}
+                                  "phone": "+251911234567", "email": "selam@bethel.example",
+                                  "is_applicant": True}
         assert set(app["missing"]["facility"]) == {"city", "phone", "open_hours", "services", "price_in_person"}
         assert app["facility"]["price_in_person"] is None
 
@@ -787,3 +788,173 @@ class TestReviewFixes:
         assert client.post("/onboarding/submit", headers=headers).status_code == 400
         client.post("/onboarding/demo", headers=headers, json={"demo_at": addis(27, 9)})
         assert client.post("/onboarding/submit", headers=headers).json()["status"] == "submitted"
+
+
+#: The account step as the wizard sends it now: the login only.
+LOGIN_ONLY = {"admin_name": "Selam Bekele", "admin_email": "selam@bethel.example", "password": "Strong-pass-123"}
+
+
+def admin_of(hospital_id):
+    from sqlalchemy import select
+
+    from app.db import platform_session
+    from app.models import OnboardingApplication, Role, StaffUser
+
+    with platform_session() as session:
+        user = session.scalar(select(StaffUser).where(StaffUser.hospital_id == hospital_id,
+                                                      StaffUser.role == Role.ADMIN))
+        row = session.get(OnboardingApplication, hospital_id)
+        return ({"full_name": user.full_name, "phone": user.phone},
+                (row.contact_name, row.contact_phone, row.contact_email))
+
+
+class TestEachQuestionOnce:
+    """The wizard asks each fact once: the account step creates the login, the
+    contact person is the applicant unless someone else is named, and the
+    facility's name and type are asked in the facility step."""
+
+    @staticmethod
+    def sign_up(client):
+        resp = client.post("/onboarding", json=LOGIN_ONLY)
+        assert resp.status_code == 201, resp.text
+        return {"Authorization": f"Bearer {resp.json()['access_token']}"}, resp.json()["hospital"]["id"]
+
+    def test_the_account_step_is_the_login_only(self, client):
+        headers, _ = self.sign_up(client)
+        app = client.get("/onboarding/application", headers=headers).json()
+        # The contact step comes next: only the role and the mobile are new.
+        assert app["next_step"] == "contact" and app["missing"]["contact"] == ["title", "phone"]
+        assert app["account"] == {"full_name": "Selam Bekele", "email": "selam@bethel.example"}
+        assert app["contact"] == {"is_applicant": True, "full_name": "Selam Bekele", "title": None, "phone": None,
+                                  "email": "selam@bethel.example"}
+        # The facility's name is asked in the facility step, once.
+        assert app["facility"]["name"] == "" and "name" in app["missing"]["facility"]
+
+    def test_the_contact_person_is_me(self, client):
+        headers, hospital_id = self.sign_up(client)
+        saved = client.patch("/onboarding/contact", headers=headers,
+                             json={"title": "Medical Director", "phone": "0911 234 567"})
+        assert saved.status_code == 200, saved.text
+        body = saved.json()
+        assert body["contact"] == {"is_applicant": True, "full_name": "Selam Bekele", "title": "Medical Director",
+                                   "phone": "+251911234567", "email": "selam@bethel.example"}
+        assert body["missing"]["contact"] == [] and body["next_step"] == "facility"
+        # Kept once, on the applicant's account.
+        account, other = admin_of(hospital_id)
+        assert account == {"full_name": "Selam Bekele", "phone": "+251911234567"}
+        assert other == (None, None, None)
+        assert client.get("/onboarding/status", headers=headers).json()["contact_phone"] == "+251911234567"
+
+    def test_someone_else_is_the_contact_person(self, client, bus):
+        headers, hospital_id = self.sign_up(client)
+        other = {"is_applicant": False, "full_name": "Dawit Haile", "title": "Hospital Manager",
+                 "phone": "+251 711 000 111", "email": "Dawit@Bethel.example"}
+        for gap in ("full_name", "email"):
+            incomplete = {k: v for k, v in other.items() if k != gap}
+            assert client.patch("/onboarding/contact", headers=headers, json=incomplete).status_code == 422
+        body = client.patch("/onboarding/contact", headers=headers, json=other).json()
+        assert body["contact"] == {"is_applicant": False, "full_name": "Dawit Haile", "title": "Hospital Manager",
+                                   "phone": "+251711000111", "email": "dawit@bethel.example"}
+        # The applicant's own account is untouched.
+        assert body["account"] == {"full_name": "Selam Bekele", "email": "selam@bethel.example"}
+        assert admin_of(hospital_id)[0] == {"full_name": "Selam Bekele", "phone": None}
+        assert body["next_step"] == "facility"
+
+        # The demo is texted to the contact person, and Endod sees them.
+        complete(client, headers)
+        event = published(bus)[-1]
+        assert event["contact_name"] == "Dawit Haile" and event["phone"] == "+251711000111"
+        listed = {a["hospital_id"]: a for a in client.get("/platform/applications", headers=KEY).json()}
+        assert listed[hospital_id]["contact"] == {"name": "Dawit Haile", "title": "Hospital Manager",
+                                                  "email": "dawit@bethel.example", "phone": "+251711000111",
+                                                  "is_applicant": False}
+
+        # Back to "the contact person is me": the other person's details go,
+        # and the booked demo follows the contact person's mobile.
+        again = client.patch("/onboarding/contact", headers=headers,
+                             json={"is_applicant": True, "title": "Medical Director", "phone": "0911 234 568"}).json()
+        assert again["contact"]["is_applicant"] is True and again["contact"]["full_name"] == "Selam Bekele"
+        assert again["contact"]["phone"] == "+251911234568"
+        assert admin_of(hospital_id)[1] == (None, None, None)
+        assert client.get("/onboarding/status", headers=headers).json()["contact_phone"] == "+251911234568"
+
+    def test_the_facility_is_named_once_in_its_own_step(self, client):
+        headers, _ = self.sign_up(client)
+        client.patch("/onboarding/contact", headers=headers, json={"title": "Owner", "phone": "0911 234 567"})
+        before = client.get("/onboarding/application", headers=headers).json()
+        assert before["code"].startswith("HOSP") and before["next_step"] == "facility"
+        saved = client.patch("/onboarding/facility", headers=headers, json=FACILITY).json()
+        assert saved["facility"]["name"] == "Bethel Teaching Hospital" and saved["missing"]["facility"] == []
+        # Its code (used in hospital numbers) comes from the name it was given.
+        assert saved["code"] == "BTH" and saved["next_step"] == "location"
+        # Renaming it later keeps the code.
+        renamed = client.patch("/onboarding/facility", headers=headers, json={**FACILITY, "name": "Bethel General"})
+        assert renamed.json()["code"] == "BTH"
+
+    def test_an_old_draft_with_both_account_and_contact_filled_resumes(self, client):
+        # Signed up before: the account step also asked the facility and the
+        # applicant's title and mobile (ACCOUNT), and the contact step asked
+        # the name, title and mobile again.
+        headers, _ = apply(client)
+        saved = client.patch("/onboarding/contact", headers=headers, json={
+            "full_name": "Selam Bekele", "title": "Medical Director", "phone": "0911 234 567"})
+        assert saved.status_code == 200
+        client.patch("/onboarding/facility", headers=headers, json=FACILITY)
+        again = sign_in(client, "selam@bethel.example", "Strong-pass-123")
+        app = client.get("/onboarding/application", headers=again).json()
+        # Nothing to retype: the contact person is the applicant, complete.
+        assert app["contact"] == {"is_applicant": True, "full_name": "Selam Bekele", "title": "Medical Director",
+                                  "phone": "+251911234567", "email": "selam@bethel.example"}
+        assert app["missing"]["contact"] == [] and app["missing"]["facility"] == []
+        assert app["next_step"] == "location" and app["code"] == "BTH"
+        # An earlier client's contact step (full_name, no is_applicant) still renames the applicant.
+        renamed = client.patch("/onboarding/contact", headers=again, json={
+            "full_name": "Selam B. Bekele", "title": "Medical Director", "phone": "0911 234 567"}).json()
+        assert renamed["contact"]["full_name"] == "Selam B. Bekele" and renamed["contact"]["is_applicant"] is True
+        assert renamed["account"]["full_name"] == "Selam B. Bekele"
+
+    def test_a_new_style_application_can_be_submitted(self, client):
+        headers, _ = self.sign_up(client)
+        refused = client.post("/onboarding/submit", headers=headers)
+        assert refused.status_code == 400 and "contact person" in refused.json()["error"]
+        client.patch("/onboarding/contact", headers=headers, json={"title": "Owner", "phone": "0911 234 567"})
+        complete(client, headers)
+        submitted = client.post("/onboarding/submit", headers=headers)
+        assert submitted.status_code == 200 and submitted.json()["status"] == "submitted"
+
+
+def test_migration_0015_keeps_drafts_with_the_applicant_as_contact(tmp_path, monkeypatch):
+    """A draft from before 0015 (contact = the applicant) keeps its title and
+    gets no other contact person; downgrading drops only the new columns."""
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import text
+
+    from app import db as dbmod
+    from app.db import get_engine
+
+    monkeypatch.setenv("HOSPITAL_DATABASE_URL", f"sqlite:///{tmp_path / 'before-0015.db'}")
+    dbmod.reset_engine()
+    root = Path(__file__).resolve().parents[1]
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "migrations"))
+    command.upgrade(config, "0014")
+    with get_engine().begin() as connection:
+        connection.execute(text("INSERT INTO hospitals (id, code, name, timezone, status, created_at) "
+                                "VALUES ('h1', 'BTH', 'Bethel', 'Africa/Addis_Ababa', 'pending', '2026-01-01')"))
+        connection.execute(text("INSERT INTO onboarding_applications (hospital_id, status, contact_title, "
+                                "created_at, updated_at) VALUES ('h1', 'draft', 'Medical Director', "
+                                "'2026-01-01', '2026-01-01')"))
+    command.upgrade(config, "head")
+    with get_engine().connect() as connection:
+        assert connection.execute(text(
+            "SELECT contact_title, contact_name, contact_phone, contact_email FROM onboarding_applications")
+        ).one() == ("Medical Director", None, None, None)
+    command.downgrade(config, "0014")
+    with get_engine().connect() as connection:
+        assert connection.execute(text("SELECT contact_title FROM onboarding_applications")).scalar() == "Medical Director"
+        columns = [row[1] for row in connection.execute(text("PRAGMA table_info(onboarding_applications)"))]
+    dbmod.reset_engine()
+    assert "contact_name" not in columns

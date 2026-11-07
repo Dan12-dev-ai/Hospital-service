@@ -317,3 +317,31 @@
 .docs-code pre {
   @apply overflow-x-auto px-4 py-3 font-mono text-[12.5px] leading-6;
 }
+
+/* Skeletons (components/common/skeleton.tsx): grey blocks shaped like the
+   content that is loading, with a soft shimmer. No shimmer for people who
+   ask for less motion: the blocks stay still. */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background-color: #eceff1;
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background-image: linear-gradient(90deg, transparent 0, rgba(255, 255, 255, 0.55) 50%, transparent 100%);
+  animation: skeleton-shimmer 1.6s ease-in-out infinite;
+}
+@keyframes skeleton-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton::after {
+    animation: none;
+    display: none;
+  }
+}

@@ -9,6 +9,7 @@ import { formatDemo, type OnboardingStatus } from "@/lib/onboarding-types";
 import { signOutNow } from "@/components/session/session-context";
 import { OnboardingFrame, nextButtonClass, softButtonClass, stepHeadingClass } from "@/components/onboarding/onboarding-frame";
 import { DemoPicker } from "@/components/onboarding/demo-picker";
+import { UnderReviewSkeleton } from "@/components/onboarding/onboarding-skeletons";
 
 const NEXT_STEPS = [
   { icon: "videocam", text: "Meet Endod at your demo: we show you the portal and go through your application." },
@@ -64,9 +65,7 @@ export function UnderReview() {
             {error}
           </p>
         ) : (
-          <p role="status" className="py-10 text-center text-xs text-slate-500">
-            Loading…
-          </p>
+          <UnderReviewSkeleton />
         )}
       </OnboardingFrame>
     );

@@ -8,7 +8,6 @@ import { PageHeader } from "@/components/shell/dashboard-shell";
 import {
   ErrorState,
   FormError,
-  LoadingState,
   RoleGate,
   inputClass,
   labelClass,
@@ -21,6 +20,7 @@ import { ApiError, apiFetch, useApi } from "@/lib/api";
 import {
   MISSING_LABELS,
   SERVICES,
+  type FacilityType,
   type Hospital,
   type HospitalKind,
   type PriceItem,
@@ -28,10 +28,12 @@ import {
   type ServiceKey,
 } from "@/lib/api-types";
 import { BIRR_PATTERN, formatBirr } from "@/lib/format";
+import { PriceListSkeleton } from "@/components/common/page-skeletons";
 
 type Form = {
   name: string;
   name_am: string;
+  facility_type: FacilityType;
   kind: HospitalKind;
   city: string;
   address: string;
@@ -56,6 +58,7 @@ function toForm(h: Hospital): Form {
   return {
     name: h.name,
     name_am: h.name_am ?? "",
+    facility_type: h.facility_type,
     kind: h.kind,
     city: h.city ?? "",
     address: h.address ?? "",
@@ -120,6 +123,7 @@ export function buildPayload(form: Form, savedHours: string | null = null, video
   const payload: Payload = {
     name: form.name.trim(),
     name_am: form.name_am.trim() || null,
+    facility_type: form.facility_type,
     kind: form.kind,
     city: form.city.trim() || null,
     address: form.address.trim() || null,
@@ -274,13 +278,24 @@ function SettingsForm({ hospital, canEdit }: { hospital: Hospital; canEdit: bool
 
       <fieldset disabled={!canEdit} className="flex min-w-0 flex-col gap-6">
         <Section title="Hospital" icon="domain">
-          <Field label="Name" htmlFor="h-name" wide>
+          <Field label="Facility name" htmlFor="h-name" wide>
             <input id="h-name" maxLength={160} value={form.name} onChange={(e) => set("name", e.target.value)} className={inputClass} />
           </Field>
           <Field label="Name in Amharic" htmlFor="h-name-am" wide>
             <input id="h-name-am" maxLength={160} value={form.name_am} onChange={(e) => set("name_am", e.target.value)} className={inputClass} />
           </Field>
-          <Field label="Kind" htmlFor="h-kind">
+          <Field label="Facility type" htmlFor="h-type">
+            <Select value={form.facility_type} onValueChange={(v) => set("facility_type", (v ?? form.facility_type) as FacilityType)}>
+              <SelectTrigger id="h-type" className="w-full cursor-pointer">
+                <SelectValue>{(v) => (v === "clinic" ? "Clinic" : v === "hospital" ? "Hospital" : v)}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="hospital">Hospital</SelectItem>
+                <SelectItem value="clinic">Clinic</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label="Ownership" htmlFor="h-kind">
             <Select value={form.kind} onValueChange={(v) => set("kind", (v ?? form.kind) as HospitalKind)}>
               <SelectTrigger id="h-kind" className="w-full cursor-pointer">
                 <SelectValue>{(v) => (v === "public" ? "Public" : v === "private" ? "Private" : v)}</SelectValue>
@@ -294,10 +309,7 @@ function SettingsForm({ hospital, canEdit }: { hospital: Hospital; canEdit: bool
           <Field label="City" htmlFor="h-city">
             <input id="h-city" maxLength={100} value={form.city} onChange={(e) => set("city", e.target.value)} className={inputClass} />
           </Field>
-          <Field label="Address" htmlFor="h-address" wide>
-            <input id="h-address" maxLength={200} value={form.address} onChange={(e) => set("address", e.target.value)} className={inputClass} />
-          </Field>
-          <Field label="Phone" htmlFor="h-phone">
+          <Field label="Facility phone" htmlFor="h-phone">
             <input id="h-phone" type="tel" placeholder="011 551 7611" value={form.phone} onChange={(e) => set("phone", e.target.value)} className={inputClass} />
           </Field>
           <Field label="Ambulance phone" htmlFor="h-ambulance">
@@ -307,12 +319,15 @@ function SettingsForm({ hospital, canEdit }: { hospital: Hospital; canEdit: bool
             <Toggle id="h-emergency" label="24-hour emergency department" checked={form.emergency} onChange={(value) => set("emergency", value)} />
           </div>
           <fieldset className="sm:col-span-2">
-            <legend className={labelClass}>Open hours</legend>
+            <legend className={labelClass}>Opening hours</legend>
             <OpenHoursInput id="h-hours" value={form.open_hours} onChange={(value) => set("open_hours", value)} inputClassName={inputClass} />
           </fieldset>
         </Section>
 
         <Section title="Location" icon="location_on" needed={missing.has("location")}>
+          <Field label="Address" htmlFor="h-address" wide>
+            <input id="h-address" maxLength={200} value={form.address} onChange={(e) => set("address", e.target.value)} className={inputClass} />
+          </Field>
           <p className="text-xs text-neutral-500 sm:col-span-2">
             Patients find nearby hospitals by this point. Stand at the hospital and use your current location, or enter
             the coordinates (decimal degrees) by hand.
@@ -515,18 +530,16 @@ function PriceListSection() {
       <h2 className="text-lg font-semibold tracking-tight text-neutral-900">Price list</h2>
       <p className="mt-1 max-w-2xl text-sm text-neutral-500">
         Synced from your system through the API, category by category. Read-only here: change it in your system and
-        sync again.
+        sync again. The consultation price is under{" "}
+        <a href="#h-price-in-person" className="font-medium text-neutral-900 underline underline-offset-2">
+          Consultation price
+        </a>{" "}
+        above.
       </p>
-      {loading && !data && <LoadingState className="mt-4 shadow-none" />}
+      {loading && !data && <PriceListSkeleton />}
       {error && <ErrorState message={error.message} onRetry={reload} className="mt-4" />}
       {data && (
         <div className="mt-4 flex flex-col gap-6">
-          <div className="flex items-baseline justify-between rounded-lg border border-neutral-200 px-5 py-3 text-sm">
-            <span className="text-neutral-600">Consultation (in person)</span>
-            <span data-testid="consultation-price" className="font-medium text-neutral-900">
-              {formatBirr(data.consultation.in_person)}
-            </span>
-          </div>
           {CATEGORIES.map((category) => (
             <PriceTable key={category.key} testId={`prices-${category.key}`} title={category.title} path={category.path} items={data[category.key]} />
           ))}
